@@ -85,9 +85,21 @@ pub fn mix_caption(favourites: bool) -> &'static str {
 }
 
 
-/// A device of the account as the devices panel lists it: what it plays, and its last refusal.
-pub fn device_row(d: &nori_core::remote::RemoteDevice) -> crate::DeviceRow {
-    use nori_core::remote::wire::Refusal;
+/// The devices panel's first row, which brings the music back.
+pub const THIS_COMPUTER: &str = "This computer";
+
+/// The player's strip while another device plays.
+pub fn playing_on(device: &str) -> String {
+    format!("Playing on {device}")
+}
+
+/// A place the music can play, as the devices panel lists it: this computer (`d` None) or a device of the
+/// account with what it plays and its last refusal; ticked while the music plays there.
+pub fn device_row(d: Option<&nori_core::remote::RemoteDevice>, active: bool) -> crate::DeviceRow {
+    use nori_core::remote::wire::{DeviceKind, Refusal};
+    let Some(d) = d else {
+        return crate::DeviceRow { name: THIS_COMPUTER.into(), active, ..Default::default() };
+    };
     let state = d.state.as_ref();
     let now = state.and_then(|s| s.entries.iter().find(|e| Some(e.index) == s.index));
     let line = now.map_or_else(|| "Not playing".to_string(), |e| format!("{} · {}", e.title, e.artist));
@@ -100,9 +112,14 @@ pub fn device_row(d: &nori_core::remote::RemoteDevice) -> crate::DeviceRow {
     };
     crate::DeviceRow {
         id: d.id.clone().into(),
-        name: format!("{}{}", d.name, if d.nearby { " · nearby" } else { "" }).into(),
+        name: d.name.clone().into(),
         line: line.into(),
-        playing: state.is_some_and(|s| s.playing),
+        kind: match d.kind {
+            DeviceKind::Desktop => 0,
+            DeviceKind::Phone | DeviceKind::Guest => 1,
+            DeviceKind::Terminal => 2,
+        },
+        active,
         note: note.into(),
     }
 }

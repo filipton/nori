@@ -15,6 +15,7 @@ use nori_core::Song;
 use nori_covers::loader::Ticket;
 use nori_covers::memory::Image as Picture;
 use nori_engine::{Event, State};
+use nori_host::remote::Elsewhere;
 use nori_http::Http;
 use nori_look::cover::CoverColours;
 use skia_safe::Typeface;
@@ -210,6 +211,8 @@ pub struct App {
     /// The hosted jam's invite link its QR code was drawn for, and whether a jam is hosted.
     jam_link: String,
     jam_hosting: bool,
+    /// The device playing while it is another one: the player shows and controls it.
+    elsewhere: Option<Elsewhere>,
 }
 
 /// Wraps `f` to run on the main window while it is open.
@@ -331,6 +334,7 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
             search: Timer::default(),
             jam_link: String::new(),
             jam_hosting: false,
+            elsewhere: None,
         })
     });
     let h = app.borrow().me.clone();
@@ -412,11 +416,9 @@ fn wire(ui: &AppWindow, h: &AppHandle) {
     on!(ui.on_page_later, h, |a| a.enqueue_page());
     on!(ui.on_more, h, |a| a.more_songs());
     on!(ui.on_search_edited, h, |a, t| a.search_edited(&t));
-    on!(ui.on_toggle, h, |a| a.toggle());
+    on!(ui.on_toggle, h, |a| a.on_session(|s| s.toggle()));
     on!(ui.on_next, h, |a| a.on_session(|s| s.next()));
-    on!(ui.on_previous, h, |a| a.on_session(|s| {
-        s.engine.previous();
-    }));
+    on!(ui.on_previous, h, |a| a.on_session(|s| s.previous()));
     on!(ui.on_seek, h, |a, f| a.seek(f));
     on!(ui.on_set_volume, h, |a, v| {
         a.on_session(|s| s.set_volume(v));
@@ -424,14 +426,14 @@ fn wire(ui: &AppWindow, h: &AppHandle) {
         a.mirror();
     });
     on!(ui.on_toggle_shuffle, h, |a| {
-        let on = !a.queue.as_ref().is_some_and(|q| q.shuffle);
+        let on = !a.ui().get_shuffle();
         a.on_session(|s| s.shuffle(on));
         a.say(if on { "Shuffle on" } else { "Shuffle off" }, false);
         a.follow();
     });
     on!(ui.on_cycle_repeat, h, |a| {
         // Off, all, one.
-        let next = match a.queue.as_ref().map_or(0, |q| q.repeat) {
+        let next = match a.ui().get_repeat() {
             0 => 2,
             2 => 1,
             _ => 0,
@@ -441,12 +443,10 @@ fn wire(ui: &AppWindow, h: &AppHandle) {
         a.follow();
     });
     on!(ui.on_lyric_tapped, h, |a, line| a.lyric_tapped(line));
-    on!(ui.on_jump, h, |a, i| a.on_session(|s| {
-        s.engine.play_at(i.max(0) as usize, 0);
-    }));
+    on!(ui.on_jump, h, |a, i| a.on_session(|s| s.jump(i.max(0) as usize)));
     on!(ui.on_seek_by, h, |a, ms| {
-        if let Some(at) = a.session.as_ref().map(|s| s.engine.status().position_now()) {
-            a.seek_to((at + ms as i64).max(0));
+        if a.session.is_some() {
+            a.seek_to((a.position_now() + ms as i64).max(0));
         }
     });
     on!(ui.on_drag_window, h, |a| a.compositor.drag_window());
@@ -458,7 +458,7 @@ fn wire(ui: &AppWindow, h: &AppHandle) {
         a.place_player();
         a.devices_watched();
     });
-    on!(ui.on_device_act, h, |a, id, what| a.device_act(id.to_string(), &what));
+    on!(ui.on_pick_device, h, |a, id| a.pick_device(id.to_string()));
     on!(ui.on_jam_play, h, |a, kind, id| {
         let what = if kind == 0 { Fetch::Album(id.into()) } else { Fetch::Playlist(id.into()) };
         a.on_session(|s| {
@@ -1011,19 +1011,6 @@ impl App {
         }
     }
 
-    fn toggle(&mut self) {
-        let Some(s) = &self.session else { return };
-        let st = s.engine.status();
-        // Idle with a restored queue: start it where it was.
-        if st.state == State::Idle {
-            if let Some(q) = self.queue.as_ref().filter(|q| q.len > 0) {
-                s.engine.play_at(q.index.max(0) as usize, st.position_now());
-                return;
-            }
-        }
-        s.engine.toggle();
-    }
-
     fn seek(&mut self, fraction: f32) {
         let Some(song) = &self.song else { return };
         let ms = (fraction as f64 * song.duration as f64 * 1000.0) as i64;
@@ -1031,11 +1018,23 @@ impl App {
         self.seek_to(ms);
     }
 
-    /// Seeks to `ms`; the lyrics show that place at once, not the old one until the seek lands.
+    /// Seeks to `ms`; the lyrics show that place at once, not the old one until the seek lands (another
+    /// device's place shows the seek at once).
     fn seek_to(&mut self, ms: i64) {
-        self.seeking = Some(ms);
-        self.on_session(|s| s.engine.seek(ms));
+        if self.elsewhere.is_none() {
+            self.seeking = Some(ms);
+        }
+        self.on_session(|s| s.seek(ms));
         self.lyrics_step(true);
+    }
+
+    /// Where the song playing is now, here or on the device playing.
+    fn position_now(&self) -> i64 {
+        match (&self.elsewhere, &self.session) {
+            (Some(e), _) => e.position_ms(),
+            (None, Some(s)) => s.engine.status_with(|st| st.position_now()),
+            (None, None) => 0,
+        }
     }
 
     fn take(&mut self, m: Msg) {
@@ -1049,7 +1048,7 @@ impl App {
                     }
                     // A seek still under way is overtaken by another song.
                     Event::Song { .. } => self.seeking = None,
-                    Event::Buffering(b) => self.ui().set_buffering(*b),
+                    Event::Buffering(b) if self.elsewhere.is_none() => self.ui().set_buffering(*b),
                     Event::Error { message, .. } => self.say(&format!("Could not play: {message}"), true),
                     _ => {}
                 }
@@ -1071,8 +1070,7 @@ impl App {
             }
             Msg::Lyrics { song, pick } => {
                 if self.heard.as_deref() == Some(song.as_str()) && self.lyrics.as_ref().is_none_or(|l| l.replaced_by(&pick)) {
-                    let at = self.session.as_ref().map_or(0, |s| s.engine.status().position_now());
-                    let l = crate::lyrics::SongLyrics::new(pick, at, self.lyric_face.clone());
+                    let l = crate::lyrics::SongLyrics::new(pick, self.position_now(), self.lyric_face.clone());
                     let ui = self.ui();
                     ui.set_lyrics_lines(l.lines());
                     ui.set_lyrics_synced(l.synced());
@@ -1089,6 +1087,7 @@ impl App {
             Msg::Reachable(Err(e)) => self.say(&e, true),
             Msg::Reachable(Ok(())) | Msg::From(..) => {}
             Msg::Remote => {
+                self.elsewhere_read();
                 self.devices_shown();
                 self.jam_shown();
                 // Another device or the jam may have changed the queue (a song accepted, added from afar).
@@ -1100,7 +1099,8 @@ impl App {
                 self.jam_shown();
             }
             Msg::Jam(Err(e)) => self.say(&format!("{} ({e})", words::JAM_FAILED), true),
-            Msg::Volume(v) => self.ui().set_volume(v),
+            Msg::Volume(v) if self.elsewhere.is_none() => self.ui().set_volume(v),
+            Msg::Volume(_) => {}
             Msg::LoggedIn(r) => {
                 let ui = self.ui();
                 ui.set_login_busy(false);
@@ -1222,6 +1222,7 @@ impl App {
             p.set_covers_rev(ui.get_covers_rev());
             p.set_devices_on(ui.get_devices_on());
             p.set_jam(ui.global::<crate::Jam>().get_strip());
+            p.set_playing_on(ui.get_playing_on());
         }
         if let Some(sd) = &self.sidebar {
             sd.set_view(ui.get_view());
@@ -1248,9 +1249,9 @@ impl App {
     /// Updates the lyrics view from the playback position and schedules the next update.
     fn lyrics_step(&mut self, force: bool) {
         let ui = self.ui();
-        let seeking = self.seeking;
-        let (Some(l), Some(s)) = (&mut self.lyrics, &self.session) else { return };
-        let (at, playing) = s.engine.status_with(|st| (seeking.unwrap_or_else(|| st.position_now()), st.state == State::Playing));
+        let at = self.seeking.unwrap_or_else(|| self.position_now());
+        let playing = ui.get_playing();
+        let Some(l) = &mut self.lyrics else { return };
         let full = ui.get_full_player() && ui.get_full_panel() == 2;
         let side = ui.get_inspector() == 2;
         let now = l.advance(at, full || side, force);
@@ -1321,31 +1322,49 @@ impl App {
         }
     }
 
-    /// The devices panel's rows, from the remote's devices.
+    /// The devices panel's rows: this computer, then the remote's devices, the one playing ticked.
     fn devices_shown(&self) {
         let ui = self.ui();
         let remote = self.session.as_ref().and_then(|s| s.remote());
         ui.set_devices_on(remote.is_some());
         let Some(r) = remote.filter(|_| ui.get_inspector() == 3) else { return };
-        let rows: Vec<crate::DeviceRow> = r.devices().iter().map(crate::words::device_row).collect();
-        ui.set_devices(slint::ModelRc::new(slint::VecModel::from(rows)));
+        let active = self.elsewhere.as_ref().map(|e| e.mirror.id.as_str());
+        let here = std::iter::once(words::device_row(None, active.is_none()));
+        let rows: Vec<crate::DeviceRow> = here.chain(r.devices().iter().map(|d| words::device_row(Some(d), active == Some(d.id.as_str())))).collect();
+        ui.set_devices(ModelRc::new(VecModel::from(rows)));
     }
 
-    /// A device row's button.
-    fn device_act(&self, id: String, what: &str) {
-        let Some(r) = self.session.as_ref().and_then(|s| s.remote()) else { return };
-        let playing = r.devices().iter().find(|d| d.id == id).and_then(|d| d.state.as_ref().map(|s| s.playing)).unwrap_or(false);
-        use nori_core::remote::wire::Op;
-        match what {
-            "toggle" => r.send(id, if playing { Op::Pause } else { Op::Play }),
-            "next" => r.send(id, Op::Next),
-            "previous" => r.send(id, Op::Previous),
-            "here" => {
-                let me = r.id();
-                r.send(id, Op::Transfer { to: me });
-            }
-            "there" => r.hand_over(id),
-            _ => {}
+    /// Moves the music to device `id`, or here ("").
+    fn pick_device(&self, id: String) {
+        if let Some(r) = self.session.as_ref().and_then(|s| s.remote()) {
+            r.pick((!id.is_empty()).then_some(id));
+        }
+    }
+
+    /// Reads the device playing while it is another one. Coming or going, the player starts over from
+    /// what it then shows.
+    fn elsewhere_read(&mut self) {
+        let Some(s) = &self.session else { return };
+        let e = s.elsewhere();
+        let ui = self.ui();
+        ui.set_playing_on(e.as_ref().map_or_else(String::new, |e| words::playing_on(&e.mirror.name)).into());
+        let moved = e.is_some() != self.elsewhere.is_some();
+        self.elsewhere = e;
+        if moved {
+            self.queue = None;
+            self.seeking = None;
+            ui.set_buffering(false);
+            let id = match &self.elsewhere {
+                Some(e) => e.song().map(|s| s.id.clone()),
+                None => {
+                    ui.set_volume(s.volume());
+                    s.engine.status_with(|st| st.id.clone())
+                }
+            };
+            self.song_shown(id);
+        }
+        if moved || self.elsewhere.is_some() {
+            self.on_session(|s| s.mpris_changed());
         }
     }
 
@@ -1513,45 +1532,67 @@ impl App {
         }
     }
 
-    /// Syncs the window with the engine status and the queue.
+    /// Shows song `id` as the one playing, and asks for its lyrics.
+    fn song_shown(&mut self, id: Option<String>) {
+        let ui = self.ui();
+        self.heard = id.clone();
+        self.song = match &self.elsewhere {
+            Some(e) => e.song().cloned(),
+            None => id.and_then(|id| crate::session::app().song(&id)),
+        };
+        let song = self.song.clone().unwrap_or_default();
+        ui.set_has_song(self.song.is_some());
+        ui.set_now_title(song.title.as_str().into());
+        ui.set_now_artist(song.artist.as_str().into());
+        ui.set_now_album(song.album.as_str().into());
+        ui.set_duration_ms((song.duration as i64 * 1000) as i32);
+        let art = song.cover_art.clone().unwrap_or_default();
+        ui.set_now_art(art.as_str().into());
+        let c = self.art.borrow().colours.get(&art).cloned();
+        self.now_colours(&art, c.as_deref());
+        // Request the large cover for the backdrop colours even when no view shows it.
+        if c.is_none() {
+            let _ = cover_image(&self.art, &self.me, art.as_str().into(), 1);
+        }
+        self.mark_playing();
+        self.lyrics = None;
+        ui.set_lyrics_lines(ModelRc::default());
+        ui.set_lyrics_active(-1);
+        ui.set_lyrics_note(if self.song.is_some() { "Looking for lyrics…".into() } else { "".into() });
+        if let (Some(s), Some(id)) = (&self.session, &self.heard) {
+            s.lyrics(id.clone());
+        }
+    }
+
+    /// Syncs the window with the device playing: this computer's engine status and queue, or the device's
+    /// it shows instead.
     fn follow(&mut self) {
         let Some(s) = &self.session else { return };
-        let st = s.engine.status();
         let ui = self.ui();
-        let playing = st.state == State::Playing;
+        let (id, playing) = match &self.elsewhere {
+            Some(e) => (e.song().map(|s| s.id.clone()), e.mirror.playing),
+            None => s.engine.status_with(|st| (st.id.clone(), st.state == State::Playing)),
+        };
         ui.set_playing(playing);
-        ui.set_position_ms(st.position_now() as i32);
-        let id = st.id.clone();
+        ui.set_position_ms(self.position_now() as i32);
         if id != self.heard {
-            self.heard = id.clone();
-            self.song = id.and_then(|id| crate::session::app().song(&id));
-            let song = self.song.clone().unwrap_or_default();
-            ui.set_has_song(self.song.is_some());
-            ui.set_now_title(song.title.as_str().into());
-            ui.set_now_artist(song.artist.as_str().into());
-            ui.set_now_album(song.album.as_str().into());
-            ui.set_duration_ms((song.duration as i64 * 1000) as i32);
-            let art = song.cover_art.clone().unwrap_or_default();
-            ui.set_now_art(art.as_str().into());
-            let c = self.art.borrow().colours.get(&art).cloned();
-            self.now_colours(&art, c.as_deref());
-            // Request the large cover for the backdrop colours even when no view shows it.
-            if c.is_none() {
-                let _ = cover_image(&self.art, &self.me, art.as_str().into(), 1);
+            self.song_shown(id);
+        }
+        if let Some(e) = &self.elsewhere {
+            let m = &e.mirror;
+            ui.set_shuffle(m.shuffle);
+            ui.set_repeat(m.repeat as i32);
+            ui.set_buffering(m.buffering && m.playing);
+            if let Some(v) = e.volume() {
+                ui.set_volume(v);
             }
-            self.mark_playing();
-            self.lyrics = None;
-            let ui = self.ui();
-            ui.set_lyrics_lines(ModelRc::default());
-            ui.set_lyrics_active(-1);
-            ui.set_lyrics_note(if self.song.is_some() { "Looking for lyrics…".into() } else { "".into() });
-            if let (Some(s), Some(id)) = (&self.session, &self.heard) {
-                s.lyrics(id.clone());
-            }
+            let rows = e.upcoming().iter().map(|r| row(&r.song, r.index as usize, false)).collect();
+            ui.set_queue_from(queue_from(e.upcoming().iter().map(|r| &r.song)).into());
+            self.queue_shown(rows);
         }
         // Copy the queue only when it changed.
         let (rev, repeat, index) = crate::session::app().playlist(|p| (p.rev(), p.repeat(), p.current().map_or(-1, |c| c as i32)));
-        if self.queue.as_ref().is_none_or(|q| q.rev != rev || q.repeat != repeat || q.index != index) {
+        if self.elsewhere.is_none() && self.queue.as_ref().is_none_or(|q| q.rev != rev || q.repeat != repeat || q.index != index) {
             let held = self.queue.as_ref().map_or(u64::MAX, |q| q.list_rev);
             let mut v = crate::session::app().view(held);
             if v.songs.is_empty() && v.len > 0 {
@@ -1563,7 +1604,7 @@ impl App {
             ui.set_repeat(v.repeat as i32);
             let jam = self.session.as_ref().and_then(|s| s.remote()).filter(|_| self.jam_hosting);
             self.queue_shown(queue_rows(&v, |id| jam.as_ref().and_then(|r| r.jam_added_by(id))));
-            ui.set_queue_from(queue_from(&v).into());
+            ui.set_queue_from(queue_from(upcoming(&v).map(|(_, s)| s)).into());
             self.queue = Some(v);
         }
         // Seek bar timer: only while playing, one step per pixel of the widest bar.
@@ -1574,7 +1615,7 @@ impl App {
             self.tick.start(TimerMode::Repeated, Duration::from_millis(step), move || {
                 me.with(|a| {
                     let ui = a.ui();
-                    a.on_session(|s| ui.set_position_ms(s.engine.status_with(|st| st.position_now()) as i32));
+                    ui.set_position_ms(a.position_now() as i32);
                     if let Some(p) = &a.player {
                         p.set_position_ms(ui.get_position_ms());
                     }
@@ -1622,9 +1663,13 @@ fn row(s: &Song, index: usize, playing: bool) -> SongRow {
 
 /// Upcoming songs in play order; each row carries its list index, and who asked for it in the jam (`by`).
 fn queue_rows(v: &PlaylistView, by: impl Fn(&str) -> Option<String>) -> Vec<SongRow> {
+    upcoming(v).map(|(i, s)| SongRow { by: by(&s.id).unwrap_or_default().into(), ..row(s, i as usize, false) }).collect()
+}
+
+/// The songs after the current one in play order, with their list indexes.
+fn upcoming(v: &PlaylistView) -> impl Iterator<Item = (u32, &Song)> {
     let from = v.order.iter().position(|&i| i as i32 == v.index).map_or(0, |p| p + 1);
-    let shown = |s: &Song, i: u32| SongRow { by: by(&s.id).unwrap_or_default().into(), ..row(s, i as usize, false) };
-    v.order[from.min(v.order.len())..].iter().filter_map(|&i| v.songs.get(i as usize).map(|s| shown(s, i))).collect()
+    v.order[from.min(v.order.len())..].iter().filter_map(|&i| v.songs.get(i as usize).map(|s| (i, s)))
 }
 
 /// Sets `m` to `rows`, updating in place when the length matches.
@@ -1675,10 +1720,9 @@ fn settle(m: &VecModel<SongRow>, rows: Vec<SongRow>) {
     }
 }
 
-/// The album of all upcoming songs, if they share one.
-fn queue_from(v: &PlaylistView) -> String {
-    let from = v.order.iter().position(|&i| i as i32 == v.index).map_or(0, |p| p + 1);
-    let mut albums = v.order[from.min(v.order.len())..].iter().filter_map(|&i| v.songs.get(i as usize)).map(|s| s.album.as_str());
+/// The album of all `upcoming` songs, if they share one.
+fn queue_from<'a>(upcoming: impl Iterator<Item = &'a Song>) -> String {
+    let mut albums = upcoming.map(|s| s.album.as_str());
     match albums.next() {
         Some(first) if !first.is_empty() && albums.all(|a| a == first) => first.to_string(),
         _ => String::new(),

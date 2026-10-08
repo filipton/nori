@@ -28,7 +28,9 @@ use nori_look::cover::CoverColours;
 
 #[cfg(feature = "desktop")]
 use crate::Controls;
+use crate::remote::Press;
 use crate::{config, db_path, derive, net, save, spawn, Fetch, Keeper, Level};
+use nori_remote::wire::Op;
 
 /// What a session reports from any thread.
 pub enum Said {
@@ -113,7 +115,7 @@ impl ByteSource for Audio {
 
 /// The offline transport: every request fails as unreachable, so the core shows what is stored and
 /// queues writes for later.
-struct Offline;
+pub(crate) struct Offline;
 
 fn offline() -> TransportError {
     TransportError::Failed { kind: FailureKind::NoRoute, detail: Some("offline".into()) }
@@ -231,12 +233,12 @@ impl Session {
         let config = Config { memory_mb: o.memory_mb, settings: settings(&prefs, loudness.db()), ..Config::default() };
         let engine = Arc::new(Engine::start(library, app, CoreQueue(core.session.clone()), output, None, config, move |e| events(Said::Engine(e))));
         let covers = o.covers.then(|| Arc::new(Loader::new(CoverConfig::new(o.data.join("covers")), cover_net)));
+        let remotes = Arc::new(crate::remote::Remotes::new(level.clone()));
         #[cfg(feature = "desktop")]
         if let Some(m) = &o.mpris {
-            m.serve(Some(Arc::new(Controls::over_queue(engine.clone(), core.session.clone()))));
+            m.serve(Some(Arc::new(crate::remote::Keys { here: Controls::over_queue(engine.clone(), core.session.clone()), remotes: remotes.clone() })));
         }
         let keeper = Keeper::start(core.clone(), engine.clone());
-        let remotes = Arc::new(crate::remote::Remotes::new(level.clone()));
         let s = Session { core, client, engine, store, downloader, covers, level, search: SearchSession::new(), offline: o.offline, #[cfg(feature = "desktop")] mpris: o.mpris, keeper, db: PathBuf::from(db), remotes, device: o.device, out: o.out };
         s.restore();
         s.follow_remote();
@@ -310,9 +312,9 @@ impl Session {
         }
     }
 
-    /// Plays `songs` from `start` (with `shuffle`, from wherever shuffle starts). Provider songs are
-    /// dropped unless picked: the server downloads whatever is requested. `from` is the page the songs
-    /// are the list of (`playlist_set`).
+    /// Plays `songs` from `start` (with `shuffle`, from wherever shuffle starts), on the device playing.
+    /// Provider songs are dropped unless picked: the server downloads whatever is requested. `from` is the
+    /// page the songs are the list of (`playlist_set`).
     pub fn play(&self, songs: Vec<Song>, start: usize, shuffle: bool, from: Option<PageOrigin>) {
         self.handle().play(songs, start, shuffle, from);
     }
@@ -322,7 +324,7 @@ impl Session {
     /// would. True when it went on.
     pub fn keep_playing(&self, songs: Vec<Song>, at: usize, from: Option<PageOrigin>) -> bool {
         let playing = self.engine.status_with(|s| s.id.clone());
-        let keep = playing.is_some() && songs.get(at).map(|s| &s.id) == playing.as_ref();
+        let keep = playing.is_some() && songs.get(at).map(|s| &s.id) == playing.as_ref() && self.elsewhere().is_none();
         self.handle().play_kept(songs, at, false, from, keep);
         keep
     }
@@ -338,18 +340,63 @@ impl Session {
         });
     }
 
-    /// Adds songs after the current one (`next`) or at the end.
+    /// Adds songs after the current one (`next`) or at the end, on the device playing.
     pub fn enqueue(&self, songs: Vec<Song>, next: bool) {
-        self.handle().enqueue(songs, next);
+        self.handle().add(songs, next);
     }
 
     /// Enqueues an album, playlist or artist once fetched.
     pub fn enqueue_later(&self, what: Fetch, next: bool) {
         let (client, me) = (self.client.clone(), self.handle());
         spawn("nori-enqueue", move || match what.songs(&client) {
-            Ok(songs) => me.enqueue(songs, next),
+            Ok(songs) => me.add(songs, next),
             Err(e) => me.note(Note::SongsFailed(e)),
         });
+    }
+
+    /// The account's active device while it is another one, which the player shows and every control
+    /// here acts on.
+    pub fn elsewhere(&self) -> Option<crate::remote::Elsewhere> {
+        self.remotes.elsewhere()
+    }
+
+    /// Plays or pauses; a queue restored but never started starts where it was.
+    pub fn toggle(&self) {
+        if self.there(Press::Toggle) {
+            return;
+        }
+        let st = self.engine.status();
+        let restored = self.core.session.playlist(|p| p.current());
+        match restored.filter(|_| st.state == State::Idle) {
+            Some(at) => {
+                self.engine.play_at(at, st.position_now());
+            }
+            None => self.engine.toggle(),
+        }
+    }
+
+    pub fn previous(&self) {
+        if !self.there(Press::Previous) {
+            self.engine.previous();
+        }
+    }
+
+    pub fn seek(&self, ms: i64) {
+        if !self.there(Press::Seek(ms)) {
+            self.engine.seek(ms);
+        }
+    }
+
+    /// Plays the song at list index `index`.
+    pub fn jump(&self, index: usize) {
+        if !self.there(Press::Jump(index as u32)) {
+            self.engine.play_at(index, 0);
+        }
+    }
+
+    /// Sends `press` to the active device while it is another one; false while this one plays.
+    fn there(&self, press: Press) -> bool {
+        self.elsewhere().map(|e| e.press(press)).is_some()
     }
 
     fn handle(&self) -> Handle {
@@ -375,7 +422,8 @@ impl Session {
             #[cfg(not(feature = "desktop"))]
             let discovery = None;
             let player = Arc::new(crate::remote::HostPlayer(self.handle()));
-            let r = nori_core::remote::Remote::new(self.client.clone(), self.device.clone(), player, Arc::new(crate::remote::Shown(self.out.clone())), discovery);
+            let shown = crate::remote::Shown { out: self.out.clone(), remotes: self.remotes.clone(), engine: self.engine.clone() };
+            let r = nori_core::remote::Remote::new(self.client.clone(), self.device.clone(), player, Arc::new(shown), discovery);
             #[cfg(feature = "desktop")]
             if let Some(m) = &mdns {
                 m.serve(&r);
@@ -428,11 +476,15 @@ impl Session {
     }
 
     pub fn shuffle(&self, on: bool) {
-        self.handle().shuffle(on);
+        if !self.there(Press::Shuffle(on)) {
+            self.handle().shuffle(on);
+        }
     }
 
     pub fn repeat(&self, mode: u8) {
-        self.handle().repeat(mode);
+        if !self.there(Press::Repeat(mode)) {
+            self.handle().repeat(mode);
+        }
     }
 
     fn start_downloads(&self) {
@@ -493,9 +545,12 @@ impl Session {
         self.level.get()
     }
 
-    /// Sets the volume, as the client's own control does; the account's other devices see it.
+    /// Sets the volume of the device playing, as the client's own control does; the account's other
+    /// devices see it.
     pub fn set_volume(&self, v: f32) {
-        self.handle().set_volume(v);
+        if !self.there(Press::Volume(v)) {
+            self.handle().set_volume(v);
+        }
     }
 
     /// Applies a settings change's `effect` bits to the engine.
@@ -710,6 +765,9 @@ impl Session {
 
     /// Next; at the queue's end with autofill on, fetches songs first.
     pub fn next(&self) {
+        if self.there(Press::Next) {
+            return;
+        }
         if self.core.session.playlist(|p| p.next().is_some()) {
             self.engine.next();
             return;
@@ -853,7 +911,7 @@ impl Handle {
     }
 
     /// [`Handle::play`]; `keep`: the start is the song playing, which goes on with no jump (the queue's
-    /// `set` keeps its entry).
+    /// `set` keeps its entry). Sent to the active device while it is another one.
     fn play_kept(&self, songs: Vec<Song>, start: usize, shuffle: bool, from: Option<PageOrigin>, keep: bool) {
         let picked = songs.get(start).map(|s| s.id.clone());
         let songs: Vec<Song> = songs.into_iter().filter(|s| !s.is_provider() || Some(&s.id) == picked.as_ref()).collect();
@@ -861,6 +919,9 @@ impl Handle {
             return;
         }
         let start = picked.and_then(|id| songs.iter().position(|s| s.id == id)).unwrap_or(0);
+        if let Some(e) = self.remotes.elsewhere() {
+            return e.play(songs, start, shuffle);
+        }
         self.queue.register(songs.clone());
         let change = self.queue.set(songs.iter().map(|s| s.id.clone()).collect(), (!shuffle).then_some(start as u32), shuffle, from);
         self.edited();
@@ -869,9 +930,17 @@ impl Handle {
         }
     }
 
+    /// [`Handle::enqueue`] on the device playing: the active device while it is another one.
+    fn add(&self, songs: Vec<Song>, next: bool) {
+        let Some(e) = self.remotes.elsewhere() else { return self.enqueue(songs, next) };
+        let songs = queueable(songs);
+        if !songs.is_empty() {
+            e.send(Op::Add { songs, next });
+        }
+    }
+
     pub(crate) fn enqueue(&self, songs: Vec<Song>, next: bool) {
-        // A single picked song may be a provider's; lists never include them.
-        let songs: Vec<Song> = if songs.len() == 1 { songs } else { songs.into_iter().filter(|s| !s.is_provider()).collect() };
+        let songs = queueable(songs);
         if songs.is_empty() {
             return;
         }
@@ -889,7 +958,12 @@ impl Handle {
     }
 }
 
-/// Fetches covers of downloaded songs to disk (not decoded) so they exist offline.
+/// `songs` as they may be added to a queue: a single picked song may be a provider's; lists never include
+/// them (the server downloads whatever is requested).
+fn queueable(songs: Vec<Song>) -> Vec<Song> {
+    if songs.len() == 1 { songs } else { songs.into_iter().filter(|s| !s.is_provider()).collect() }
+}
+
 /// Queues `songs` but providers' for download, their covers fetched to disk too; what to say of it.
 fn queue_downloads(core: &Core, covers: Option<&Arc<Loader>>, songs: Vec<Song>) -> Note {
     let songs: Vec<Song> = songs.into_iter().filter(|s| !s.is_provider()).collect();

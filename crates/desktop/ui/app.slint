@@ -30,13 +30,17 @@ export struct LyricPiece {
     swell: float,
 }
 
-// One of the account's other devices (remote control), as the devices panel lists it.
+// A place the music can play (remote control), as the devices panel lists it: this computer (no id) or one
+// of the account's other devices.
 export struct DeviceRow {
     id: string,
     name: string,
-    // What it plays, or that it plays nothing.
+    // What it plays, or that it plays nothing; empty for this computer.
     line: string,
-    playing: bool,
+    // 0 a computer, 1 a phone, 2 a terminal.
+    kind: int,
+    // The music plays there.
+    active: bool,
     // Its answer to the last command, when it refused.
     note: string,
 }
@@ -201,6 +205,9 @@ export global Icons {
     out property <string> check: "M5 12.5 L10 17.5 L19.5 6.5";
     out property <string> copy: "M10 8.5 L18.5 8.5 Q19.5 8.5 19.5 9.5 L19.5 18.5 Q19.5 19.5 18.5 19.5 L10 19.5 Q9 19.5 9 18.5 L9 9.5 Q9 8.5 10 8.5 Z M5.5 15.5 Q4.5 15.5 4.5 14.5 L4.5 5.5 Q4.5 4.5 5.5 4.5 L14 4.5 Q15 4.5 15 5.5";
     out property <string> devices: "M3 15 L3 6 Q3 5 4 5 L15 5 Q16 5 16 6 L16 8 M1.5 18 L13 18 M18 9 L21 9 Q22 9 22 10 L22 18 Q22 19 21 19 L18 19 Q17 19 17 18 L17 10 Q17 9 18 9 Z";
+    out property <string> computer: "M3.5 5.5 Q3.5 4.5 4.5 4.5 L19.5 4.5 Q20.5 4.5 20.5 5.5 L20.5 15 Q20.5 16 19.5 16 L4.5 16 Q3.5 16 3.5 15 Z M8.5 19.5 L15.5 19.5 M12 16 L12 19.5";
+    out property <string> phone: "M8.5 3 L15.5 3 Q17 3 17 4.5 L17 19.5 Q17 21 15.5 21 L8.5 21 Q7 21 7 19.5 L7 4.5 Q7 3 8.5 3 Z M11 18 L13 18";
+    out property <string> terminal: "M4 5.5 Q4 4.5 5 4.5 L19 4.5 Q20 4.5 20 5.5 L20 18.5 Q20 19.5 19 19.5 L5 19.5 Q4 19.5 4 18.5 Z M7.5 9 L10.5 12 L7.5 15 M12.5 15 L16.5 15";
 }
 
 component Icon inherits Path {
@@ -1073,6 +1080,8 @@ component PlayerControls inherits Rectangle {
     in property <bool> devices-on;
     // The jam this computer hosts, as the strip beside the song says it ("Jam · 2 listening"); empty for none.
     in property <string> jam;
+    // "Playing on <device>" while another device plays and this player controls it; empty while it plays here.
+    in property <string> playing-on;
     pure callback art(string, int, int) -> image;
     callback toggle();
     callback next();
@@ -1176,35 +1185,39 @@ component PlayerControls inherits Rectangle {
                         font-weight: 600;
                         overflow: elide;
                     }
-                    HorizontalLayout {
+                    line := HorizontalLayout {
                         spacing: 8px;
-                        Text {
+                        // While another device plays, its strip takes the artist's place (the line is short).
+                        property <bool> elsewhere: root.playing-on != "" && !seek.hot;
+                        if !line.elsewhere: Text {
                             horizontal-stretch: 1;
                             text: seek.hot ? root.clock(song-box.dragged >= 0 ? song-box.dragged : root.position-ms) + "  /  " + root.clock(root.duration-ms) : root.now-artist + (root.now-album != "" ? " — " + root.now-album : "");
                             color: Theme.dim;
                             overflow: elide;
                         }
-                        // The jam, as Android's "Playing on" strip: a click opens it in the queue panel.
-                        if root.jam != "": HorizontalLayout {
+                        // Where the music plays, as Android's "Playing on" strip: a click opens the devices. Else
+                        // the jam, which a click opens in the queue panel.
+                        if line.elsewhere || (root.playing-on == "" && root.jam != ""): HorizontalLayout {
                             spacing: 4px;
-                            horizontal-stretch: 0;
+                            horizontal-stretch: root.playing-on != "" ? 1 : 0;
                             Icon {
                                 y: (parent.height - self.height) / 2;
-                                path: Icons.people;
+                                path: root.playing-on != "" ? Icons.speaker : Icons.people;
                                 colour: Theme.accent;
                                 weight: 2px;
                                 width: 14px;
                                 height: 14px;
                             }
                             Text {
-                                text: root.jam;
+                                text: root.playing-on != "" ? root.playing-on : root.jam;
                                 color: Theme.accent;
                                 font-size: 11px;
                                 font-weight: 600;
+                                overflow: elide;
                                 vertical-alignment: center;
                                 TouchArea {
                                     mouse-cursor: pointer;
-                                    clicked => { root.set-inspector(1); }
+                                    clicked => { root.set-inspector(root.playing-on != "" ? 3 : 1); }
                                 }
                             }
                         }
@@ -1268,93 +1281,115 @@ component PlayerControls inherits Rectangle {
     }
 }
 
-// The account's other devices with nori (remote control): what each plays, its transport, and moving the
-// music between it and this computer.
+// Where the music plays (remote control), as Music's AirPlay list and Spotify's devices: this computer
+// first, then the account's other devices with what each plays, the one playing ticked. A click moves the
+// music there; this player then shows and controls it.
 component DevicesView inherits Rectangle {
     in property <[DeviceRow]> devices;
-    callback act(string, string);
+    callback pick(string);
     // The jam's row was clicked while it is on: the queue panel shows it.
     callback open-jam();
     Flickable {
         VerticalLayout {
             alignment: start;
-            padding-left: 16px;
-            padding-right: 16px;
-            spacing: 14px;
-            Text {
-                text: "Play on";
-                color: Theme.text;
-                font-size: 17px;
-                font-weight: 700;
-            }
-            if root.devices.length == 0: Text {
-                text: "No other devices yet. Turn on remote control in nori on them.";
-                color: Theme.dim;
-                wrap: word-wrap;
+            padding-left: 10px;
+            padding-right: 10px;
+            spacing: 2px;
+            HorizontalLayout {
+                padding-left: 6px;
+                height: 34px;
+                Text {
+                    text: "Play on";
+                    color: Theme.text;
+                    font-size: 17px;
+                    font-weight: 700;
+                }
             }
             for d in root.devices: VerticalLayout {
-                spacing: 4px;
-                Text {
-                    text: d.name;
-                    color: Theme.text;
-                    font-weight: 600;
-                    overflow: elide;
+                Rectangle {
+                    height: 52px;
+                    border-radius: 10px;
+                    background: dt.has-hover ? Theme.hover : transparent;
+                    animate background { duration: 140ms; easing: ease-out; }
+                    dt := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.pick(d.id); }
+                    }
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 8px;
+                        spacing: 10px;
+                        Rectangle {
+                            y: (parent.height - self.height) / 2;
+                            width: 34px;
+                            height: 34px;
+                            border-radius: 17px;
+                            background: d.active ? Theme.accent : #ffffff1a;
+                            animate background { duration: 180ms; easing: ease-out; }
+                            Icon {
+                                path: d.kind == 1 ? Icons.phone : d.kind == 2 ? Icons.terminal : Icons.computer;
+                                colour: d.active ? white : Theme.text;
+                                weight: 1.8px;
+                                width: 18px;
+                                height: 18px;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: d.name;
+                                color: d.active ? Theme.accent : Theme.text;
+                                font-size: 13px;
+                                font-weight: 600;
+                                overflow: elide;
+                            }
+                            if d.line != "": Text {
+                                text: d.line;
+                                color: Theme.dim;
+                                font-size: 11px;
+                                overflow: elide;
+                            }
+                        }
+                        if d.active: Icon {
+                            y: (parent.height - self.height) / 2;
+                            path: Icons.check;
+                            colour: Theme.accent;
+                            weight: 2.2px;
+                            width: 16px;
+                            height: 16px;
+                        }
+                    }
                 }
+                if d.note != "": HorizontalLayout {
+                    padding-left: 50px;
+                    padding-right: 6px;
+                    Text {
+                        text: d.note;
+                        color: #ff6b6b;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+            if root.devices.length <= 1: HorizontalLayout {
+                padding: 6px;
                 Text {
-                    text: d.line;
+                    text: "No other devices yet. Turn on “Control from other devices” in nori on them.";
                     color: Theme.dim;
-                    overflow: elide;
-                }
-                if d.note != "": Text {
-                    text: d.note;
-                    color: #ff6b6b;
+                    font-size: 12px;
                     wrap: word-wrap;
-                }
-                HorizontalLayout {
-                    spacing: 2px;
-                    alignment: start;
-                    IconButton {
-                        path: Icons.previous;
-                        solid: true;
-                        size: 30px;
-                        icon: 18px;
-                        clicked => { root.act(d.id, "previous"); }
-                    }
-                    PlayPause {
-                        playing: d.playing;
-                        size: 30px;
-                        icon: 20px;
-                        clicked => { root.act(d.id, "toggle"); }
-                    }
-                    IconButton {
-                        path: Icons.next;
-                        solid: true;
-                        size: 30px;
-                        icon: 18px;
-                        clicked => { root.act(d.id, "next"); }
-                    }
-                }
-                HorizontalLayout {
-                    spacing: 8px;
-                    for pill in [{ what: "here", label: "Play here" }, { what: "there", label: "Play there" }]: Rectangle {
-                        height: 28px;
-                        border-radius: 14px;
-                        background: pill.what == "here" ? Theme.accent : #ffffff1a;
-                        Text {
-                            text: pill.label;
-                            color: pill.what == "here" ? white : Theme.text;
-                            font-size: 12px;
-                        }
-                        TouchArea {
-                            clicked => { root.act(d.id, pill.what); }
-                        }
-                    }
                 }
             }
             // The jam: starting one, or the one on (its row opens it in the queue panel) and ending it.
             if Jam.on || Jam.hosting || Jam.note != "": Rectangle {
-                height: 1px;
-                background: Theme.hairline;
+                height: 13px;
+                Rectangle {
+                    x: 6px;
+                    width: parent.width - 12px;
+                    height: 1px;
+                    background: Theme.hairline;
+                }
             }
             if Jam.note != "": Text {
                 text: Jam.note;
@@ -1820,6 +1855,8 @@ component QueueView inherits Rectangle {
     in property <bool> autoplay;
     in property <bool> automix;
     in property <int> covers-rev;
+    // The queue is this computer's (another device's has no clearing here).
+    in property <bool> editable: true;
     pure callback art(string, int, int) -> image;
     callback jump(int);
     callback clear;
@@ -1892,7 +1929,7 @@ component QueueView inherits Rectangle {
                     overflow: elide;
                 }
             }
-            if root.queue.length > 0: Text {
+            if root.editable && root.queue.length > 0: Text {
                 text: "Clear";
                 color: Theme.accent;
                 font-size: 13px;
@@ -2997,11 +3034,13 @@ export component AppWindow inherits Window {
     // The inspector on the right: 0 shut, 1 Playing Next, 2 lyrics, 3 the other devices. It keeps showing
     // the last one while it slides away.
     in-out property <int> inspector;
-    // Remote control is on: the devices button, and the devices it lists.
+    // Remote control is on: the devices button, and the places the music can play.
     in property <bool> devices-on;
     in property <[DeviceRow]> devices;
-    // A device row's button: "toggle", "next", "previous", "here" (play its music here), "there".
-    callback device-act(string, string);
+    // A device row was clicked: the music moves there ("" for this computer).
+    callback pick-device(string);
+    // "Playing on <device>" while another device plays: the player shows and controls it.
+    in property <string> playing-on;
     property <int> shown-panel: 1;
     changed inspector => {
         if self.inspector != 0 {
@@ -4002,6 +4041,7 @@ export component AppWindow inherits Window {
                         covers-rev: root.covers-rev;
                         devices-on: root.devices-on;
                         jam: Jam.strip;
+                        playing-on: root.playing-on;
                         art(a, s, r) => { return root.art(a, s, r); }
                         toggle => { root.toggle(); }
                         next => { root.next(); }
@@ -4129,7 +4169,7 @@ export component AppWindow inherits Window {
                     y: 30px;
                     height: parent.height - 30px - 76px;
                     devices: root.devices;
-                    act(id, what) => { root.device-act(id, what); }
+                    pick(id) => { root.pick-device(id); }
                     open-jam => { root.inspector = 1; }
                 }
                 if root.shown-panel == 1: QueueView {
@@ -4140,6 +4180,7 @@ export component AppWindow inherits Window {
                     autoplay: root.autoplay;
                     automix: root.automix;
                     covers-rev: root.covers-rev;
+                    editable: root.playing-on == "";
                     art(a, s, r) => { return root.art(a, s, r); }
                     jump(i) => { root.jump(i); }
                     clear => { root.clear-queue(); }
@@ -4319,6 +4360,33 @@ export component AppWindow inherits Window {
                             color: #ffffffa6;
                             font-size: 14px;
                             overflow: elide;
+                        }
+                        if root.playing-on != "": HorizontalLayout {
+                            padding-top: 6px;
+                            spacing: 5px;
+                            alignment: start;
+                            Icon {
+                                y: (parent.height - self.height) / 2;
+                                path: Icons.speaker;
+                                colour: white;
+                                weight: 2px;
+                                width: 15px;
+                                height: 15px;
+                            }
+                            Text {
+                                text: root.playing-on;
+                                color: white;
+                                font-size: 12px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.full-player = false;
+                                        root.inspector = 3;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -4509,6 +4577,7 @@ export component AppWindow inherits Window {
                 autoplay: root.autoplay;
                 automix: root.automix;
                 covers-rev: root.covers-rev;
+                editable: root.playing-on == "";
                 art(a, s, r) => { return root.art(a, s, r); }
                 jump(i) => { root.jump(i); }
                 clear => { root.clear-queue(); }
@@ -4573,6 +4642,7 @@ export component PlayerBar inherits Window {
     in property <int> covers-rev;
     in property <bool> devices-on;
     in property <string> jam;
+    in property <string> playing-on;
     pure callback art(string, int, int) -> image;
     callback toggle();
     callback next();
@@ -4607,6 +4677,7 @@ export component PlayerBar inherits Window {
         covers-rev: root.covers-rev;
         devices-on: root.devices-on;
         jam: root.jam;
+        playing-on: root.playing-on;
         art(a, s, r) => { return root.art(a, s, r); }
         toggle => { root.toggle(); }
         next => { root.next(); }
