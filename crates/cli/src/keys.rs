@@ -143,6 +143,7 @@ pub const BINDINGS: &[Binding] = &[
     b!(Global, "N / Q / L", Action::Panel(Panel::Playing), "The panel on the right: now playing, queue, lyrics (again: hide it)", [(Char('N'), S), (Char('N'), N)]),
     b!(Global, "", Action::Panel(Panel::Queue), "", [(Char('Q'), S), (Char('Q'), N)]),
     b!(Global, "", Action::Panel(Panel::Lyrics), "", [(Char('L'), S), (Char('L'), N)]),
+    b!(Global, "C", Action::Panel(Panel::Devices), "Devices: play on another one, or control it (remote control on)", [(Char('C'), S), (Char('C'), N)]),
     b!(Global, "F", Action::Full, "The player over the whole window", [(Char('F'), S), (Char('F'), N)]),
     b!(Global, "esc / h / ⌫", Action::Back, "Back: out of a page, to the sidebar", [(Esc, N), (Char('h'), N), (Backspace, N)]),
     b!(Global, "R", Action::Refresh, "Ask the server again", [(Char('R'), S), (Char('R'), N)]),

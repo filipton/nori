@@ -4,6 +4,8 @@ use nori_core::beat_model::BeatFailure;
 use nori_core::lyrics_sources::LyricsOrigin;
 use nori_core::settings::{BandMark, EqBypass};
 use nori_core::transport::{FailureKind, NetError};
+use nori_core::remote::wire::{DeviceKind, Refusal};
+use nori_core::remote::RemoteDevice;
 use nori_core::{AlbumDetail, PlaylistDetail, PresetKind, Song};
 
 /// "3:07", or "1:02:03" from an hour.
@@ -245,6 +247,48 @@ pub fn search_fallback(reason: Option<&str>) -> String {
     }
 }
 
+// ---- other devices ----
+
+pub const THIS_COMPUTER: &str = "This computer";
+pub const PLAY_ON: &str = "Play on";
+pub const NO_DEVICES: &str = "No other devices yet: open nori on your phone or computer, on this server, with remote control on.";
+pub const REMOTE_OFF: &str = "Remote control is off: switch it on in Settings, under Other devices";
+
+/// The player bar's line while another device plays: "Playing on Desk".
+pub fn playing_on(device: &str) -> String {
+    format!("Playing on {device}")
+}
+
+pub fn device_kind(kind: DeviceKind) -> &'static str {
+    match kind {
+        DeviceKind::Phone => "phone",
+        DeviceKind::Desktop => "computer",
+        DeviceKind::Terminal => "terminal",
+        DeviceKind::Guest => "guest",
+    }
+}
+
+/// What a device of the account plays, or its answer to the last command when it said no.
+pub fn device_line(d: &RemoteDevice) -> String {
+    let refused = match d.refused {
+        Some(Refusal::Stale) => "The queue changed there. Try again.",
+        Some(Refusal::NotAllowed) => "That device said no.",
+        Some(Refusal::Unknown) => "That is no longer there.",
+        Some(Refusal::TooMany) => "Too many songs waiting.",
+        None => "",
+    };
+    if !refused.is_empty() {
+        return refused.into();
+    }
+    let state = d.state.as_ref();
+    let now = state.and_then(|s| s.entries.iter().find(|e| Some(e.index) == s.index));
+    match now {
+        Some(e) if state.is_some_and(|s| s.playing) => format!("{} · {}", e.title, e.artist),
+        Some(e) => format!("Paused · {}", e.title),
+        None => "Not playing".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,6 +316,19 @@ mod tests {
         assert_eq!(net_error(&NetError::Api { code: 40, reason: "x".into() }), "Wrong user name or password.");
         assert_eq!(net_error(&NetError::Api { code: 70, reason: "gone".into() }), "gone");
         assert!(net_error(&NetError::Parse { reason: "x".into() }).starts_with("That address answered"));
+
+        let state = |playing| nori_core::remote::wire::DeviceState {
+            playing,
+            index: Some(4),
+            entries: vec![nori_core::remote::wire::Entry { index: 4, title: "Wish".into(), artist: "Gus".into(), ..Default::default() }],
+            ..Default::default()
+        };
+        let mut d = RemoteDevice { id: "d".into(), name: "Desk".into(), kind: DeviceKind::Desktop, state: Some(state(true)), age_ms: 0, nearby: true, refused: None };
+        assert_eq!(device_line(&d), "Wish · Gus");
+        d.state = Some(state(false));
+        assert_eq!(device_line(&d), "Paused · Wish");
+        d.refused = Some(Refusal::Stale);
+        assert_eq!(device_line(&d), "The queue changed there. Try again.", "a refusal over what it plays");
 
         // Lyrics credit says untimed.
         assert_eq!(lyrics_credit(LyricsOrigin::Lrclib, true), "LRCLIB");

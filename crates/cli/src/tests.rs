@@ -115,7 +115,8 @@ fn small_terminals() {
             a.do_action(crate::keys::Action::Go(n));
             draw(&mut a, w, h);
         }
-        for p in [Panel::Playing, Panel::Queue, Panel::Lyrics] {
+        a.devices.on = true;
+        for p in [Panel::Playing, Panel::Queue, Panel::Lyrics, Panel::Devices] {
             a.set_panel(p);
             draw(&mut a, w, h);
             a.focus = Focus::Side;
@@ -885,3 +886,85 @@ fn terminal_replies() {
     }
 }
 
+
+fn device(id: &str, name: &str, kind: nori_core::remote::wire::DeviceKind, playing: Option<&str>) -> nori_core::remote::RemoteDevice {
+    use nori_core::remote::wire::{DeviceState, Entry};
+    let state = playing.map(|title| DeviceState { playing: true, index: Some(0), entries: vec![Entry { title: title.into(), artist: "Artist".into(), ..Default::default() }], ..Default::default() });
+    nori_core::remote::RemoteDevice { id: id.into(), name: name.into(), kind, state, age_ms: 0, nearby: true, refused: None }
+}
+
+#[test]
+fn devices_panel() {
+    use nori_core::remote::wire::DeviceKind;
+    let mut a = app();
+    key(&mut a, KeyCode::Char('C'));
+    assert_eq!(a.panel, Some(Panel::Playing), "nothing to show while remote control is off");
+    assert!(a.note.as_ref().is_some_and(|n| n.0 == crate::text::REMOTE_OFF));
+    assert!(!draw(&mut a, 160, 30).contains("Devices"), "no tab either");
+
+    a.devices.on = true;
+    a.devices.list = vec![device("desk", "Desk", DeviceKind::Desktop, Some("Wish")), device("pixel", "Pixel", DeviceKind::Phone, None)];
+    key(&mut a, KeyCode::Char('C'));
+    assert_eq!((a.panel, a.focus), (Some(Panel::Devices), Focus::Panel));
+    let s = draw(&mut a, 160, 30);
+    dump("devices", &s);
+    let row = |name: &str| s.lines().find(|l| l.contains(name)).unwrap_or_else(|| panic!("{name} missing:\n{s}")).to_string();
+    assert!(row("This computer").contains("✓ This computer"), "this computer first, ticked while it plays:\n{s}");
+    let under = |name: &str| s.lines().skip_while(|l| !l.contains(name)).nth(1).unwrap_or_default().to_string();
+    assert!(row("Desk").contains("computer") && under("Desk").contains("  Wish · Artist"), "what each plays, under it:\n{s}");
+    assert!(row("Pixel").contains("phone") && under("Pixel").contains("  Not playing"), "{s}");
+    assert!(s.contains("Devices") && s.contains('⇄'), "{s}");
+
+    // Enter moves the music there; the keys step device by device.
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Up);
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.cmds.last(), Some(&Cmd::Pick(Some("desk".into()))));
+    a.devices.active = Some(("desk".into(), "Desk".into()));
+    let s = draw(&mut a, 160, 30);
+    assert!(s.lines().any(|l| l.contains("✓ Desk")) && !s.contains("✓ This computer"), "the tick follows the music:\n{s}");
+    key(&mut a, KeyCode::Char('g'));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.cmds.last(), Some(&Cmd::Pick(None)), "back here");
+
+    // Reopened, it selects the device playing.
+    key(&mut a, KeyCode::Char('C'));
+    key(&mut a, KeyCode::Char('C'));
+    assert_eq!(a.devices.sel.at, 1);
+    // Clicking a device twice moves the music there.
+    draw(&mut a, 160, 30);
+    let pixel = a.devices.rows().iter().position(|r| *r == crate::app::DeviceRow::Playing(1)).unwrap();
+    let r = hit_rect(&a, Hit::Row(ListRef::Devices, pixel));
+    click(&mut a, r.x + 2, r.y);
+    click(&mut a, r.x + 2, r.y);
+    assert_eq!(a.cmds.last(), Some(&Cmd::Pick(Some("pixel".into()))));
+}
+
+#[test]
+fn another_device_playing_shows_in_the_player_bar() {
+    let mut a = app();
+    a.devices.on = true;
+    a.devices.active = Some(("desk".into(), "Desk".into()));
+    a.heard(Some(song("s1", "First", 200)));
+    a.now = crate::app::Now { state: State::Playing, position_ms: 61_000, at: Instant::now(), ..Default::default() };
+    a.volume = 0.4;
+    // The device shows the song unstarred, though this session marked it.
+    a.marks.mark(nori_core::client::Starrable::Song, "s1".into(), true);
+    a.devices.hearts.insert("s1".into(), false);
+    let s = draw(&mut a, 160, 30);
+    dump("playing-on", &s);
+    assert!(s.contains("⇄ Playing on Desk") && s.contains("♡ First") && s.contains("1:01") && s.contains(" 40%"), "{s}");
+    // The heart goes to the device, and fills at once.
+    let heart = hit_rect(&a, Hit::Button(crate::app::Button::StarSong));
+    click(&mut a, heart.x, heart.y);
+    assert_eq!(a.cmds.last(), Some(&Cmd::Star(nori_core::client::Starrable::Song, "s1".into(), true)));
+    assert!(draw(&mut a, 160, 30).contains("♥ First"));
+    // This computer's volume, set from afar, does not show over the device's.
+    a.handle(Msg::Volume(0.9));
+    assert_eq!(a.volume, 0.4);
+    // The line opens the devices.
+    let line = hit_rect(&a, Hit::Button(crate::app::Button::Panel(Panel::Devices)));
+    click(&mut a, line.x + 3, line.y);
+    assert_eq!(a.panel, Some(Panel::Devices));
+}

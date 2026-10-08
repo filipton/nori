@@ -18,7 +18,7 @@ use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::{Resize, StatefulImage};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, Button, Focus, Hit, ListRef, Load, Nav, Overlay, Page, Panel, SearchRow, Sel, View, LOGIN_FIELDS, NAV_BOTTOM, NAV_LIBRARY, NAV_TOP, PANELS};
+use crate::app::{App, Button, DeviceRow, Focus, Hit, ListRef, Load, Nav, Overlay, Page, Panel, SearchRow, Sel, View, LOGIN_FIELDS, NAV_BOTTOM, NAV_LIBRARY, NAV_TOP, PANELS};
 use crate::art::{Art, Theme};
 use crate::keys::{Scope, BINDINGS};
 use crate::settings_view::{self, EqRow, Line as SLine, SettingsView};
@@ -1177,7 +1177,10 @@ fn right_panel(f: &mut Frame, area: Rect, app: &mut App, art: Option<&mut Art>) 
     let area = Rect { x: area.x + 2, width: area.width.saturating_sub(3), y: area.y + 1, height: area.height.saturating_sub(1) };
     let focused = app.focus == Focus::Panel;
     let mut x = area.x;
-    for (p, name) in PANELS {
+    let tabs: Vec<(Panel, &str)> = PANELS.into_iter().filter(|(p, _)| *p != Panel::Devices || app.devices.on).collect();
+    // Without their padding when they would not fit.
+    let roomy = tabs.iter().map(|(_, name)| name.width() as u16 + 3).sum::<u16>() <= area.width + 1;
+    for (p, name) in tabs {
         let chosen = p == which;
         let style = if chosen && focused {
             Style::default().bg(t.accent).fg(on(t.accent)).add_modifier(Modifier::BOLD)
@@ -1186,7 +1189,7 @@ fn right_panel(f: &mut Frame, area: Rect, app: &mut App, art: Option<&mut Art>) 
         } else {
             dim(&t)
         };
-        let label = format!(" {name} ");
+        let label = if roomy { format!(" {name} ") } else { name.to_string() };
         let w = label.width() as u16;
         if x + w > area.x + area.width {
             break;
@@ -1201,6 +1204,40 @@ fn right_panel(f: &mut Frame, area: Rect, app: &mut App, art: Option<&mut Art>) 
         Panel::Playing => now_playing(f, body, app, art, focused),
         Panel::Queue => queue(f, body, app, focused),
         Panel::Lyrics => lyrics(f, body, app),
+        Panel::Devices => devices(f, body, app, focused),
+    }
+}
+
+/// Where the music plays: this computer first, then the account's other devices with what each plays,
+/// the one playing ticked.
+fn devices(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
+    let t = app.theme;
+    text(f, area, crate::text::PLAY_ON, bold().fg(t.text));
+    let rows = app.devices.rows();
+    let body = Rect { y: area.y + 2, height: area.height.saturating_sub(2).min(rows.len() as u16), ..area };
+    let App { devices, hits, .. } = app;
+    let d = &*devices;
+    let active = d.active.as_ref().map(|(id, _)| id.as_str());
+    let tick = |on: bool| Span::styled(if on { "✓ " } else { "  " }, Style::default().fg(t.accent).add_modifier(Modifier::BOLD));
+    let name = |s: &str, on: bool| Span::styled(s.to_string(), if on { Style::default().fg(t.accent).add_modifier(Modifier::BOLD) } else { bold().fg(t.text) });
+    let mut sel = d.sel;
+    list(f, body, &mut sel, rows.len(), ListRef::Devices, hits, &t, focused, &|i, w| match rows[i] {
+        DeviceRow::Here => Line::from(vec![tick(active.is_none()), name(crate::text::THIS_COMPUTER, active.is_none())]),
+        DeviceRow::Device(k) => {
+            let x = &d.list[k];
+            let on = active == Some(x.id.as_str());
+            spread(vec![tick(on), name(&x.name, on)], Span::styled(crate::text::device_kind(x.kind), dim(&t)), w)
+        }
+        DeviceRow::Playing(k) => {
+            let x = &d.list[k];
+            Line::from(Span::styled(fit(&format!("  {}", crate::text::device_line(x)), w).into_owned(), if x.refused.is_some() { Style::default().fg(Color::LightRed) } else { dim(&t) }))
+        }
+    });
+    devices.sel = sel;
+    if devices.list.is_empty() {
+        let y = body.y + body.height + 1;
+        let lines: Vec<Line> = wrap(crate::text::NO_DEVICES, area.width as usize).into_iter().map(|l| Line::from(Span::styled(l, dim(&t)))).collect();
+        put(f, Paragraph::new(lines), Rect { y, height: (area.y + area.height).saturating_sub(y), ..area });
     }
 }
 
@@ -1518,6 +1555,13 @@ fn full_player(f: &mut Frame, area: Rect, app: &mut App, art: Option<&mut Art>) 
 fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
     let t = *ui;
     put(f, Paragraph::new(Span::styled("─".repeat(area.width as usize), dim(&t))), Rect { height: 1, ..area });
+    // On the rule: where the music plays while it is another device.
+    if let Some((_, name)) = &app.devices.active {
+        let line = format!(" ⇄ {} ", crate::text::playing_on(name));
+        let r = Rect { x: area.x + 2, width: (line.width() as u16).min(area.width.saturating_sub(4)), height: 1, ..area };
+        text(f, r, &line, Style::default().fg(t.accent).add_modifier(Modifier::BOLD));
+        app.hits.push((r, Hit::Button(Button::Panel(Panel::Devices))));
+    }
     let l1 = Rect { y: area.y + 1, height: 1, ..area };
     let l2 = Rect { y: area.y + 2, height: 1, ..area };
     let w = area.width;
@@ -1529,7 +1573,7 @@ fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
         let lw = left_w as usize - 2;
         match &app.song {
             Some(s) => {
-                let on = app.marks.starred(Starrable::Song, &s.id, s.starred);
+                let on = app.starred(Starrable::Song, &s.id, s.starred);
                 let hr = Rect { x: area.x + 1, width: 2, ..l1 };
                 put(f, Paragraph::new(Span::styled(if on { "♥ " } else { "♡ " }, Style::default().fg(if on { t.accent } else { t.dim }))), hr);
                 app.hits.push((hr, Hit::Button(Button::StarSong)));
@@ -1594,7 +1638,8 @@ fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
     if right_w > 0 {
         let rx = area.x + w - right_w;
         let mut x = rx;
-        for (p, label) in [(Panel::Playing, "♫"), (Panel::Queue, "≡"), (Panel::Lyrics, "❝")] {
+        let devices = app.devices.on.then_some((Panel::Devices, "⇄"));
+        for (p, label) in [(Panel::Playing, "♫"), (Panel::Queue, "≡"), (Panel::Lyrics, "❝")].into_iter().chain(devices) {
             let on = app.panel == Some(p) && !app.full;
             let r = Rect { x, width: 1, ..l1 };
             put(f, Paragraph::new(Span::styled(label, lit(on))), r);

@@ -598,7 +598,9 @@ fn library(b: &Build, f: &Facts) -> Vec<Section> {
         history.push(b.choice("scrobblePercent", "  Scrobble at", true, |v| format!("{v} %")));
     }
     let online = vec![b.toggle("thirdPartyLookups", "Third-party lookups", "Lyrics services and the AutoEQ list; off, nothing leaves for anyone but your server")];
-    let devices = vec![b.toggle("remoteControl", "Remote control", "Your other devices with nori control what plays here: on this network directly, elsewhere through octo-fiesta")];
+    let devices = vec![
+        b.toggle("remoteControl", "Remote control", "Your other devices with nori control what plays here, and this computer controls them (C): on this network directly, elsewhere through octo-fiesta"),
+    ];
     vec![section("Index and search", index), section("History", history), section("Online", online), section("Other devices", devices)]
 }
 

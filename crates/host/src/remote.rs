@@ -11,6 +11,7 @@ use std::sync::Weak;
 use nori_core::remote::{Mirror, MirrorRow, Playing, Remote, RemotePlayer, RemoteShown};
 #[cfg(feature = "desktop")]
 use nori_core::remote::{Announcement, Discovery};
+use nori_core::playlist::PlaylistView;
 use nori_core::Song;
 use nori_engine::{Engine, State, Status};
 use nori_remote::wire::Op;
@@ -195,6 +196,28 @@ impl Elsewhere {
     pub fn upcoming(&self) -> &[MirrorRow] {
         let from = self.mirror.at.map_or(0, |a| a as usize + 1);
         self.mirror.rows.get(from..).unwrap_or_default()
+    }
+
+    /// The device's queue as this client reads its own: each song at its list index there (left default
+    /// where it is not known here), in play order, the one playing current.
+    pub fn view(&self) -> PlaylistView {
+        let m = &self.mirror;
+        let mut songs = vec![Song::default(); m.rows.iter().map(|r| r.index as usize + 1).max().unwrap_or(0)];
+        for r in &m.rows {
+            songs[r.index as usize] = r.song.clone();
+        }
+        PlaylistView {
+            songs,
+            len: m.rows.len() as u32,
+            list_rev: m.rev,
+            order: m.rows.iter().map(|r| r.index).collect(),
+            queued: Vec::new(),
+            index: self.row().map_or(-1, |r| r.index as i32),
+            shuffle: m.shuffle,
+            repeat: m.repeat,
+            bridging: false,
+            rev: m.rev,
+        }
     }
 
     /// The device's volume, 0 to 1, when it can be set.
@@ -541,7 +564,14 @@ mod tests {
         assert_eq!((e.mirror.position_at(2_500_000), e.mirror.position_at(500_000_000)), (12_500, 200_000), "held at the song's end");
         e.mirror.playing = false;
         assert_eq!(e.mirror.position_at(2_500_000), 10_000, "paused");
+        let v = e.view();
+        let ids: Vec<&str> = v.songs.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!((ids, v.order.clone(), v.index), (vec!["b", "c", "a"], vec![2, 0, 1], 0), "each song at its list index, in play order");
+        let mut known = e.clone();
+        known.mirror.rows.remove(0);
+        assert_eq!(known.view().songs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["b", "c"], "as far as the rows are known");
         e.mirror.at = None;
+        assert_eq!(e.view().index, -1);
         assert_eq!(e.upcoming().len(), 3, "nothing playing: the whole queue is to come");
         assert_eq!(e.volume(), Some(0.4));
         e.mirror.rows[2].song.starred = true;

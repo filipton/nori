@@ -2,10 +2,12 @@
 //! tests without a server, sound card or terminal. The window has a sidebar, a page, a right panel and
 //! a player bar; [`Focus`] says which of the first three takes the keys.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use nori_core::client::Starrable;
 use nori_core::playlist::PlaylistView;
+use nori_core::remote::RemoteDevice;
 use nori_core::search::SearchView;
 use nori_core::settings::{EqLevel, SavedServer, SoundBand, StoredPrefs, TapAction};
 use nori_core::settings_store::SoundTool;
@@ -57,9 +59,11 @@ pub enum Panel {
     Playing,
     Queue,
     Lyrics,
+    /// Where the music plays: this computer or another device (remote control).
+    Devices,
 }
 
-pub const PANELS: [(Panel, &str); 3] = [(Panel::Playing, "Playing"), (Panel::Queue, "Queue"), (Panel::Lyrics, "Lyrics")];
+pub const PANELS: [(Panel, &str); 4] = [(Panel::Playing, "Playing"), (Panel::Queue, "Queue"), (Panel::Lyrics, "Lyrics"), (Panel::Devices, "Devices")];
 
 /// A sidebar entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -159,6 +163,8 @@ pub enum Cmd {
     CardCovers(bool),
     Login(SavedServer),
     SwitchServer(String),
+    /// Moves the music to this device, or here (None).
+    Pick(Option<String>),
     Quit,
 }
 
@@ -187,6 +193,7 @@ impl Cmd {
             Cmd::Mouse(on) => format!("mouse {on}"),
             Cmd::Images(on) => format!("images {on}"),
             Cmd::Device(d) => format!("device {d}"),
+            Cmd::Pick(d) => format!("play on {d:?}"),
             Cmd::Quit => "quit".into(),
             _ => "an edit".into(),
         }
@@ -475,6 +482,46 @@ impl Now {
     }
 }
 
+/// Remote control as the runner last read it from the session; empty while it is off.
+#[derive(Default)]
+pub struct Devices {
+    /// Remote control is switched on.
+    pub on: bool,
+    /// The account's other devices.
+    pub list: Vec<RemoteDevice>,
+    pub sel: Sel,
+    /// The device playing while it is another one: its id and name.
+    pub active: Option<(String, String)>,
+    /// Hearts as the device playing shows them, by song id, while it is another one.
+    pub hearts: HashMap<String, bool>,
+}
+
+/// A row of the devices panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceRow {
+    Here,
+    /// Index into [`Devices::list`]: its name, then what it plays.
+    Device(usize),
+    Playing(usize),
+}
+
+impl Devices {
+    pub fn rows(&self) -> Vec<DeviceRow> {
+        let mut rows = vec![DeviceRow::Here];
+        rows.extend((0..self.list.len()).flat_map(|i| [DeviceRow::Device(i), DeviceRow::Playing(i)]));
+        rows
+    }
+
+    /// Moves the selection off a line of what a device plays, in direction `down`.
+    fn settle(&mut self, down: bool) {
+        let rows = self.rows();
+        if let Some(DeviceRow::Playing(i)) = rows.get(self.sel.at) {
+            let past = self.sel.at + 1;
+            self.sel.at = if down && past < rows.len() { past } else { rows.iter().position(|r| *r == DeviceRow::Device(*i)).unwrap_or(0) };
+        }
+    }
+}
+
 /// A popup over the screen.
 pub enum Overlay {
     Help { scroll: usize },
@@ -537,6 +584,7 @@ pub enum ListRef {
     Queue,
     UpNext,
     Lyrics,
+    Devices,
     Profiles,
     Picker,
     Help,
@@ -547,7 +595,7 @@ impl ListRef {
     fn focus(self) -> Focus {
         match self {
             ListRef::Side => Focus::Side,
-            ListRef::Queue | ListRef::UpNext | ListRef::Lyrics => Focus::Panel,
+            ListRef::Queue | ListRef::UpNext | ListRef::Lyrics | ListRef::Devices => Focus::Panel,
             _ => Focus::Main,
         }
     }
@@ -642,6 +690,7 @@ pub struct App {
     pub song: Option<Song>,
     /// This session's star marks, drawn over the records' flags.
     pub marks: StarMarks,
+    pub devices: Devices,
     /// The planned transition out of `song`.
     pub transition: Option<nori_core::automix::planner::TransitionNote>,
     /// The transition that brought `song` in, while still mixing.
@@ -880,6 +929,9 @@ impl App {
             }
             return;
         }
+        if p == Panel::Devices && !self.devices.on {
+            return self.say(crate::text::REMOTE_OFF, false);
+        }
         self.panel = Some(p);
         match p {
             // Select the playing song.
@@ -888,6 +940,13 @@ impl App {
                 if let Some(row) = self.queue_order().iter().position(|&i| i as i32 == current) {
                     self.queue_sel.at = row;
                 }
+                self.focus = Focus::Panel;
+            }
+            // Select the device playing.
+            Panel::Devices => {
+                let d = &mut self.devices;
+                let active = d.active.as_ref().and_then(|(id, _)| d.list.iter().position(|x| &x.id == id));
+                d.sel.at = active.map_or(0, |i| d.rows().iter().position(|r| *r == DeviceRow::Device(i)).unwrap_or(0));
                 self.focus = Focus::Panel;
             }
             Panel::Lyrics => {
@@ -976,8 +1035,12 @@ impl App {
                 }
             }
             Msg::Reachable(r) => self.unreachable = r.err(),
-            Msg::Volume(v) => self.volume = v,
+            // Another device playing shows its own volume.
+            Msg::Volume(v) if self.devices.active.is_none() => self.volume = v,
+            Msg::Volume(_) => self.dirty = false,
             Msg::Starred(marks) => self.marks = marks,
+            // The runner read the devices into `devices`.
+            Msg::Remote => {}
             // The runner opens these.
             Msg::From(..) => {}
         }
@@ -1470,7 +1533,8 @@ impl App {
             }
             Action::Remove => {
                 if let Some(i) = self.queue_selected_index() {
-                    self.taken = self.queue.as_ref().and_then(|q| q.songs.get(i)).map(|s| s.id.clone());
+                    // Another device's queue has its own undo.
+                    self.taken = self.queue.as_ref().filter(|_| self.devices.active.is_none()).and_then(|q| q.songs.get(i)).map(|s| s.id.clone());
                     self.cmds.push(Cmd::Remove(i));
                 }
             }
@@ -1591,6 +1655,10 @@ impl App {
                         let len = self.queue.as_ref().map_or(0, |q| q.len as usize);
                         Some((&mut self.queue_sel, len))
                     }
+                    Panel::Devices => {
+                        let len = self.devices.rows().len();
+                        Some((&mut self.devices.sel, len))
+                    }
                     Panel::Playing => {
                         let len = self.up_next().len();
                         Some((&mut self.up_next_sel, len))
@@ -1651,6 +1719,9 @@ impl App {
             _ => return self.act_on_selected(a),
         }
         let down = !matches!(a, Action::Up | Action::PageUp | Action::Top | Action::Left);
+        if self.focus == Focus::Panel && self.panel == Some(Panel::Devices) {
+            self.devices.settle(down);
+        }
         if self.focus == Focus::Main && self.page().is_none() {
             match self.view {
                 View::Settings => self.settings.skip_titles(down),
@@ -1713,7 +1784,7 @@ impl App {
                 let i = match self.panel? {
                     Panel::Queue => *self.queue_order().get(self.queue_sel.at)?,
                     Panel::Playing => *self.up_next().get(self.up_next_sel.at)?,
-                    Panel::Lyrics => return None,
+                    Panel::Lyrics | Panel::Devices => return None,
                 };
                 return q.songs.get(i).cloned().map(|s| Item::Song(vec![s], 0));
             }
@@ -1759,6 +1830,7 @@ impl App {
                 let i = match self.panel {
                     Some(Panel::Queue) => self.queue_selected_index(),
                     Some(Panel::Playing) => self.up_next().get(self.up_next_sel.at).copied(),
+                    Some(Panel::Devices) => return self.device_open(),
                     _ => None,
                 };
                 if let Some(i) = i {
@@ -1879,9 +1951,23 @@ impl App {
     /// Flips an item's heart (`listed`: its record's flag), marked at once; the core's marks follow
     /// ([`Msg::Starred`]).
     fn star(&mut self, kind: Starrable, id: String, listed: bool) {
-        let on = !self.marks.starred(kind, &id, listed);
-        self.marks.mark(kind, id.clone(), on);
+        let on = !self.starred(kind, &id, listed);
+        match self.devices.hearts.get_mut(&id).filter(|_| kind == Starrable::Song) {
+            Some(heart) => *heart = on,
+            None => {
+                self.marks.mark(kind, id.clone(), on);
+            }
+        }
         self.cmds.push(Cmd::Star(kind, id, on));
+    }
+
+    /// Whether an item shows starred (`listed`: its record's flag): a song in the queue of another
+    /// device playing as that device shows it, else as this session marked it.
+    pub fn starred(&self, kind: Starrable, id: &str, listed: bool) -> bool {
+        match self.devices.hearts.get(id).filter(|_| kind == Starrable::Song) {
+            Some(on) => *on,
+            None => self.marks.starred(kind, id, listed),
+        }
     }
 
     /// Flips the star on the page's album or artist.
@@ -1934,6 +2020,22 @@ impl App {
         match order.iter().position(|&i| i as i32 == current) {
             Some(p) => order[p + 1..].to_vec(),
             None => order,
+        }
+    }
+
+    // ---- other devices ----
+
+    /// Enter on a devices panel row: the music moves there.
+    fn device_open(&mut self) {
+        let d = &self.devices;
+        match d.rows().get(d.sel.at).copied() {
+            Some(DeviceRow::Here) => self.cmds.push(Cmd::Pick(None)),
+            Some(DeviceRow::Device(i) | DeviceRow::Playing(i)) => {
+                if let Some(id) = d.list.get(i).map(|x| x.id.clone()) {
+                    self.cmds.push(Cmd::Pick(Some(id)));
+                }
+            }
+            None => self.dirty = false,
         }
     }
 

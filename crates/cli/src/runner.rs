@@ -6,12 +6,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use nori_core::settings::SavedServer;
-use nori_engine::Event;
+use nori_engine::{Event, State};
+use nori_host::remote::Elsewhere;
 use nori_http::Http;
 use ratatui::crossterm::event::{self, Event as TermEvent};
 use ratatui_image::picker::Picker;
 
-use crate::app::{App, Cmd, View};
+use crate::app::{App, Cmd, Now, Panel, View};
 use crate::art::{protocol_name, Art, COVER_PX};
 use crate::backend::{own, Msg, Open, Session};
 use crate::Options;
@@ -132,6 +133,9 @@ struct Runner {
     focused: bool,
     /// A cover arrived while unfocused: repaint when focus returns.
     unseen_cover: bool,
+    /// The device playing while it is another one, as last read: the player shows it and its controls
+    /// go there.
+    elsewhere: Option<Elsewhere>,
 }
 
 pub fn run(o: Options) -> Result<(), String> {
@@ -179,7 +183,7 @@ pub fn run(o: Options) -> Result<(), String> {
     app.settings.own.device = own::text(own::DEVICE).unwrap_or_default();
     let art = picker.clone().map(Art::new);
     let mpris = o.mpris.then(|| nori_mpris::Mpris::start(&format!("nori.instance{}", std::process::id())).ok().map(Arc::new)).flatten();
-    let mut r = Runner { http: Http::new(), tx, session: None, mpris, art, picker, tickets: Vec::new(), thumb_tickets: Vec::new(), heard: None, repaint: false, focused: true, unseen_cover: false, o };
+    let mut r = Runner { http: Http::new(), tx, session: None, mpris, art, picker, tickets: Vec::new(), thumb_tickets: Vec::new(), heard: None, repaint: false, focused: true, unseen_cover: false, elsewhere: None, o };
     match prefs.servers.iter().find(|s| s.id == prefs.active_server_id).cloned() {
         Some(p) => r.open(&mut app, p),
         None => app.view = View::Login,
@@ -201,6 +205,7 @@ impl Runner {
         if let Some(s) = self.session.take() {
             s.close();
         }
+        self.elsewhere = None;
         let name = nori_core::settings::label(&profile.name, &profile.url);
         let o = Open {
             data: &self.o.data,
@@ -224,6 +229,7 @@ impl Runner {
                 let keep = (app.mouse, app.images, app.card_covers, app.volume, app.protocol, app.offline, app.server.clone(), app.settings.own.data.clone());
                 *app = App::new(prefs);
                 (app.mouse, app.images, app.card_covers, app.volume, app.protocol, app.offline, app.server, app.settings.own.data) = keep;
+                self.remote_read(app);
                 self.follow(app);
             }
             Err(e) => {
@@ -304,6 +310,7 @@ impl Runner {
                     self.repaint = true;
                 }
             }
+            Msg::Remote => self.remote_read(app),
             Msg::LoggedIn(Ok(p)) => {
                 let mut prefs = crate::backend::app().settings.current().unwrap_or_default();
                 prefs.servers.retain(|s| !(s.url == p.url && s.user == p.user));
@@ -320,9 +327,68 @@ impl Runner {
         app.handle(m);
     }
 
-    /// Reads engine status and the queue into `app`, copying strings only when the song changed.
+    /// Reads the other devices and the device playing into `app`. Playback moving to
+    /// another device or back starts the player over from what it then shows.
+    fn remote_read(&mut self, app: &mut App) {
+        let Some(s) = &self.session else { return };
+        let remote = s.remote();
+        let d = &mut app.devices;
+        d.on = remote.is_some();
+        d.list = remote.as_ref().map(|r| r.devices()).unwrap_or_default();
+        let e = s.elsewhere();
+        let moved = e.is_some() != self.elsewhere.is_some();
+        d.active = e.as_ref().map(|e| (e.mirror.id.clone(), e.mirror.name.clone()));
+        d.hearts = e.as_ref().map(|e| e.mirror.rows.iter().map(|r| (r.song.id.clone(), r.song.starred)).collect()).unwrap_or_default();
+        match &e {
+            Some(e) => {
+                app.queue = Some(e.view());
+                if let Some(v) = e.volume() {
+                    app.volume = v;
+                }
+            }
+            None if moved => {
+                app.queue = None;
+                app.volume = s.volume();
+            }
+            None => {}
+        }
+        if moved {
+            self.heard = None;
+            app.heard(None);
+        }
+        if moved || e.is_some() {
+            s.mpris_changed();
+        }
+        self.elsewhere = e;
+    }
+
+    /// Reads the playback into `app`: the engine's status and the queue, copying strings only when the
+    /// song changed; or another device's while it plays.
     fn follow(&mut self, app: &mut App) {
         let Some(s) = &self.session else { return };
+        if let Some(r) = s.remote() {
+            r.watch(app.panel == Some(Panel::Devices));
+        }
+        if let Some(e) = &self.elsewhere {
+            let m = &e.mirror;
+            let state = match (m.playing, e.song()) {
+                (true, _) => State::Playing,
+                (false, Some(_)) => State::Paused,
+                (false, None) => State::Idle,
+            };
+            app.follow_now(Now { state, position_ms: e.position_ms(), at: Instant::now(), speed: 1.0, mixing: false, buffering: m.buffering && m.playing });
+            let id = e.song().map(|s| s.id.clone());
+            if id != self.heard {
+                self.heard = id;
+                app.heard(e.song().cloned());
+            }
+            app.transition = None;
+            app.mixed_in = None;
+            if app.lyrics_shown() {
+                self.lyrics_step(app);
+            }
+            return;
+        }
         let (now, id_changed) = s.engine.status_with(|st| {
             let changed = st.id.as_deref() != self.heard.as_deref();
             (crate::app::Now { state: st.state, position_ms: st.position_ms, at: st.at, speed: st.pace, mixing: st.mixing, buffering: app.now.buffering }, changed.then(|| st.id.clone()))
@@ -431,6 +497,17 @@ impl Runner {
                 });
                 return;
             }
+            Cmd::Setting(name, value) => {
+                if let Some(s) = &self.session {
+                    if s.setting(&name, &value).is_none() {
+                        app.say(format!("{name}: not a setting"), true);
+                    }
+                }
+                prefs_changed(app);
+                // Remote control may have come or gone.
+                self.remote_read(app);
+                return;
+            }
             Cmd::SwitchServer(id) => {
                 let mut prefs = crate::backend::app().settings.current().unwrap_or_default();
                 let Some(p) = prefs.servers.iter().find(|s| s.id == id).cloned() else { return };
@@ -450,29 +527,19 @@ impl Runner {
             Cmd::PlayFetch(what, shuffle) => s.play_later(what, shuffle),
             Cmd::Enqueue(songs, next) => s.enqueue(songs, next),
             Cmd::EnqueueFetch(what, next) => s.enqueue_later(what, next),
-            Cmd::Toggle => {
-                // Idle with a restored queue: start it where it was.
-                if app.now.state == nori_engine::State::Idle && app.queue.as_ref().is_some_and(|q| q.len > 0) {
-                    let at = app.queue.as_ref().map_or(0, |q| q.index.max(0) as usize);
-                    s.engine.play_at(at, app.now.position_ms);
-                } else {
-                    s.engine.toggle();
-                }
-            }
+            Cmd::Toggle => s.toggle(),
             Cmd::Next => s.next(),
-            Cmd::Previous => {
-                s.engine.previous();
-            }
-            Cmd::Seek(ms) => s.engine.seek(ms),
+            Cmd::Previous => s.previous(),
+            Cmd::Seek(ms) => s.seek(ms),
             Cmd::Volume(v) => {
                 s.set_volume(v);
-                own::keep(own::VOLUME, v.to_string());
+                if self.elsewhere.is_none() {
+                    own::keep(own::VOLUME, v.to_string());
+                }
                 app.volume = v;
                 app.settings.invalidate();
             }
-            Cmd::Jump(i) => {
-                s.engine.play_at(i, 0);
-            }
+            Cmd::Jump(i) => s.jump(i),
             Cmd::Remove(i) => s.remove(i),
             Cmd::Restore(id) => s.put_back(&id),
             Cmd::Move(from, to) => s.move_song(from, to),
@@ -484,12 +551,12 @@ impl Runner {
                 s.download_remove(&id);
                 s.load(crate::backend::Req::Downloads);
             }
+            Cmd::Star(nori_core::client::Starrable::Song, id, on) => s.star_song(id, on, self.elsewhere.as_ref()),
             Cmd::Star(kind, id, on) => s.star(kind, id, on),
-            Cmd::Setting(name, value) => {
-                if s.setting(&name, &value).is_none() {
-                    app.say(format!("{name}: not a setting"), true);
+            Cmd::Pick(device) => {
+                if let Some(r) = s.remote() {
+                    r.pick(device);
                 }
-                prefs_changed(app);
             }
             Cmd::Level(level, v) => sound_edited(s, app, crate::backend::app().settings.edit_level(level, v).map(|(e, _)| e)),
             Cmd::Graphic(i, gain) => sound_edited(s, app, crate::backend::app().settings.edit_graphic(i, gain).map(|(e, _)| e)),
@@ -534,7 +601,7 @@ impl Runner {
                     }
                 }
             }
-            Cmd::Quit | Cmd::Mouse(_) | Cmd::Images(_) | Cmd::CardCovers(_) | Cmd::Device(_) | Cmd::Login(_) | Cmd::SwitchServer(_) => {}
+            Cmd::Quit | Cmd::Mouse(_) | Cmd::Images(_) | Cmd::CardCovers(_) | Cmd::Device(_) | Cmd::Login(_) | Cmd::SwitchServer(_) | Cmd::Setting(..) => {}
         }
     }
 

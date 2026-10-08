@@ -52,6 +52,8 @@ pub enum Msg {
     Volume(f32),
     /// The core's star marks moved (a heart pressed here or on another device).
     Starred(nori_core::stars::StarMarks),
+    /// The other devices or the one playing changed: read them again.
+    Remote,
     /// A message from the session with this id; dropped once another session is open.
     From(u64, Box<Msg>),
 }
@@ -75,6 +77,7 @@ impl Msg {
             Msg::Reachable(r) => format!("reachable: {}", r.is_ok()),
             Msg::Volume(v) => format!("volume {v}"),
             Msg::Starred(_) => "star marks".into(),
+            Msg::Remote => "remote".into(),
             Msg::From(id, m) => format!("session {id}: {}", m.brief()),
         }
     }
@@ -219,9 +222,7 @@ impl Session {
         let id = IDS.fetch_add(1, Ordering::Relaxed);
         let tx = o.tx.clone();
         let out = Arc::new(move |s: Said| {
-            if let Some(m) = worded(s) {
-                let _ = tx.send(Msg::From(id, Box::new(m)));
-            }
+            let _ = tx.send(Msg::From(id, Box::new(worded(s))));
         });
         let v = own::number(own::VOLUME, 1.0);
         let (output, level) = sound(o.device.or_else(|| own::text(own::DEVICE)).as_deref(), v);
@@ -320,12 +321,11 @@ impl Session {
     }
 }
 
-/// A session's report as the event loop takes it; None for what the terminal does not show (other
-/// devices: it is controllable, it controls none).
-fn worded(s: Said) -> Option<Msg> {
+/// A session's report as the event loop takes it.
+fn worded(s: Said) -> Msg {
     let note = |text: String, error: bool| Msg::Note { text, error };
-    Some(match s {
-        Said::Remote => return None,
+    match s {
+        Said::Remote => Msg::Remote,
         Said::Starred(marks) => Msg::Starred(marks),
         Said::Volume(v) => Msg::Volume(v),
         Said::Engine(e) => Msg::Engine(e),
@@ -355,7 +355,7 @@ fn worded(s: Said) -> Option<Msg> {
                 false,
             ),
         },
-    })
+    }
 }
 
 /// An unreachable server in words.
