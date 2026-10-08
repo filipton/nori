@@ -229,6 +229,7 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("look", R.string.settings_confirm_favourites, R.string.settings_hint_confirm_favourites),
     Triple("look", R.string.settings_ui_scale, 0),
     Triple("look", R.string.settings_less_movement, R.string.settings_hint_less_movement),
+    Triple("look", R.string.settings_scroll_titles, R.string.settings_hint_scroll_titles),
     Triple("look", R.string.settings_hide_status_bar, R.string.settings_hint_hide_status_bar),
     Triple("look", R.string.settings_keep_awake, R.string.settings_hint_keep_awake),
     Triple("look", R.string.settings_controls_side, R.string.settings_hint_controls_side),
@@ -710,6 +711,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
                 }
             },
             toggle("reduceMotion", R.string.settings_less_movement, R.string.settings_less_movement_detail),
+            toggle("scrollTitles", R.string.settings_scroll_titles, R.string.settings_scroll_titles_detail),
         )
         if (!p.reduceMotion) size += toggle("ignoreSystemMotion", R.string.settings_animate_anyway, R.string.settings_animate_anyway_detail)
         val screen = listOf(

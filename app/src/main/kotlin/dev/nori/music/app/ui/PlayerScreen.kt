@@ -2362,7 +2362,8 @@ internal fun singLevelStep(level: Float, picked: Float): Float? = (kotlin.math.r
  * vsync - the blurred sleeve and wash behind it included - and one left walking for as long as the
  * player was open held a 120 Hz phone at fifty frames a second and two thirds of a core. Only while
  * the player is on screen: it stays composed behind the rest of the app (see LocalPlayerShown). 0
- * holds the line still, soft edge and all, so a row can stop walking without changing how it looks.
+ * holds the line still, soft edge and all, so a row can stop walking without changing how it looks;
+ * so does Prefs.scrollTitles off (e-ink screens pay for every redrawn frame).
  */
 @Composable
 internal fun Modifier.readable(iterations: Int = READ_OUT, key: String? = null): Modifier {
@@ -2382,7 +2383,8 @@ internal fun Modifier.readable(iterations: Int = READ_OUT, key: String? = null):
     val over = needs > room + 1
     // Only the first copy of the line reads it out; one drawn after it (another panel) holds still at the start,
     // as the line settles, rather than walking it from the beginning again.
-    val walks = remember(seen) { if (seen?.started == true) 0 else iterations }
+    val scrolls = viewModel<SettingsViewModel>().prefs.collectAsStateWithLifecycle().value.scrollTitles
+    val walks = remember(seen, scrolls) { if (seen?.started == true || !scrolls) 0 else iterations }
     if (seen != null && over && walks > 0) LaunchedEffect(seen) { seen.started = true }
     return onSizeChanged { room = it.width; seen?.room = it.width }
         .then(

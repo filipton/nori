@@ -486,6 +486,9 @@ pub struct StoredPrefs {
     pub ui_scale: f32,
     #[setting("reduceMotion", FLAG, default = false, show = K::Switch)]
     pub reduce_motion: bool,
+    /// Long titles in the player scroll to show the rest.
+    #[setting("scrollTitles", FLAG, default = true, show = K::Switch)]
+    pub scroll_titles: bool,
     /// Animate even with Android's animations off. Stored under a new key so the old key's stored
     /// `false` does not apply.
     #[setting("animateAnyway", FLAG, default = true, name = "ignoreSystemMotion", show = K::Switch)]
