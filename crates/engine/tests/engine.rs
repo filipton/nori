@@ -2675,7 +2675,8 @@ fn eq_chain_stays_through_changes() {
     rig.engine.stop();
 }
 
-/// The status already says each event, and a seek says its place.
+/// The status already says each event, and a seek says its place. Resumed, its place runs on from the
+/// moment it plays again, not from the pause.
 #[test]
 fn status_current_on_events() {
     let (a, b) = (music(4.0, 90), music(4.0, 91));
@@ -2694,19 +2695,26 @@ fn status_current_on_events() {
     let (engine_of, said) = (cell.clone(), seen.clone());
     let engine = Arc::new(Engine::start_on(library, sim::App::new(), queue, Box::new(card.clone()), None, Config::default(), clock.clone(), move |e| {
         if let Some(engine) = engine_of.get() {
-            let (state, index) = engine.status_with(|s| (s.state, s.index));
-            said.lock().push((e, state, index));
+            let (state, index, at) = engine.status_with(|s| (s.state, s.index, s.at));
+            said.lock().push((e, state, index, at));
         }
     }));
     let _ = cell.set(engine.clone());
     let time = Stepper::new(clock, card.pull.clone());
     engine.play_at(0, 0);
     assert!(time.until(Duration::from_secs(10), || engine.status().index == Some(0) && card.secs() > 1.0));
+    engine.pause();
+    assert!(time.until(Duration::from_secs(5), || engine.status().state == State::Paused));
+    let resumed = std::time::Instant::now();
+    engine.play();
+    assert!(time.until(Duration::from_secs(5), || engine.status().state == State::Playing));
     engine.seek(2_000);
     assert!(time.until(Duration::from_secs(20), || engine.status().state == State::Ended), "{:?}", seen.lock());
     engine.stop();
     let seen = seen.lock();
-    for (e, state, index) in seen.iter() {
+    let (_, _, _, at) = seen.iter().rev().find(|(e, ..)| *e == Event::State(State::Playing)).expect("resumed");
+    assert!(*at >= resumed, "the place reads from when it plays again");
+    for (e, state, index, _) in seen.iter() {
         match e {
             Event::State(s) => assert_eq!(s, state, "{seen:?}"),
             Event::Song { index: i, .. } => assert_eq!(Some(*i), *index, "{seen:?}"),

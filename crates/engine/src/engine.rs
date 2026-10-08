@@ -1007,7 +1007,13 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         if self.state != s {
             self.state = s;
             self.idle_at = matches!(s, State::Paused | State::Ended).then(|| self.now() + self.idle_release_ms);
-            self.status.lock().state = s;
+            let mut st = self.status.lock();
+            if s == State::Playing {
+                // The place held while stopped runs on from now, not from when it stopped.
+                st.at = Instant::now();
+            }
+            st.state = s;
+            drop(st);
             (self.events)(Event::State(s));
         }
     }
