@@ -963,6 +963,26 @@ fn buffering_ends_on_move() {
     rig.engine.stop();
 }
 
+/// Play fades in from silence by the fade setting, whether the song's first bytes came before the device
+/// opened or after.
+#[test]
+fn play_fades_in() {
+    let a = vec![8000i16; RATE as usize * 2 * 10];
+    for (case, on_disk, late) in [("bytes at once", true, false), ("bytes late", false, true)] {
+        let extra = Extra { on_disk, ..Extra::default() };
+        if late {
+            extra.server.slow.lock().push(("a".into(), Duration::from_millis(500)));
+        }
+        let rig = Rig::build(files(&[("a", &a)]), sim::App::new(), Settings { fade_ms: 1_000, ..Settings::default() }, extra);
+        rig.engine.play_at(0, 0);
+        assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2 * 2));
+        let heard = rig.heard.lock().clone();
+        let half = RATE as usize;
+        assert!(heard[0] < 100 && (3_000..5_000).contains(&heard[half]), "{case}: up from silence, halfway at half a second: {} then {}", heard[0], heard[half]);
+        assert!(heard[RATE as usize * 2 * 11 / 10..].iter().all(|&v| v == 8000), "{case}: then the song as it is");
+    }
+}
+
 #[test]
 fn pause_now_cuts() {
     // Headphones out: pause at once, whatever the fade setting.
@@ -975,7 +995,8 @@ fn pause_now_cuts() {
     assert!(rig.wait_for(5, |r| r.engine.status().state == State::Paused));
     rig.run(4_000);
     let heard = rig.heard.lock().clone();
-    assert!(heard.iter().all(|&v| v == 8000), "cut, not faded: no sample on the way down");
+    // Past the fade in from play.
+    assert!(heard[RATE as usize * 2 * 11 / 10..].iter().all(|&v| v == 8000), "cut, not faded: no sample on the way down");
     rig.engine.stop();
 
     // Headphones out during a pause fade stop it there.

@@ -430,6 +430,8 @@ pub(crate) struct RingTrack {
     shallow: bool,
     /// A flush not yet told to the device ([`TELL_FLUSH_US`]).
     untold: Option<Untold>,
+    /// A fade asked for before the device opened, applied as it opens.
+    unopened_ramp: Option<(Option<f32>, f32, i64)>,
 }
 
 /// A flush the device has not been told of yet.
@@ -470,6 +472,7 @@ impl RingTrack {
             opened_float: false,
             shallow: false,
             untold: None,
+            unopened_ramp: None,
         }
     }
 
@@ -498,6 +501,7 @@ impl RingTrack {
         self.resampler = None;
         self.restart_map();
         self.untold = None;
+        self.unopened_ramp = None;
     }
 
     fn restart_map(&mut self) {
@@ -597,10 +601,14 @@ impl RingTrack {
     }
 
     fn ramp_now(&mut self, from: Option<f32>, target: f32, ms: i64) {
-        if let Some(r) = &self.ring {
-            if !self.output.ramp(from, target, ms) {
-                r.ramp(from, target, ms);
+        match &self.ring {
+            Some(r) => {
+                if !self.output.ramp(from, target, ms) {
+                    r.ramp(from, target, ms);
+                }
             }
+            // Nothing played yet: a fade from where it is starts where the one before would have.
+            None => self.unopened_ramp = Some((from.or(self.unopened_ramp.and_then(|r| r.0)), target, ms)),
         }
     }
 
@@ -741,6 +749,9 @@ impl Track for RingTrack {
                     self.base = 0;
                     if self.playing {
                         self.output.resume();
+                    }
+                    if let Some((from, target, ms)) = self.unopened_ramp.take() {
+                        self.ramp_now(from, target, ms);
                     }
                 }
                 Err(e) => self.failed = Some(e),
