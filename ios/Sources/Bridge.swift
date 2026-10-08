@@ -98,6 +98,10 @@ struct Now {
     var stamp = Date()
     /// Waiting for bytes after a seek or open: the place stands still until sound is heard again.
     var buffering = false
+    /// Another device plays, and this is its music: its name.
+    var device: String?
+    /// Remote control is on: the music can move to the account's other devices.
+    var remote = false
 
     var playing: Bool { state == 1 }
 
@@ -135,6 +139,8 @@ extension Notification.Name {
     static let noriDownloads = Notification.Name("noriDownloads")
     /// A session opened.
     static let noriOpened = Notification.Name("noriOpened")
+    /// The account's other devices changed (remote control): read them again.
+    static let noriDevices = Notification.Name("noriDevices")
     /// Lyrics came for the song in `object`.
     static let noriLyrics = Notification.Name("noriLyrics")
 }
@@ -247,9 +253,16 @@ final class Core {
         n.kbps = d["kbps"] as? Int ?? 0
         n.hz = d["hz"] as? Int ?? 0
         n.bits = d["bits"] as? Int ?? 0
-        // Buffering is per song and only while Playing; a new song or a pause lets the clock go again.
-        let same = n.song?.id == now.song?.id
-        n.buffering = wasBuffering && same && n.state == 1
+        n.device = d["device"] as? String
+        n.remote = d["remote"] as? Bool ?? false
+        if n.device != nil {
+            // The device says its own waits.
+            n.buffering = d["buffering"] as? Bool ?? false
+        } else {
+            // Buffering is per song and only while Playing; a new song or a pause lets the clock go again.
+            let same = n.song?.id == now.song?.id
+            n.buffering = wasBuffering && same && n.state == 1
+        }
         n.stamp = Date()
         now = n
         NotificationCenter.default.post(name: .noriNow, object: nil)
@@ -282,11 +295,14 @@ final class Core {
         switch kind {
         case 1, 2, 3, 4, 8, 14, 16:
             refresh()
+        case 18:
+            refresh()
+            NotificationCenter.default.post(name: .noriDevices, object: nil)
         case 19:
             SystemVolume.set(Float(ms) / 1000)
         case 5:
             Toast.show(Say.playbackError(text))
-        case 7:
+        case 7 where now.device == nil:
             setBuffering(flag != 0)
         case 9:
             if let words = Say.note(flag, Int(count)) {

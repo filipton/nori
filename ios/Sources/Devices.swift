@@ -1,8 +1,136 @@
 import MediaPlayer
 import UIKit
 
+/// "Play on", from the player: this iPod and the account's other devices with nori, each with what it
+/// plays, the one playing ticked. A tap moves the music there. Open, the other devices are followed.
+final class DevicesSheet: UIViewController, UITableViewDataSource, UITableViewDelegate {
+    let transition = CardTransition()
+    private var closer: DragToClose?
+    private let table = UITableView(frame: .zero, style: .plain)
+    private let empty = UILabel()
+    private var here = true
+    private var devices: [[String: Any]] = []
+
+    init() {
+        super.init(nibName: nil, bundle: nil)
+        modalPresentationStyle = .overFullScreen
+        modalPresentationCapturesStatusBarAppearance = true
+        transitioningDelegate = transition
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = Theme.Card.background
+        let grabber = UIButton(type: .system)
+        grabber.setImage(Glyph.chevronDown, for: .normal)
+        grabber.tintColor = Theme.Card.secondary
+        grabber.accessibilityLabel = Say.close
+        grabber.addTarget(self, action: #selector(close), for: .touchUpInside)
+        let title = UILabel()
+        title.text = Say.playOn
+        title.font = UIFont.systemFont(ofSize: 22, weight: .bold)
+        title.textColor = Theme.Card.label
+        table.backgroundColor = Theme.Card.background
+        table.separatorColor = Theme.Card.track
+        table.rowHeight = 60
+        table.dataSource = self
+        table.delegate = self
+        table.tableFooterView = UIView()
+        empty.text = Say.devicesNone
+        empty.font = UIFont.preferredFont(forTextStyle: .footnote)
+        empty.textColor = Theme.Card.secondary
+        empty.numberOfLines = 0
+        for v in [grabber, title, table, empty] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(v)
+        }
+        NSLayoutConstraint.activate([
+            grabber.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            grabber.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            grabber.widthAnchor.constraint(equalToConstant: 60),
+            grabber.heightAnchor.constraint(equalToConstant: 24),
+            title.topAnchor.constraint(equalTo: grabber.bottomAnchor, constant: 4),
+            title.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            title.heightAnchor.constraint(equalToConstant: 44),
+            table.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
+            table.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            table.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            table.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            empty.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4 + 60 + 16),
+            empty.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            empty.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+        ])
+        closer = DragToClose(self, transition) { [weak self] pan in
+            guard let self else { return false }
+            return pan.location(in: self.view).y < self.table.frame.minY
+        }
+        NotificationCenter.default.addObserver(self, selector: #selector(read), name: .noriDevices, object: nil)
+        read()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        nori_ios_remote_watch(1)
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        nori_ios_remote_watch(0)
+    }
+
+    @objc private func close() { dismiss(animated: true) }
+
+    @objc private func read() {
+        let d = takenJSON(nori_ios_remote_devices()) as? [String: Any] ?? [:]
+        here = d["here"] as? Bool ?? true
+        devices = d["devices"] as? [[String: Any]] ?? []
+        empty.isHidden = !devices.isEmpty
+        table.reloadData()
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { devices.count + 1 }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "device")
+            ?? UITableViewCell(style: .subtitle, reuseIdentifier: "device")
+        cell.backgroundColor = Theme.Card.background
+        let selected = UIView()
+        selected.backgroundColor = Theme.Card.track
+        cell.selectedBackgroundView = selected
+        cell.tintColor = Theme.Card.label
+        cell.textLabel?.textColor = Theme.Card.label
+        cell.detailTextLabel?.textColor = Theme.Card.secondary
+        cell.detailTextLabel?.font = UIFont.preferredFont(forTextStyle: .footnote)
+        guard indexPath.row > 0 else {
+            cell.textLabel?.text = Say.thisIPod
+            cell.detailTextLabel?.text = nil
+            cell.accessoryType = here ? .checkmark : .none
+            return cell
+        }
+        let d = devices[indexPath.row - 1]
+        cell.textLabel?.text = d["name"] as? String
+        let song = [d["title"] as? String, d["artist"] as? String].compactMap { $0 }.filter { !$0.isEmpty }
+        let playing = d["playing"] as? Bool ?? false
+        cell.detailTextLabel?.text = Say.refused(d["refused"] as? Int ?? 0)
+            ?? (playing && !song.isEmpty ? song.joined(separator: " · ") : Say.deviceIdle)
+        cell.accessoryType = d["active"] as? Bool == true ? .checkmark : .none
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        let id = indexPath.row == 0 ? "" : devices[indexPath.row - 1]["id"] as? String ?? ""
+        id.withCString { nori_ios_remote_pick($0) }
+        dismiss(animated: true)
+    }
+}
+
 /// Remote control's mDNS through the system's Bonjour: this iPod's door announced while remote control
-/// is on, the account's other doors looked for while asked. The library asks from its own
+/// is on, the account's other doors looked for while "Play on" is open. The library asks from its own
 /// threads; NetService runs on the main run loop.
 final class Bonjour: NSObject, NetServiceDelegate, NetServiceBrowserDelegate {
     static let shared = Bonjour()

@@ -351,6 +351,24 @@ enum Say {
         return rows.compactMap { label, v in v.flatMap { $0.isEmpty ? nil : "\(label): \($0)" } }.joined(separator: "\n")
     }
 
+    // Remote control, from Android's strings_ui.xml (devices_*).
+    static let playOn = "Play on"
+    static let thisIPod = "This iPod"
+    static let devicesNone = "No other devices yet. Turn on “Control from other devices” in nori on them."
+    static let deviceIdle = "Not playing"
+    static func playingOn(_ device: String) -> String { "Playing on \(device)" }
+
+    /// A device's answer to the last thing asked of it, by `nori_ios_remote_devices` refusal code.
+    static func refused(_ code: Int) -> String? {
+        switch code {
+        case 1: return "The queue changed there. Try again."
+        case 2: return "That device said no."
+        case 3: return "That is no longer there."
+        case 4: return "Too many songs waiting."
+        default: return nil
+        }
+    }
+
     // The Sound page, from Android's strings.xml (devices, output_*, device_*, autoeq_*).
     static let sound = "Sound"
     static let devices = "Devices"

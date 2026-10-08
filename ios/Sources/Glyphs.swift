@@ -20,6 +20,7 @@ enum Glyph {
     static let repeatAll = material(Material.repeatAll, CGSize(width: 22, height: 22))
     static let repeatOne = material(Material.repeatOne, CGSize(width: 22, height: 22))
     static let queue = material(Material.queueMusic, CGSize(width: 24, height: 24))
+    static let speaker = material(Material.speaker, CGSize(width: 24, height: 24))
     /// A queue row's handle: hold and drag it to move the song.
     static let grip = material(Material.dragHandle, CGSize(width: 22, height: 22))
     static let lyrics = material(Material.lyrics, CGSize(width: 24, height: 24))
@@ -86,6 +87,7 @@ private enum Material {
     static let repeatAll = "M7 7h10v3l4 -4l-4 -4v3L5 5v6h2L7 7ZM17 17L7 17v-3l-4 4l4 4v-3h12v-6h-2v4Z"
     static let repeatOne = "M7 7h10v3l4 -4l-4 -4v3L5 5v6h2L7 7ZM17 17L7 17v-3l-4 4l4 4v-3h12v-6h-2v4ZM13 15L13 9h-1l-2 1v1h1.5v4L13 15Z"
     static let queueMusic = "M15 6H3v2h12V6ZM15 10H3v2h12V10ZM3 16h8v-2H3V16ZM17 6v8.18C16.69 14.07 16.35 14 16 14c-1.66 0 -3 1.34 -3 3s1.34 3 3 3s3 -1.34 3 -3V8h3V6H17Z"
+    static let speaker = "M17 2H7c-1.1 0 -1.99 0.9 -1.99 2L5 20c0 1.1 0.9 2 2 2h10c1.1 0 2 -0.9 2 -2V4c0 -1.1 -0.9 -2 -2 -2ZM12 4c1.1 0 2 0.9 2 2s-0.9 2 -2 2c-1.11 0 -2 -0.9 -2 -2s0.89 -2 2 -2ZM12 20c-2.76 0 -5 -2.24 -5 -5s2.24 -5 5 -5s5 2.24 5 5s-2.24 5 -5 5ZM12 12c-1.66 0 -3 1.34 -3 3s1.34 3 3 3s3 -1.34 3 -3s-1.34 -3 -3 -3Z"
     static let dragHandle = "M20 9H4v2h16V9ZM4 15h16v-2H4V15Z"
     static let lyrics = "M14 9c0 -2.04 1.24 -3.79 3 -4.57V4c0 -1.1 -0.9 -2 -2 -2H4C2.9 2 2.01 2.9 2.01 4L2 22l4 -4h9c1.1 0 2 -0.9 2 -2v-2.42C15.24 12.8 14 11.05 14 9ZM10 14H6v-2h4V14ZM13 11H6V9h7V11ZM13 8H6V6h7V8ZM20 6.18C19.69 6.07 19.35 6 19 6c-1.66 0 -3 1.34 -3 3c0 1.66 1.34 3 3 3s3 -1.34 3 -3V3h2V1h-4V6.18Z"
     static let favoriteBorder = "M16.5 3c-1.74 0 -3.41 0.81 -4.5 2.09C10.91 3.81 9.24 3 7.5 3C4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45 -1.32C18.6 15.36 22 12.28 22 8.5C22 5.42 19.58 3 16.5 3ZM12.1 18.55l-0.1 0.1l-0.1 -0.1C7.14 14.24 4 11.39 4 8.5C4 6.5 5.5 5 7.5 5c1.54 0 3.04 0.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5c0 2.89 -3.14 5.74 -7.9 10.05Z"

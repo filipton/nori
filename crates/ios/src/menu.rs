@@ -119,12 +119,15 @@ fn wrote(s: &Session, w: Write) -> i32 {
     i32::from(nori_core::transport::block_on(s.client.write(w)).is_ok())
 }
 
-/// Keeps the playing song as a one-song list under `token`, for the doors below. 1 when one plays.
+/// Keeps the playing song (here, or on the device this one mirrors) as a one-song list under `token`, for
+/// the doors below. 1 when one plays.
 #[no_mangle]
 pub extern "C" fn nori_ios_keep_now(token: u64) -> i32 {
     with_session(|s| {
-        let id = s.engine.status().id?;
-        let song = s.core.session.song(&id)?;
+        let song = match s.elsewhere() {
+            Some(e) => e.song()?.clone(),
+            None => s.core.session.song(&s.engine.status().id?)?,
+        };
         keep_list(token, vec![song], None);
         Some(1)
     })

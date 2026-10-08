@@ -1,13 +1,15 @@
 //! Remote control on the iPod: Bonjour through the app (`NetService`, `ios/Sources/Devices.swift`) for
-//! the account's nearby devices.
+//! the account's nearby devices, and the list of devices the music can move to.
 
 use std::ffi::{c_char, CString};
 use std::sync::{Arc, Mutex};
 
-use nori_core::remote::{Announcement, Discovery, Remote};
+use nori_core::remote::wire::Refusal;
+use nori_core::remote::{Announcement, Discovery, Remote, RemoteDevice};
 use nori_core::Param;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
+use crate::pages::owned;
 use crate::session::{c_text, with_session};
 
 /// Announces this device's door: `name`, `port` and its TXT record as a JSON object of strings; `name`
@@ -87,5 +89,60 @@ pub unsafe extern "C" fn nori_ios_lan_found(service: *const c_char, host: *const
 pub unsafe extern "C" fn nori_ios_lan_lost(service: *const c_char) {
     if let Some(r) = remote() {
         r.lan_lost(c_text(service));
+    }
+}
+
+/// The devices list is in sight (`on` 1): the other devices are followed meanwhile.
+#[no_mangle]
+pub extern "C" fn nori_ios_remote_watch(on: i32) {
+    if let Some(r) = remote() {
+        r.watch(on != 0);
+    }
+}
+
+/// A refusal as the app words it: 0 none, 1 the queue changed there, 2 not allowed, 3 gone, 4 too many.
+fn refusal_code(r: Option<Refusal>) -> u8 {
+    match r {
+        None => 0,
+        Some(Refusal::Stale) => 1,
+        Some(Refusal::NotAllowed) => 2,
+        Some(Refusal::Unknown) => 3,
+        Some(Refusal::TooMany) => 4,
+    }
+}
+
+fn device_json(d: &RemoteDevice, active: bool) -> Value {
+    let state = d.state.as_ref();
+    let song = state.and_then(|s| s.entries.iter().find(|e| Some(e.index) == s.index));
+    json!({
+        "id": d.id, "name": d.name, "active": active, "playing": state.is_some_and(|s| s.playing),
+        "title": song.map(|e| e.title.as_str()), "artist": song.map(|e| e.artist.as_str()),
+        "refused": refusal_code(d.refused),
+    })
+}
+
+/// Where the music can play, as JSON to free; NULL while remote control is off: `{"here": this iPod plays,
+/// "devices": [{"id", "name", "active", "playing", "title", "artist", "refused"}]}`.
+#[no_mangle]
+pub extern "C" fn nori_ios_remote_devices() -> *mut c_char {
+    with_session(|s| {
+        let r = s.remote()?;
+        let active = s.elsewhere().map(|e| e.mirror.id);
+        let devices: Vec<Value> = r.devices().iter().map(|d| device_json(d, active.as_ref() == Some(&d.id))).collect();
+        Some(owned(&json!({ "here": active.is_none(), "devices": devices })))
+    })
+    .flatten()
+    .unwrap_or(std::ptr::null_mut())
+}
+
+/// Moves the music to device `id`, or to this iPod (empty or NULL).
+///
+/// # Safety
+/// `id` is NUL-terminated UTF-8, or NULL.
+#[no_mangle]
+pub unsafe extern "C" fn nori_ios_remote_pick(id: *const c_char) {
+    let id = c_text(id);
+    if let Some(r) = remote() {
+        r.pick((!id.is_empty()).then_some(id));
     }
 }

@@ -3,8 +3,9 @@ import CoreText
 import MediaPlayer
 import UIKit
 
-/// The player card: cover, song, seek bar, previous / play / next, volume, then lyrics, output and queue. Drag down
-/// to close.
+/// The player card: cover, song, seek bar, previous / play / next, volume, then lyrics, output, devices
+/// (with remote control on) and queue. While another device plays, the card is that device's music and
+/// controls it, and "Playing on" its name stands where the volume was. Drag down to close.
 final class PlayerCard: UIViewController {
     /// The cover's size on the card, which the lock screen's artwork shares.
     static let coverPoints: CGFloat = 272
@@ -25,6 +26,9 @@ final class PlayerCard: UIViewController {
     private let previous = UIButton(type: .system)
     private let play = UIButton(type: .system)
     private let nextButton = UIButton(type: .system)
+    private let volume = MPVolumeView()
+    private let playingOn = UIButton(type: .system)
+    private let devices = UIButton(type: .system)
     private var ticker: Timer?
     private var scrubbing = false
     private var paintedCover = ""
@@ -105,7 +109,6 @@ final class PlayerCard: UIViewController {
         transport.distribution = .equalSpacing
         transport.alignment = .center
 
-        let volume = MPVolumeView()
         volume.showsRouteButton = false
         volume.tintColor = Theme.Card.label
         volume.setVolumeThumbImage(PlayerCard.dot(12), for: .normal)
@@ -124,7 +127,16 @@ final class PlayerCard: UIViewController {
         queue.accessibilityLabel = Say.queue
         queue.tintColor = Theme.Card.secondary
         queue.addTarget(self, action: #selector(queueTapped), for: .touchUpInside)
-        let bottom = UIStackView(arrangedSubviews: [lyrics, route, queue])
+        devices.setImage(Glyph.speaker, for: .normal)
+        devices.accessibilityLabel = Say.playOn
+        devices.tintColor = Theme.Card.secondary
+        devices.addTarget(self, action: #selector(devicesTapped), for: .touchUpInside)
+        playingOn.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+        playingOn.tintColor = Theme.Card.label
+        playingOn.addTarget(self, action: #selector(devicesTapped), for: .touchUpInside)
+        // The volume's row: the iPod's volume, or which device plays.
+        let level = UIStackView(arrangedSubviews: [volume, playingOn])
+        let bottom = UIStackView(arrangedSubviews: [lyrics, route, devices, queue])
         bottom.distribution = .equalSpacing
         bottom.alignment = .center
 
@@ -132,7 +144,7 @@ final class PlayerCard: UIViewController {
         // width (its 296 of 411 dp); the song and the seek bar run the full width.
         let block = min(230, UIScreen.main.bounds.width - 48)
         let column = UIStackView(arrangedSubviews: [songRow, seek, times,
-                                                    PlayerCard.centred(transport, block), PlayerCard.centred(volume, block),
+                                                    PlayerCard.centred(transport, block), PlayerCard.centred(level, block),
                                                     PlayerCard.centred(bottom, block)])
         column.axis = .vertical
         column.spacing = 6
@@ -174,10 +186,11 @@ final class PlayerCard: UIViewController {
             heart.widthAnchor.constraint(equalToConstant: 36),
             more.widthAnchor.constraint(equalToConstant: 36),
             transport.heightAnchor.constraint(equalToConstant: 56),
-            volume.heightAnchor.constraint(equalToConstant: 30),
+            level.heightAnchor.constraint(equalToConstant: 30),
             route.widthAnchor.constraint(equalToConstant: 36),
             route.heightAnchor.constraint(equalToConstant: 36),
             lyrics.widthAnchor.constraint(equalToConstant: 36),
+            devices.widthAnchor.constraint(equalToConstant: 36),
             queue.widthAnchor.constraint(equalToConstant: 36),
         ])
         closer = DragToClose(self, transition)
@@ -201,6 +214,11 @@ final class PlayerCard: UIViewController {
 
     @objc private func changed() {
         let now = Core.shared.now
+        devices.isHidden = !now.remote
+        devices.tintColor = now.device == nil ? Theme.Card.secondary : Theme.Card.label
+        volume.isHidden = now.device != nil
+        playingOn.isHidden = now.device == nil
+        playingOn.setTitle(now.device.map(Say.playingOn), for: .normal)
         guard let song = now.song else {
             songTitle.text = Say.nothingPlaying
             artist.text = ""
@@ -347,6 +365,10 @@ final class PlayerCard: UIViewController {
 
     @objc private func queueTapped() {
         present(QueueSheet(), animated: true)
+    }
+
+    @objc private func devicesTapped() {
+        present(DevicesSheet(), animated: true)
     }
 }
 

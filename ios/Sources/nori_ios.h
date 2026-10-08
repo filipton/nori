@@ -24,7 +24,7 @@ void nori_ios_free(char *s);
 /// One session report. `id` and `text` are valid only for the duration of the callback.
 /// `kind`: 1 state, 2 song, 3 looped, 4 position, 5 error, 6 output, 7 buffering, 8 stopped,
 /// 9 note, 10 reachable, 11 lyrics, 12 search, 13 title, 14 mixing, 15 bridge, 16 placed, 17 awake,
-/// 19 volume (another device set it: `ms` thousandths).
+/// 18 remote (the devices or the one playing changed), 19 volume (another device set it: `ms` thousandths).
 /// `state`: 0 idle, 1 playing, 2 paused, 3 ended.
 typedef struct NoriReport {
     int32_t kind;
@@ -49,9 +49,11 @@ char *nori_ios_open(const char *data_dir, const char *server_id);
 /// Keeps the core's log in `dir`/nori.log, local times at `utc_offset_min`.
 void nori_ios_keep_log(const char *dir, int32_t utc_offset_min);
 
-/// Plays queue index `index` from `ms`. The jump number, or 0 when nothing is open.
+/// Plays queue index `index` from `ms`, on the device playing. The jump number, or 0 when nothing is
+/// open or another device plays.
 uint64_t nori_ios_play_at(int32_t index, int64_t ms);
 
+/// These act on the device playing: this one, or the one it mirrors.
 void nori_ios_toggle(void);
 void nori_ios_next(void);
 void nori_ios_previous(void);
@@ -103,6 +105,14 @@ void nori_ios_on_bonjour(NoriAnnounceFn announce, NoriBrowseFn browse);
 /// A door found: `service` at `host`:`port`, TXT record as a JSON object of strings.
 void nori_ios_lan_found(const char *service, const char *host, uint16_t port, const char *txt);
 void nori_ios_lan_lost(const char *service);
+/// The devices list is in sight (1) or not (0).
+void nori_ios_remote_watch(int32_t on);
+/// Where the music can play, as JSON to free; NULL while remote control is off:
+/// {here, devices: [{id, name, active, playing, title, artist, refused}]}. `refused`: 0 none, 1 the
+/// queue changed there, 2 not allowed, 3 gone, 4 too many.
+char *nori_ios_remote_devices(void);
+/// Moves the music to device `id`, or here (empty).
+void nori_ios_remote_pick(const char *id);
 
 /// Note report codes (`flag`; `index` is the count where there is one).
 #define NORI_NOTE_QUEUED_NEXT 1

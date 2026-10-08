@@ -253,6 +253,17 @@ the battery gauge before deciding (section 8); v1 ships without it.
   600 px, once per song), updated on song change, seek, play/pause and mix takeover (`Event::Song` fires
   when the next song is the louder in a mix - the lock screen flips then, as the Android notification
   does). Never on a timer: iOS extrapolates elapsed from rate.
+- Remote control (Settings → Remote control, the `remoteControl` setting; off, nothing runs): the
+  session's `Remote` serves the LAN door and the relay as on the desktop, and Bonjour (`NetService`,
+  `ios/Sources/Devices.swift`) announces the door and, while "Play on" is open, finds the account's other
+  devices. The place published is the one heard: the render callback passes how far ahead its buffer
+  leaves the unit (the timestamp's host time less now), and `latency_us` adds the route's
+  `outputLatency`. The remote clock is CLOCK_MONOTONIC_RAW (`mach_continuous_time`), which runs on while
+  the iPod sleeps. A volume set from another device moves the system volume through an `MPVolumeView`
+  slider; the system's own keys reach the other devices through `nori_ios_volume`. While another device
+  plays, the player, the queue sheet and the lock screen are its music and control it. The iPod is not a
+  jam host or guest. Paused in the background, iOS suspends the app and its door with it: another device
+  reaches it again once it plays or is opened.
 
 ### 5.5 What the engine already gives this device
 

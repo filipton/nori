@@ -181,7 +181,7 @@ final class MiniPlayer: UIView {
         let now = Core.shared.now
         if let song = now.song {
             title.text = song.title
-            artist.text = song.subtitle
+            artist.text = now.device.map(Say.playingOn) ?? song.subtitle
             artist.isHidden = false
             cover.show(song.cover, points: 40)
         } else {
@@ -612,6 +612,8 @@ final class SettingsPage: UITableViewController {
     private func set(_ name: String, _ value: String) {
         _ = name.withCString { n in value.withCString { v in nori_ios_set(n, v) } }
         load()
+        // The player offers the devices only while remote control is on.
+        if name == "remoteControl" { Core.shared.refresh() }
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {

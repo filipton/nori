@@ -22,6 +22,8 @@ final class QueueSheet: UIViewController, UITableViewDataSource, UITableViewDele
     private var upcoming: [Item] = []
     private var reorderable = false
     private var kept: Set<Int> = []
+    /// Another device's queue, mirrored: a tap plays there, nothing is edited from here.
+    private var mirrored = false
     private var opened = false
     /// What the queue was when last read: a new read only when it changes, not at every position tick.
     private var seen = ""
@@ -174,6 +176,7 @@ final class QueueSheet: UIViewController, UITableViewDataSource, UITableViewDele
         upcoming = part("next")
         reorderable = a.head["reorderable"] as? Bool ?? false
         kept = Set(a.head["kept"] as? [Int] ?? [])
+        mirrored = a.head["remote"] as? Bool ?? false
         table.reloadData()
         // Opens on the song playing, what has played above it out of sight.
         if !opened, !now.isEmpty {
@@ -235,7 +238,7 @@ final class QueueSheet: UIViewController, UITableViewDataSource, UITableViewDele
             label.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
             label.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -6),
         ])
-        if part == .next {
+        if part == .next && !mirrored {
             let clear = UIButton(type: .system)
             clear.setTitle(Say.clear, for: .normal)
             clear.tintColor = Theme.Card.secondary

@@ -52,6 +52,8 @@ pub const REPORT_BRIDGE: i32 = 15;
 pub const REPORT_PLACED: i32 = 16;
 /// Whether the CPU must stay awake (`flag` 1) or may sleep (`flag` 0).
 pub const REPORT_AWAKE: i32 = 17;
+/// The other devices changed, or the one playing (remote control): read what plays and the devices again.
+pub const REPORT_REMOTE: i32 = 18;
 /// Another device set the volume; the app sets the system's. [`Report::ms`] is it in thousandths.
 pub const REPORT_VOLUME: i32 = 19;
 
@@ -218,12 +220,13 @@ fn pack(said: &Said) -> Packed {
             p.kind = REPORT_REACHABLE;
             p.text = c(&e.to_string());
         }
+        Said::Remote => p.kind = REPORT_REMOTE,
         Said::Volume(v) => {
             p.kind = REPORT_VOLUME;
             p.ms = (v * 1000.0).round() as i64;
         }
-        // The iPod lists no other devices yet; hearts are read again when a page or the player is.
-        Said::Remote | Said::Starred(_) => {}
+        // Hearts are read again when a page or the player is.
+        Said::Starred(_) => {}
     }
     p
 }
@@ -581,15 +584,25 @@ pub unsafe extern "C" fn nori_ios_reopen(data_dir: *const c_char) -> *mut c_char
     }
 }
 
-/// Plays queue index `index` from `ms`. Returns the jump number, or 0 when nothing is open.
+/// Plays queue index `index` from `ms`, on the device playing. Returns the jump number, or 0 when
+/// nothing is open or another device plays.
 #[no_mangle]
 pub extern "C" fn nori_ios_play_at(index: i32, ms: i64) -> u64 {
-    with_session(|s| s.engine.play_at(index.max(0) as usize, ms)).unwrap_or(0)
+    let index = index.max(0) as usize;
+    with_session(|s| match s.elsewhere() {
+        Some(_) => {
+            s.jump(index);
+            0
+        }
+        None => s.engine.play_at(index, ms),
+    })
+    .unwrap_or(0)
 }
 
+/// The controls act on the device playing: this one, or the other device it mirrors.
 #[no_mangle]
 pub extern "C" fn nori_ios_toggle() {
-    with_session(|s| s.engine.toggle());
+    with_session(|s| s.toggle());
 }
 
 #[no_mangle]
@@ -599,12 +612,12 @@ pub extern "C" fn nori_ios_next() {
 
 #[no_mangle]
 pub extern "C" fn nori_ios_previous() {
-    with_session(|s| s.engine.previous());
+    with_session(|s| s.previous());
 }
 
 #[no_mangle]
 pub extern "C" fn nori_ios_seek(ms: i64) {
-    with_session(|s| s.engine.seek(ms));
+    with_session(|s| s.seek(ms));
 }
 
 /// Goes to `index` at `ms`, playing or paused as before. Returns the jump number, or 0 when nothing is open.
