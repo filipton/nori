@@ -282,9 +282,12 @@ impl Runner {
         crate::term::debug!("took {}", m.brief());
         let Some(m) = current(self.session.as_ref().map(|s| s.id), m) else { return };
         match &m {
-            Msg::Engine(e @ (Event::Song { .. } | Event::State(_) | Event::Looped { .. } | Event::Bridge { .. })) => {
+            Msg::Engine(e) => {
                 if let Some(s) = &self.session {
-                    s.mpris_changed();
+                    if matches!(e, Event::Song { .. } | Event::State(_) | Event::Looped { .. } | Event::Bridge { .. }) {
+                        s.mpris_changed();
+                    }
+                    // Every event: a seek landing or the place moving is news for the account's other devices.
                     s.followed(e);
                 }
             }

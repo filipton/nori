@@ -117,8 +117,8 @@ pub enum Event {
     Mixing(bool),
     /// A song failed for want of network and the offline bridge is to take over; playback waits paused.
     Bridge { plays: u64 },
-    /// The place moved without a jump (between the CPU and the output's decoder, or a mix's tempo
-    /// ended): a client extrapolating the position re-anchors here.
+    /// The place moved without a jump (between the CPU and the output's decoder, a mix's tempo ended, or
+    /// the place heard left the one said as it ran on): a client extrapolating the position re-anchors here.
     Placed { index: usize, ms: i64 },
     /// Whether the CPU must be kept awake while playing; said before the work it is for.
     Awake(bool),
@@ -563,6 +563,10 @@ struct Told {
     next_position: i64,
     /// A live stream's title, and when playback reaches it.
     title: Option<(String, i64)>,
+    /// While playing, the place last said (song, ms, engine ms when), which clients run on at the pace.
+    said: Option<(usize, i64, i64)>,
+    /// The place last read (song, ms).
+    read: Option<(usize, i64)>,
 }
 
 /// Where the position stood still since `since` (engine ms), and whether it did at the last look.
@@ -585,6 +589,10 @@ const STANDING_MS: i64 = 250;
 /// Playing on the CPU with nothing else due, the position is still looked at this often (longer than a
 /// burst, so never while music plays).
 const STALL_GUARD_MS: i64 = 30_000;
+/// A place heard this far from where the one last said runs on to is [`Event::Placed`].
+const PLACE_LEFT_MS: i64 = 10;
+/// The place said is held to only this long after it was said.
+const PLACE_SETTLE_MS: i64 = 1_000;
 /// Less than this to play while a song's bytes are on their way is [`Event::Buffering`].
 const STALL_US: i64 = 200_000;
 const TEAR_DOWNS: u32 = 2;
@@ -1942,7 +1950,8 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             if other {
                 self.say_song(i, false);
             }
-            return self.say_position(now, i, ms);
+            self.say_position(now, i, ms);
+            return;
         }
         if self.offloading() {
             // The output's decoder says its own waits.
@@ -2060,14 +2069,31 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         if mixing != mixing_was {
             (self.events)(Event::Mixing(mixing));
         }
-        if std::mem::take(&mut self.told.placed) {
+        // The place heard, moving on, has left the one last said as it ran on: clients re-anchor. Not
+        // through a switch's dip or while the place stands (a stall or a change of path, said otherwise),
+        // nor while what was said is fresh (an output starting finds its pace).
+        if self.dip.is_some() {
+            self.told.said = None;
+        }
+        let moving = self.told.read.replace((i, ms)).is_some_and(|(at, read)| at == i && ms > read);
+        let pace = self.status.lock().pace as f64;
+        let left = moving && self.told.said.is_some_and(|(at, said, when)| at == i && now - when >= PLACE_SETTLE_MS && (said + ((now - when) as f64 * pace) as i64 - ms).abs() > PLACE_LEFT_MS);
+        let placed = std::mem::take(&mut self.told.placed) || (left && !other && !looped);
+        if placed {
             (self.events)(Event::Placed { index: i, ms });
         }
-        self.say_position(now, i, ms);
+        let positioned = self.say_position(now, i, ms);
+        self.told.said = match self.state {
+            _ if self.dip.is_some() => None,
+            State::Playing if other || looped || placed || positioned || self.told.said.is_none() => Some((i, ms, now)),
+            State::Playing => self.told.said,
+            _ => None,
+        };
     }
 
     /// [`Event::Position`]: at the pace asked for while playing, and once when a seek or jump lands.
-    fn say_position(&mut self, now: i64, index: usize, ms: i64) {
+    /// Whether it was said.
+    fn say_position(&mut self, now: i64, index: usize, ms: i64) -> bool {
         let jumps = self.made();
         let landed = std::mem::take(&mut self.told.seek_landed) || jumps != self.told.landed_jumps;
         let due = self.told.positions.is_some() && self.state == State::Playing && now >= self.told.next_position;
@@ -2078,6 +2104,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             self.told.landed_jumps = jumps;
             (self.events)(Event::Position { index, ms, jumps });
         }
+        landed || due
     }
 
     /// How long the thread may sleep: `None` until a command, `Some(0)` not at all. The music's timers,

@@ -786,6 +786,43 @@ fn look_refreshes_place_between_bursts() {
     assert_eq!(rig.engine.status().state, State::Playing, "and nothing else changed");
 }
 
+fn placed(rig: &Rig) -> Vec<i64> {
+    rig.events.lock().iter().filter_map(|e| if let Event::Placed { ms, .. } = e { Some(*ms) } else { None }).collect()
+}
+
+/// Behind an output holding seconds of music (a phone's track), the place is the one heard, not the one
+/// written: a device mirroring this one shows what the listener hears.
+#[test]
+fn a_deep_output_says_the_place_heard() {
+    let a = vec![8000i16; RATE as usize * 2 * 60];
+    let files = vec![("a".to_string(), wav(&a), 60_000)];
+    let rig = Rig::build(files, sim::App::new(), Settings::default(), Extra { hold_ms: Some(2_000), ..Extra::default() });
+    rig.engine.play_at(0, 0);
+    let heard_ms = |r: &Rig| (r.heard.lock().len() / 2) as i64 * 1000 / RATE as i64;
+    assert!(rig.wait_for(10, |r| heard_ms(r) > 10_000));
+    rig.engine.look();
+    assert!(rig.time.until(Duration::from_millis(20), || (heard_ms(&rig) - rig.engine.status().position_ms).abs() < 30), "{} ms heard, the status {:?}", heard_ms(&rig), rig.engine.status());
+    assert_eq!(placed(&rig), [0; 0], "the place heard ran on as said");
+}
+
+/// The output holding the music back a moment (a glitch, a slow clock) takes the place heard away from
+/// where the one said runs on to: it is said again, so a client running it on follows.
+#[test]
+fn a_place_heard_away_from_the_one_said_is_said_again() {
+    let a = vec![8000i16; RATE as usize * 2 * 60];
+    let rig = Rig::new(&[("a", &a)], prefs_off(), Settings::default());
+    rig.engine.play_at(0, 0);
+    let heard_ms = |r: &Rig| (r.heard.lock().len() / 2) as i64 * 1000 / RATE as i64;
+    assert!(rig.wait_for(10, |r| heard_ms(r) > 5_000));
+    rig.card.lock().playing = false;
+    rig.run(300);
+    rig.card.lock().playing = true;
+    rig.engine.look();
+    assert!(rig.time.until(Duration::from_millis(50), || !placed(&rig).is_empty()), "{:?}", rig.events.lock());
+    let said = placed(&rig)[0];
+    assert!((said - heard_ms(&rig)).abs() < 30, "said again at {said} ms, {} ms heard", heard_ms(&rig));
+}
+
 #[test]
 fn pause_fades() {
     let a = vec![8000i16; RATE as usize * 2 * 20];

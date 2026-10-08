@@ -12,6 +12,7 @@ use nori_core::client::{Client, NetProfile};
 use nori_core::remote::{jam_join, Discovery, Playing, RelaySupport, Remote, RemoteMe, RemotePlayer, RemoteShown};
 use nori_core::transport::{block_on, Exchange, FailureKind, Transport, TransportError, TransportResponse};
 use nori_core::{Core, ServerConfig, Song};
+use nori_remote::clock;
 use nori_remote::wire::{Answer, Body, DeviceKind, Event, Member, Op, Outgoing, Refusal, Role, Room};
 use parking_lot::{Condvar, Mutex};
 
@@ -55,6 +56,13 @@ struct Relay {
     next: AtomicU64,
     /// A plain Navidrome: no `noriRemote.*` at all.
     absent: bool,
+    /// A device whose clock reads this much ahead (µs), and whose sends reach the relay late: see
+    /// [`Relay::lagging`].
+    lagging: Mutex<Option<(String, i64)>>,
+    /// Sends of the lagging device so far.
+    lagged: AtomicU64,
+    /// A door's poll answers come back 250 ms late.
+    door_late: std::sync::atomic::AtomicBool,
 }
 
 fn decode(v: &str) -> String {
@@ -86,11 +94,34 @@ const GUEST_ENDPOINTS: &[&str] = &["ping", "search3", "getCoverArt", "getSong", 
 
 impl Relay {
     fn new() -> Arc<Relay> {
-        Arc::new(Relay { hub: Mutex::default(), changed: Condvar::new(), next: AtomicU64::new(1), absent: false })
+        Arc::new(Relay { hub: Mutex::default(), changed: Condvar::new(), next: AtomicU64::new(1), absent: false, lagging: Mutex::new(None), lagged: AtomicU64::new(0), door_late: Default::default() })
     }
 
     fn absent() -> Arc<Relay> {
         Arc::new(Relay { absent: true, ..Arc::into_inner(Relay::new()).unwrap() })
+    }
+
+    /// Device `dev`'s times read `skew_us` ahead as the relay passes them on. Its states reach the relay
+    /// 250 ms late; its other sends every other one at once, the rest 60 to 170 ms late.
+    fn lag(&self, dev: &str, skew_us: i64) {
+        *self.lagging.lock() = Some((dev.to_string(), skew_us));
+    }
+
+    /// The lagging device's send `body`, as it reaches the relay (late) and with its clock read ahead.
+    fn lagged(&self, dev: &str, body: Option<String>) -> Option<String> {
+        let Some(skew) = self.lagging.lock().as_ref().filter(|(d, _)| d == dev).map(|(_, s)| *s) else { return body };
+        let mut out: Outgoing = serde_json::from_str(body.as_deref()?).unwrap();
+        let k = self.lagged.fetch_add(1, Ordering::Relaxed);
+        let late = if out.state.is_some() { 250 } else if k % 2 == 1 { 0 } else { 60 + k * 53 % 110 };
+        std::thread::sleep(Duration::from_millis(late));
+        if let Some(at) = out.state.as_mut().and_then(|s| s.at_us.as_mut()) {
+            *at += skew;
+        }
+        if let Some(Body::Clock { t2, t3, .. }) = &mut out.body {
+            *t2 += skew;
+            *t3 += skew;
+        }
+        Some(serde_json::to_string(&out).unwrap())
     }
 
     fn key(&self) -> String {
@@ -248,14 +279,22 @@ impl Transport for Relay {
     async fn send(&self, request: Exchange) -> Result<TransportResponse, TransportError> {
         if request.url.starts_with("http://127.0.0.1:") {
             self.hub.lock().asked.push(format!("lan {}", request.url));
-            return lan_exchange(&request);
+            let answer = lan_exchange(&request);
+            if self.door_late.load(Ordering::Relaxed) && request.url.contains("noriRemote.poll") {
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            return answer;
         }
         let Some(rest) = request.url.strip_prefix(&format!("{SERVER}/rest/")) else {
             return Err(TransportError::Failed { kind: FailureKind::Connect, detail: Some("unreachable".into()) });
         };
         let (endpoint, query) = rest.split_once('?').unwrap_or((rest, ""));
-        let params = query.split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), decode(v))).collect();
-        Ok(TransportResponse { status: 200, body: self.answer(endpoint, &params, request.json.as_deref()) })
+        let params: HashMap<String, String> = query.split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), decode(v))).collect();
+        let json = match endpoint {
+            "noriRemote.send" => self.lagged(params.get("dev").map_or("", String::as_str), request.json),
+            _ => request.json,
+        };
+        Ok(TransportResponse { status: 200, body: self.answer(endpoint, &params, json.as_deref()) })
     }
 
     fn address_changed(&self) {}
@@ -544,6 +583,16 @@ fn nearby_devices_need_no_relay() {
     phone.remote.clone().played(Playing { playing: true, position_ms: 4_000, index: None, volume: None, ..Default::default() });
     desk.until("the phone playing again", |r| r.active().filter(|m| m.playing));
 
+    // Its word comes late through the door; its clock, learned there at once, says when it was heard.
+    relay.door_late.store(true, Ordering::Relaxed);
+    let said = clock::now_us();
+    phone.remote.clone().played(Playing { playing: true, position_ms: 12_000, index: None, volume: None, ..Default::default() });
+    let m = desk.until("the phone's place", |r| r.active().filter(|m| m.playing && m.position_ms >= 12_000));
+    let now = clock::now_us();
+    let off = m.position_at(now) - heard_at(12_000, said, now);
+    assert!(off.abs() <= 5, "the desk shows the phone {off} ms off what is heard there");
+    relay.door_late.store(false, Ordering::Relaxed);
+
     // A device of the same user with an old password is not shown the door.
     let stranger = Device::new(&relay, ann("old"), DeviceKind::Desktop, "Old");
     stranger.remote.clone().watch(true);
@@ -701,5 +750,40 @@ fn controllers_follow_playback_to_where_it_was_handed() {
     desk.playing(&["s1", "s2"], 1);
     desk.remote.clone().hand_over(elsewhere_id.clone());
     assert_eq!(tablet.until("followed on", |r| r.active().filter(|m| m.id == elsewhere_id)).name, "Elsewhere");
+    relay.close();
+}
+
+/// Where the device's listener is at `now_us`, playing on from `position_ms` said at `said_us`.
+fn heard_at(position_ms: i64, said_us: i64, now_us: i64) -> i64 {
+    position_ms + (now_us - said_us) / 1000
+}
+
+#[test]
+fn a_mirrored_playhead_is_where_the_device_is_heard() {
+    let relay = Relay::new();
+    let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    // The phone's clock reads seven seconds ahead of the desk's, and its word reaches the relay late.
+    relay.lag(&phone.remote.id(), 7_000_000);
+    phone.playing(&["s1", "s2"], 0);
+    phone.remote.clone().serve(true);
+    let phone_id = phone.remote.id();
+    desk.remote.clone().watch(true);
+    desk.until("the phone", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state));
+    desk.remote.clone().pick(Some(phone_id.clone()));
+    desk.until("the phone mirrored", |r| r.active());
+
+    let said = clock::now_us();
+    phone.remote.clone().played(Playing { playing: true, position_ms: 30_000, index: None, volume: Some(40), ..Default::default() });
+    desk.until("the phone's new place", |r| r.active().filter(|m| m.position_ms >= 30_000));
+    // The burst of time exchanges is over within three seconds.
+    let settled = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < settled {
+        let _ = desk.news.recv_timeout(Duration::from_millis(100));
+    }
+    let m = desk.remote.active().expect("still mirrored");
+    let now = clock::now_us();
+    let off = m.position_at(now) - heard_at(30_000, said, now);
+    assert!(off.abs() <= 10, "the desk shows the phone {off} ms off what is heard there");
     relay.close();
 }

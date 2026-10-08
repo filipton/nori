@@ -3995,6 +3995,7 @@ dependencies = [
 name = "nori-remote"
 version = "0.5.2-beta.3"
 dependencies = [
+ "libc",
  "nori-model",
  "parking_lot",
  "qrcode",

@@ -6,6 +6,7 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.SettableFuture
 import dev.nori.music.Nori
@@ -154,7 +155,12 @@ class Remotes(private val context: Context, private val nori: Nori) {
     /** The player's state changed; nothing happens unless a remote exists. */
     fun played(playing: Boolean, buffering: Boolean, positionMs: Long, index: Int) {
         val r = remote ?: return
-        work { r.played(Playing(playing, buffering, positionMs, index.takeIf { it >= 0 }?.toUInt(), volumePercent(context)?.toUByte())) }
+        val read = SystemClock.elapsedRealtimeNanos()
+        work {
+            // The place ran on while the worker was busy: the core takes it as of the call.
+            val ran = if (playing) (SystemClock.elapsedRealtimeNanos() - read) / 1_000_000 else 0
+            r.played(Playing(playing, buffering, positionMs + ran, index.takeIf { it >= 0 }?.toUInt(), volumePercent(context)?.toUByte()))
+        }
     }
 
     /** Moves the playback to [device], or to this phone (null). */

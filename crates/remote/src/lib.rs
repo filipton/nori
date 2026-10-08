@@ -3,6 +3,7 @@
 //! room, or a jam's), or straight over the LAN through a device's door (lan.rs). What a controlled device
 //! admits is device.rs; a jam's members, roles and requests are jam.rs. No I/O but the door's sockets.
 
+pub mod clock;
 pub mod device;
 pub mod jam;
 pub mod lan;

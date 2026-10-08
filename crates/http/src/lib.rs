@@ -99,13 +99,15 @@ fn unsatisfied_range(v: &str) -> Option<u64> {
     v.strip_prefix("bytes ")?.trim().strip_prefix("*/")?.trim().parse().ok()
 }
 
-/// Adds `headers` and a whole-request timeout (0 keeps the agent's) to `req`.
+/// Adds `headers` and a whole-request timeout (0 keeps the agent's) to `req`. That timeout is also the
+/// wait for the answer: a held poll answers only when there is news.
 fn configured<B>(mut req: RequestBuilder<B>, headers: &HashMap<String, String>, timeout_ms: u32) -> RequestBuilder<B> {
     for (name, value) in headers {
         req = req.header(name, value);
     }
     if timeout_ms > 0 {
-        req = req.config().timeout_global(Some(Duration::from_millis(timeout_ms as u64))).build();
+        let timeout = Some(Duration::from_millis(timeout_ms as u64));
+        req = req.config().timeout_global(timeout).timeout_recv_response(timeout).build();
     }
     req
 }

@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 #[cfg(feature = "desktop")]
 use std::sync::Weak;
-use std::time::Instant;
 
 use nori_core::remote::{Mirror, MirrorRow, Playing, Remote, RemotePlayer, RemoteShown};
 #[cfg(feature = "desktop")]
@@ -39,7 +38,7 @@ impl Remotes {
     pub fn elsewhere(&self) -> Option<Elsewhere> {
         let remote = self.get()?;
         let mirror = remote.active()?;
-        Some(Elsewhere { mirror, read: Instant::now(), remote })
+        Some(Elsewhere { mirror, remote })
     }
 
     /// Notes whether another device plays now; true when it just started to.
@@ -117,8 +116,8 @@ impl RemotePlayer for HostPlayer {
             Op::Repeat { mode } => h.repeat(mode),
             Op::Volume { percent } => return h.volume_from_afar(percent as f32 / 100.0),
             Op::Star { id, on } => h.star(id, on),
-            // The core keeps transfers, pages and jam ops to itself.
-            Op::Transfer { .. } | Op::Page { .. } | Op::Request { .. } | Op::Decide { .. } | Op::Promote { .. } | Op::Kick { .. } => {}
+            // The core keeps transfers, pages, time exchanges and jam ops to itself.
+            Op::Transfer { .. } | Op::Page { .. } | Op::Clock { .. } | Op::Request { .. } | Op::Decide { .. } | Op::Promote { .. } | Op::Kick { .. } => {}
         }
         h.remotes.played(&h.engine);
     }
@@ -163,8 +162,6 @@ pub enum Press {
 #[derive(Clone)]
 pub struct Elsewhere {
     pub mirror: Mirror,
-    /// When `mirror` was read: its place runs on from then.
-    read: Instant,
     remote: Arc<Remote>,
 }
 
@@ -178,16 +175,9 @@ impl Elsewhere {
         self.mirror.at.and_then(|a| self.mirror.rows.get(a as usize))
     }
 
-    /// Where the song is now: the device's word run on from when it was read, held within the song.
+    /// Where the song is now: what the device's listener hears at this moment ([`Mirror::position_now`]).
     pub fn position_ms(&self) -> i64 {
-        self.position_after(self.read.elapsed().as_millis() as i64)
-    }
-
-    fn position_after(&self, elapsed_ms: i64) -> i64 {
-        let m = &self.mirror;
-        let ran = if m.playing { m.position_ms + elapsed_ms } else { m.position_ms };
-        let end = self.song().map_or(0, |s| s.duration as i64 * 1000);
-        if end > 0 { ran.clamp(0, end) } else { ran.max(0) }
+        self.mirror.position_now()
     }
 
     /// The songs after the one playing, in play order.
@@ -423,12 +413,13 @@ mod tests {
             playing: true,
             buffering: false,
             position_ms: 10_000,
+            at_us: 0,
             shuffle: true,
             repeat: 0,
             volume: Some(40),
             refused: None,
         };
-        Elsewhere { mirror, read: Instant::now(), remote }
+        Elsewhere { mirror, remote }
     }
 
     #[test]
@@ -436,9 +427,9 @@ mod tests {
         let mut e = desk();
         assert_eq!(e.song().map(|s| s.id.as_str()), Some("b"));
         assert_eq!(e.upcoming().iter().map(|r| r.index).collect::<Vec<_>>(), [1], "after the song playing, in play order");
-        assert_eq!((e.position_after(2_500), e.position_after(500_000)), (12_500, 200_000), "held at the song's end");
+        assert_eq!((e.mirror.position_at(2_500_000), e.mirror.position_at(500_000_000)), (12_500, 200_000), "held at the song's end");
         e.mirror.playing = false;
-        assert_eq!(e.position_after(2_500), 10_000, "paused");
+        assert_eq!(e.mirror.position_at(2_500_000), 10_000, "paused");
         e.mirror.at = None;
         assert_eq!(e.upcoming().len(), 3, "nothing playing: the whole queue is to come");
         assert_eq!(e.volume(), Some(0.4));

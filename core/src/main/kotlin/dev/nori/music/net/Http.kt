@@ -179,7 +179,8 @@ class Http(private val context: Context) {
     }
 
     private suspend fun exchange(request: Request, timeoutMs: Long): TransportResponse = suspendCancellableCoroutine { cont ->
-        val client = if (timeoutMs > 0) api.newBuilder().callTimeout(timeoutMs, TimeUnit.MILLISECONDS).build() else api
+        // A request's own timeout is the whole wait, reading too: a held poll answers only when there is news.
+        val client = if (timeoutMs > 0) api.newBuilder().callTimeout(timeoutMs, TimeUnit.MILLISECONDS).readTimeout(timeoutMs, TimeUnit.MILLISECONDS).build() else api
         val call = client.newCall(request)
         cont.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {

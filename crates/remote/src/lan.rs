@@ -172,7 +172,8 @@ fn serve(s: &Shared, conn: TcpStream) {
     let mut reader = BufReader::new(conn);
     while !s.closed.load(Ordering::Acquire) {
         let Some((method, target, body)) = read_request(&mut reader) else { break };
-        let (status, json) = answer(s, &method, &target, &body);
+        let received_us = crate::clock::now_us();
+        let (status, json) = answer(s, &method, &target, &body, received_us);
         let head = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", json.len());
         if out.write_all(head.as_bytes()).and_then(|_| out.write_all(json.as_bytes())).is_err() {
             break;
@@ -210,7 +211,8 @@ fn read_request(r: &mut impl BufRead) -> Option<(String, String, Vec<u8>)> {
     Some((method, target, body))
 }
 
-fn answer(s: &Shared, method: &str, target: &str, body: &[u8]) -> (&'static str, String) {
+/// The answer to a request read at `received_us` (the device's clock).
+fn answer(s: &Shared, method: &str, target: &str, body: &[u8], received_us: i64) -> (&'static str, String) {
     if !verified(&s.secret, method, target, body, now_ms()) {
         return ("401 Unauthorized", "{}".into());
     }
@@ -237,6 +239,12 @@ fn answer(s: &Shared, method: &str, target: &str, body: &[u8]) -> (&'static str,
                 .collect();
             let a = Answer { seq: i.seq, you: dev.clone(), rooms: vec![Room { room: ROOM.into(), jam: false, members: vec![i.me.clone()] }], events };
             ("200 OK", serde_json::to_string(&a).unwrap_or_default())
+        }
+        // A time exchange (`crate::clock`), answered at once, stamped as near the socket as this gets.
+        "/rest/noriRemote.time" => {
+            let Some(t1) = query(target, "t1").and_then(|v| v.parse().ok()) else { return ("400 Bad Request", "{}".into()) };
+            let times = Body::Clock { t1, t2: received_us, t3: crate::clock::now_us() };
+            ("200 OK", serde_json::to_string(&times).unwrap_or_default())
         }
         "/rest/noriRemote.send" if method == "POST" => {
             let Ok(out) = serde_json::from_slice::<Outgoing>(body) else { return ("400 Bad Request", "{}".into()) };
@@ -327,5 +335,14 @@ mod tests {
         let a: Answer = serde_json::from_str(&held.join().unwrap()).unwrap();
         let bodies: Vec<&Body> = a.events.iter().map(|e| &e.body).collect();
         assert_eq!(bodies, [&Body::Ack { id: 1, refusal: None }], "only its own replies");
+
+        // A time exchange is stamped on this machine's clock, between the request and its answer.
+        let t1 = crate::clock::now_us();
+        let (status, times) = request(door.port(), "pw", "GET", &format!("/rest/noriRemote.time?dev=phone&t1={t1}"), "");
+        let t4 = crate::clock::now_us();
+        match serde_json::from_str::<Body>(&times).unwrap() {
+            Body::Clock { t1: echoed, t2, t3 } => assert!(status == 200 && echoed == t1 && t1 <= t2 && t2 <= t3 && t3 <= t4, "{t1} {t2} {t3} {t4}"),
+            b => panic!("{b:?}"),
+        }
     }
 }

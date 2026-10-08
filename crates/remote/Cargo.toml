@@ -22,3 +22,7 @@ sha2 = "0.11"
 # The jam's invite as a QR code: the matrix only, each client draws it.
 qrcode = { version = "0.14", default-features = false }
 nori-model = { path = "../model" }
+
+# The remote timing clock (clock.rs): CLOCK_BOOTTIME, which std does not read.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

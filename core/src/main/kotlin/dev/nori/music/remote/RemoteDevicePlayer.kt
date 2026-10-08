@@ -32,15 +32,12 @@ import dev.nori.music.playback.queuedAs
 class RemoteDevicePlayer(private val context: Context, private val nori: Nori) : SimpleBasePlayer(Looper.getMainLooper()) {
     private val remotes = nori.remotes
     private var mirror: Mirror? = null
-    /** When [mirror]'s position was right, elapsedRealtime. */
-    private var mirrorAt = 0L
     private var items: List<MediaItemData> = emptyList()
     private var itemsOf: List<dev.nori.music.ffi.MirrorRow>? = null
 
     /** The device's newest state. */
     fun show(m: Mirror) {
         mirror = m
-        mirrorAt = SystemClock.elapsedRealtime()
         invalidateState()
     }
 
@@ -61,7 +58,8 @@ class RemoteDevicePlayer(private val context: Context, private val nori: Nori) :
         if (m == null) return b.setPlaybackState(Player.STATE_IDLE).build()
         val list = rows(m)
         val at = m.at?.toInt()
-        val elapsed = if (m.playing) SystemClock.elapsedRealtime() - mirrorAt else 0
+        // The core's clock is elapsedRealtime's (Mirror.at_us).
+        val elapsed = if (m.playing) (SystemClock.elapsedRealtimeNanos() / 1_000 - m.atUs) / 1_000 else 0
         return b.setPlaylist(list)
             .setCurrentMediaItemIndex(at ?: C.INDEX_UNSET)
             .setPlayWhenReady(m.playing, Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE)

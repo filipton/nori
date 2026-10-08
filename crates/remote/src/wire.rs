@@ -104,6 +104,9 @@ pub enum Body {
     Ack { id: u64, refusal: Option<Refusal> },
     /// The answer to [`Op::Page`]: the queue at revision `rev`, in play order from turn `from`.
     Page { id: u64, rev: u64, from: u32, entries: Vec<Entry> },
+    /// The answer to [`Op::Clock`]: the device received it at `t2` and answered at `t3`, on its clock
+    /// ([`crate::clock`]). A door answers its time endpoint with it too.
+    Clock { t1: i64, t2: i64, t3: i64 },
 }
 
 /// What a controller asks of a device. Index-based edits carry the queue revision they were made
@@ -150,6 +153,8 @@ pub enum Op {
     Star { id: String, on: bool },
     /// Asks for `count` songs of the queue from turn `from` of its play order; answered with [`Body::Page`].
     Page { from: u32, count: u32 },
+    /// A time exchange sent at `t1` on the sender's clock; answered with [`Body::Clock`].
+    Clock { t1: i64 },
     /// A jam member asks for a song.
     Request { song: Song },
     /// The host or an admin accepts or declines request `request`.
@@ -239,18 +244,21 @@ impl Entry {
 }
 
 /// What a device publishes whenever its playback or queue changes (not as time passes: a reader
-/// carries the position on from when it received it).
+/// carries the position on from `at_us`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 #[serde(default, rename_all = "camelCase")]
 pub struct DeviceState {
-    /// Bumped by every publish: a reader takes `position_ms` as of when a new one arrived.
+    /// Bumped by every publish.
     pub seq: u64,
     pub playing: bool,
     /// Waiting for the song's bytes while it should play.
     pub buffering: bool,
-    /// Where the song was as this was published.
+    /// Where the song was at `at_us`, or as this was published.
     pub position_ms: i64,
+    /// When the listener heard `position_ms`, on the device's clock ([`crate::clock::now_us`]); None from
+    /// an older device, whose reader takes the position as of when the state arrived.
+    pub at_us: Option<i64>,
     /// The current list index.
     pub index: Option<u32>,
     /// The queue's revision; index-based commands name it.

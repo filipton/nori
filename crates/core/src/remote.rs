@@ -6,7 +6,9 @@
 //!
 //! One device of the account plays at a time: the active one. This one is it until a transfer moves the
 //! playback elsewhere ([`Remote::pick`], or another device's transfer); it then mirrors that device
-//! ([`Remote::active`]) until playback comes back, a transfer moves it on, or the device goes.
+//! ([`Remote::active`]) until playback comes back, a transfer moves it on, or the device goes. While it
+//! mirrors, it keeps learning how the device's clock stands to its own (nori-remote's clock.rs): a burst
+//! of time exchanges, then one every quarter minute, so the playhead shown is the one heard there.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -14,6 +16,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
+use nori_remote::clock::{self, ClockSync};
 use nori_remote::device::{admit, is_jam, Sender};
 use nori_remote::jam::{By, Jam};
 use nori_remote::lan::{self, Door};
@@ -49,7 +52,11 @@ const RETRY_MS: u64 = 30_000;
 const POLL_TIMEOUT_MS: u32 = HOLD_MS + 15_000;
 
 /// A published position this close to where the last one runs on to is not sent again.
-const POSITION_SLACK_MS: i64 = 1_500;
+const POSITION_SLACK_MS: i64 = 5;
+
+/// Time exchanges of a burst go out this far apart: more than most round trips through a relay, so an
+/// answer does not wait behind the one before.
+const BURST_GAP_MS: u64 = 250;
 
 /// What the platform's player does for the remote control.
 #[cfg_attr(feature = "ffi", uniffi::export(with_foreign))]
@@ -137,14 +144,33 @@ pub struct Mirror {
     pub rev: u64,
     pub playing: bool,
     pub buffering: bool,
-    /// Where the song is now; it runs on at one times from here while `playing`.
+    /// Where the song was at `at_us`; it runs on at one times from there while `playing`.
     pub position_ms: i64,
+    /// When the device's listener heard `position_ms`, on this device's clock (`nori_remote::clock::now_us`,
+    /// Android's `SystemClock.elapsedRealtimeNanos` / 1000).
+    pub at_us: i64,
     pub shuffle: bool,
     pub repeat: u8,
     /// The device's volume, 0 to 100, when it can be set.
     pub volume: Option<u8>,
     /// Its answer to the last command sent to it, when it refused.
     pub refused: Option<Refusal>,
+}
+
+impl Mirror {
+    /// Where the song is at `now_us` on this device's clock, within the song.
+    pub fn position_at(&self, now_us: i64) -> i64 {
+        if !self.playing {
+            return self.position_ms;
+        }
+        let length = self.at.and_then(|a| self.rows.get(a as usize)).filter(|r| r.song.duration > 0).map_or(i64::MAX, |r| r.song.duration as i64 * 1000);
+        (self.position_ms + (now_us - self.at_us) / 1000).clamp(0, length)
+    }
+
+    /// Where the song is now: what the device's listener hears at this moment.
+    pub fn position_now(&self) -> i64 {
+        self.position_at(clock::now_us())
+    }
 }
 
 /// A song of a mirrored queue, and the list index commands name it by.
@@ -240,7 +266,8 @@ struct Peer {
     /// Polls failed in a row, each at the next address.
     failed: usize,
     member: Member,
-    received: Instant,
+    /// When its state last changed, on this device's clock.
+    received: i64,
     since: Option<u64>,
     polling: bool,
 }
@@ -257,8 +284,12 @@ struct Mirrored {
     heard: Option<DeviceState>,
     /// That state with this device's own commands since then foreseen in it.
     shown: Option<DeviceState>,
-    /// When `shown`'s position was right.
-    at: Instant,
+    /// When `shown`'s position was right, on this device's clock: as it arrived, or was foreseen here.
+    at: i64,
+    /// The same moment on the device's clock, as it said (None: foreseen here, or an older device).
+    device_at: Option<i64>,
+    /// How the device's clock stands to this one's.
+    clock: ClockSync,
     /// The queue by turn, at `shown`'s revision, as its pages arrive.
     pages: Vec<Option<Entry>>,
     /// The turn the page asked for and not answered yet starts at.
@@ -267,11 +298,12 @@ struct Mirrored {
 
 impl Mirrored {
     fn new(id: String) -> Mirrored {
-        Mirrored { id, heard: None, shown: None, at: Instant::now(), pages: Vec::new(), asking: None }
+        Mirrored { id, heard: None, shown: None, at: clock::now_us(), device_at: None, clock: ClockSync::default(), pages: Vec::new(), asking: None }
     }
 
-    /// A state arrived from the device (`at`: when). False when it is the one already heard.
-    fn heard(&mut self, state: &DeviceState, at: Instant) -> bool {
+    /// A state arrived from the device (`at`: when, on this device's clock). False when it is the one
+    /// already heard.
+    fn heard(&mut self, state: &DeviceState, at: i64) -> bool {
         if self.heard.as_ref() == Some(state) {
             return false;
         }
@@ -288,7 +320,17 @@ impl Mirrored {
         self.heard = Some(state.clone());
         self.shown = Some(state.clone());
         self.at = at;
+        self.device_at = state.at_us;
         true
+    }
+
+    /// When `shown`'s position was right, on this device's clock: the device's own word, once its clock
+    /// is known here.
+    fn shown_at(&self) -> i64 {
+        match (self.device_at, self.clock.offset_at(self.at)) {
+            (Some(there), Some(offset)) => there - offset,
+            _ => self.at,
+        }
     }
 
     /// A page of the queue arrived.
@@ -331,9 +373,10 @@ impl Mirrored {
     /// what it really did.
     fn foresee(&mut self, op: &Op) {
         let rows = self.rows();
-        let elapsed = self.at.elapsed().as_millis() as i64;
+        let at = self.shown_at();
         let Some(st) = &mut self.shown else { return };
-        let now = nori_remote::position_now(st, elapsed);
+        let here = clock::now_us();
+        let now = nori_remote::position_now(st, (here - at) / 1000);
         let at = rows.iter().position(|e| Some(e.index) == st.index);
         let to = |k: Option<usize>| k.and_then(|k| rows.get(k)).map(|e| e.index);
         let (index, position) = match *op {
@@ -376,7 +419,8 @@ impl Mirrored {
         };
         st.index = index;
         st.position_ms = position;
-        self.at = Instant::now();
+        self.at = here;
+        self.device_at = None;
     }
 
     fn view(&self, name: String, kind: DeviceKind, refused: Option<Refusal>) -> Option<Mirror> {
@@ -392,7 +436,8 @@ impl Mirrored {
             rev: st.rev,
             playing: st.playing,
             buffering: st.buffering,
-            position_ms: nori_remote::position_now(st, self.at.elapsed().as_millis() as i64),
+            position_ms: st.position_ms,
+            at_us: self.shown_at(),
             shuffle: st.shuffle,
             repeat: st.repeat,
             volume: st.volume,
@@ -414,17 +459,19 @@ struct Inner {
     since: Option<u64>,
     you: String,
     rooms: Vec<Room>,
-    /// When each other member's state last changed here.
-    received: HashMap<String, Instant>,
+    /// When each other member's state last changed here, on this device's clock.
+    received: HashMap<String, i64>,
     peers: Vec<Peer>,
     hosted: Option<Hosted>,
     playing: Playing,
-    /// When `playing` was said: its position runs on from then.
-    playing_at: Option<Instant>,
+    /// When `playing` was said, on this device's clock: its position runs on from then.
+    playing_at: Option<i64>,
     /// The device this one last handed its playback to, until it plays again.
     handed_to: Option<String>,
     /// The account's active device, while it is another one.
     mirror: Option<Mirrored>,
+    /// Bumped to end the running time keeper (each runs while its generation is current).
+    timing: u64,
     published: Option<(DeviceState, Instant)>,
     /// The last published state's [`DeviceState::seq`].
     seq: u64,
@@ -451,12 +498,12 @@ impl Inner {
     }
 
     /// Device `id`'s last state and when it arrived; a nearby device's door says it first.
-    fn state_of(&self, id: &str) -> Option<(&DeviceState, Instant)> {
+    fn state_of(&self, id: &str) -> Option<(&DeviceState, i64)> {
         if let Some(p) = self.peers.iter().find(|p| p.member.id == id) {
             return p.member.state.as_ref().map(|s| (s, p.received));
         }
         let m = self.rooms.iter().filter(|r| !r.jam).flat_map(|r| &r.members).find(|m| m.id == id)?;
-        m.state.as_ref().map(|s| (s, self.received.get(id).copied().unwrap_or_else(Instant::now)))
+        m.state.as_ref().map(|s| (s, self.received.get(id).copied().unwrap_or_else(clock::now_us)))
     }
 
     /// Whether device `id` is still there to be followed (it serves, nearby or through the relay).
@@ -481,19 +528,22 @@ impl Inner {
     }
 
     fn age(&self, id: &str) -> i64 {
-        self.received.get(id).map_or(0, |t| t.elapsed().as_millis() as i64)
+        self.received.get(id).map_or(0, |t| (clock::now_us() - t) / 1000)
+    }
+
+    fn since_played_ms(&self, now_us: i64) -> i64 {
+        self.playing_at.map_or(0, |t| (now_us - t) / 1000)
     }
 
     /// Where this device's song is now, run on from when the platform last said.
     fn position_now(&self) -> i64 {
-        let elapsed = self.playing_at.map_or(0, |t| t.elapsed().as_millis() as i64);
+        let elapsed = self.since_played_ms(clock::now_us());
         if self.playing.playing { self.playing.position_ms + elapsed } else { self.playing.position_ms }
     }
 
-    /// [`Inner::position_now`], held to the end of `state`'s song.
-    fn position_now_of(&self, state: &DeviceState) -> i64 {
-        let elapsed = self.playing_at.map_or(0, |t| t.elapsed().as_millis() as i64);
-        nori_remote::position_now(&DeviceState { position_ms: self.playing.position_ms, ..state.clone() }, elapsed)
+    /// Where this device's song is at `now_us`, held to the end of `state`'s song.
+    fn position_at_of(&self, state: &DeviceState, now_us: i64) -> i64 {
+        nori_remote::position_now(&DeviceState { position_ms: self.playing.position_ms, ..state.clone() }, self.since_played_ms(now_us))
     }
 }
 
@@ -509,6 +559,8 @@ pub struct Remote {
     inner: Mutex<Inner>,
     /// Wakes a relay poller waiting to try again.
     retry: Condvar,
+    /// Wakes the time keeper when the device mirrored changes.
+    timing: Condvar,
     out: mpsc::Sender<Out>,
 }
 
@@ -526,7 +578,7 @@ impl Remote {
             id
         });
         let (out, rx) = mpsc::channel();
-        let remote = Arc::new(Remote { client, id, me, player, shown, discovery, inner: Mutex::default(), retry: Condvar::new(), out });
+        let remote = Arc::new(Remote { client, id, me, player, shown, discovery, inner: Mutex::default(), retry: Condvar::new(), timing: Condvar::new(), out });
         let (client, who) = (remote.client.clone(), remote.who());
         // Sends one at a time, in order; it ends with the remote.
         let _ = std::thread::Builder::new().name("nori-remote-out".into()).spawn(move || {
@@ -625,7 +677,7 @@ impl Remote {
                 i.handed_to = None;
             }
             i.playing = playing;
-            i.playing_at = Some(Instant::now());
+            i.playing_at = Some(clock::now_us());
             (i.serving || i.hosted.is_some(), started && i.mirror.is_some())
         };
         if started {
@@ -688,7 +740,7 @@ impl Remote {
     pub fn devices(&self) -> Vec<RemoteDevice> {
         let i = self.inner.lock();
         let seen = |m: &Member, age_ms: i64, nearby: bool| RemoteDevice { id: m.id.clone(), name: m.name.clone(), kind: m.kind, state: m.state.clone(), age_ms, nearby, refused: i.refused.get(&m.id).copied() };
-        let mut out: Vec<RemoteDevice> = i.peers.iter().filter(|p| p.member.state.is_some()).map(|p| seen(&p.member, p.received.elapsed().as_millis() as i64, true)).collect();
+        let mut out: Vec<RemoteDevice> = i.peers.iter().filter(|p| p.member.state.is_some()).map(|p| seen(&p.member, (clock::now_us() - p.received) / 1000, true)).collect();
         for room in i.rooms.iter().filter(|r| !r.jam) {
             for m in room.members.iter().filter(|m| m.id != self.id && m.state.is_some()) {
                 if !out.iter().any(|d| d.id == m.id) {
@@ -748,7 +800,7 @@ impl Remote {
             }
             i.peers.retain(|p| p.service != service && p.member.id != id);
             let member = Member { id, name: get("name"), kind, state: None };
-            i.peers.push(Peer { service, bases: vec![base], failed: 0, member, received: Instant::now(), since: None, polling: false });
+            i.peers.push(Peer { service, bases: vec![base], failed: 0, member, received: clock::now_us(), since: None, polling: false });
         }
         self.keep_polling();
     }
@@ -955,7 +1007,7 @@ impl Remote {
             secret,
             Box::new(move |from, body| {
                 if let (Some(r), Body::Command { id, op }) = (weak.upgrade(), body) {
-                    r.obey(Via::Door, from.to_string(), id, *op);
+                    r.obey(Via::Door, from.to_string(), id, *op, clock::now_us());
                 }
             }),
         );
@@ -1006,10 +1058,11 @@ impl Remote {
                 self.poll_url(i.since, i.serving)
             };
             let got = block_on(transport::get(&*self.client.transport, url, POLL_TIMEOUT_MS));
+            let received = clock::now_us();
             match (support(&got), got) {
                 (Some(RelaySupport::Supported), Ok(body)) => {
                     self.inner.lock().relay = RelaySupport::Supported;
-                    self.took(answer(&body).unwrap_or_default());
+                    self.took(answer(&body).unwrap_or_default(), received);
                 }
                 (Some(_), _) => return self.no_relay(generation),
                 (None, _) => {
@@ -1053,6 +1106,7 @@ impl Remote {
             };
             let url = format!("{base}{}", lan::signed(&secret, "GET", &query, b"", db::now_ms()));
             let got = block_on(transport::get(&*self.client.transport, url, POLL_TIMEOUT_MS)).ok().and_then(|b| serde_json::from_slice::<Answer>(&b).ok());
+            let received = clock::now_us();
             let Some(a) = got else {
                 // Not there at this address: the next one it was seen at, until none answers.
                 let gone = {
@@ -1075,7 +1129,7 @@ impl Remote {
                 p.since = Some(a.seq);
                 if let Some(m) = a.rooms.into_iter().flat_map(|r| r.members).next() {
                     if m.state != p.member.state {
-                        p.received = Instant::now();
+                        p.received = received;
                     }
                     p.member.state = m.state;
                 }
@@ -1086,19 +1140,21 @@ impl Remote {
                         Body::Command { id, op } => commands.push((id, *op)),
                         Body::Ack { refusal, .. } => note(&mut i.refused, &from, refusal),
                         Body::Page { rev, from: turn, entries, .. } => paged(&mut i, &from, rev, turn, entries),
+                        Body::Clock { t1, t2, t3 } => timed(&mut i, &from, clock::Exchange { t1, t2, t3, t4: received }),
                     }
                 }
                 (from, base)
             };
             for (id, op) in commands {
-                self.obey(Via::Peer(base.clone()), from.clone(), id, op);
+                self.obey(Via::Peer(base.clone()), from.clone(), id, op, received);
             }
             self.follow_active();
             self.shown.changed();
         }
     }
 
-    fn took(self: &Arc<Self>, a: Answer) {
+    /// A relay poll's answer, received at `received` (this device's clock).
+    fn took(self: &Arc<Self>, a: Answer, received: i64) {
         let mut commands = Vec::new();
         let mut republish = false;
         {
@@ -1114,7 +1170,7 @@ impl Remote {
             for m in a.rooms.iter().flat_map(|r| &r.members).filter(|m| m.id != self.id) {
                 let before = i.rooms.iter().flat_map(|r| &r.members).find(|o| o.id == m.id).map(|o| &o.state);
                 if before != Some(&m.state) {
-                    i.received.insert(m.id.clone(), Instant::now());
+                    i.received.insert(m.id.clone(), received);
                 }
             }
             if let Some(h) = &mut i.hosted {
@@ -1128,12 +1184,13 @@ impl Remote {
                     Body::Command { id, op } => commands.push((Via::Relay(jam.then_some(e.room)), e.from, id, *op)),
                     Body::Ack { refusal, .. } => note(&mut i.refused, &e.from, refusal),
                     Body::Page { rev, from, entries, .. } => paged(&mut i, &e.from, rev, from, entries),
+                    Body::Clock { t1, t2, t3 } => timed(&mut i, &e.from, clock::Exchange { t1, t2, t3, t4: received }),
                 }
             }
             i.rooms = a.rooms;
         }
         for (via, from, id, op) in commands {
-            self.obey(via, from, id, op);
+            self.obey(via, from, id, op, received);
         }
         if republish {
             self.publish();
@@ -1144,15 +1201,65 @@ impl Remote {
 
     /// Makes `to` the active device (None: this one), and follows it while it is another.
     fn set_active(self: &Arc<Self>, to: Option<String>) {
-        {
+        let keeper = {
             let mut i = self.inner.lock();
             if i.mirror.as_ref().map(|m| &m.id) == to.as_ref() {
                 return;
             }
             i.mirror = to.map(Mirrored::new);
+            i.timing += 1;
+            i.mirror.is_some().then_some(i.timing)
+        };
+        self.timing.notify_all();
+        if let Some(generation) = keeper {
+            let me = self.clone();
+            let _ = std::thread::Builder::new().name("nori-remote-clock".into()).spawn(move || me.keep_time(generation));
         }
         self.follow_active();
         self.keep_polling();
+    }
+
+    /// While the device mirrored stays the same (`generation`), learns how its clock stands to this one's:
+    /// a burst of time exchanges, then one every [`clock::EVERY_US`]. Through its door when it is near,
+    /// else through the relay, whose answer comes with a poll.
+    fn keep_time(self: Arc<Self>, generation: u64) {
+        for sent in 0.. {
+            let (id, link) = {
+                let mut i = self.inner.lock();
+                if sent > 0 {
+                    let wait = if sent < clock::BURST { Duration::from_millis(BURST_GAP_MS) } else { Duration::from_micros(clock::EVERY_US as u64) };
+                    let until = Instant::now() + wait;
+                    while i.timing == generation && !self.timing.wait_until(&mut i, until).timed_out() {}
+                }
+                if i.timing != generation {
+                    return;
+                }
+                let Some(id) = i.mirror.as_ref().map(|m| m.id.clone()) else { return };
+                let link = match i.peers.iter().find(|p| p.member.id == id) {
+                    Some(p) => Some(Link::Lan(p.base())),
+                    None => (i.relay != RelaySupport::Unsupported).then_some(Link::Relay),
+                };
+                (id, link)
+            };
+            match link {
+                Some(Link::Lan(base)) => {
+                    let Some((_, secret)) = self.client.core.account.read().clone() else { return };
+                    let t1 = clock::now_us();
+                    let url = format!("{base}{}", lan::signed(&secret, "GET", &format!("/rest/noriRemote.time?dev={}&t1={t1}", self.id), b"", db::now_ms()));
+                    let got = block_on(transport::get(&*self.client.transport, url, 5_000));
+                    let t4 = clock::now_us();
+                    if let Some(Body::Clock { t1, t2, t3 }) = got.ok().and_then(|b| serde_json::from_slice(&b).ok()) {
+                        timed(&mut self.inner.lock(), &id, clock::Exchange { t1, t2, t3, t4 });
+                        self.shown.changed();
+                    }
+                }
+                Some(Link::Relay) => {
+                    let command = Body::Command { id: self.next_id(), op: Box::new(Op::Clock { t1: clock::now_us() }) };
+                    self.out(Out::send(Link::Relay, Outgoing { to: Some(id), body: Some(command), ..Default::default() }));
+                }
+                None => {}
+            }
+        }
     }
 
     /// Takes the mirrored device's newest state, follows it on to the device it handed its playback to,
@@ -1164,7 +1271,9 @@ impl Remote {
             let Some(id) = i.mirror.as_ref().map(|m| m.id.clone()) else { return };
             if !i.listed(&id) {
                 i.mirror = None;
+                i.timing += 1;
                 drop(i);
+                self.timing.notify_all();
                 self.keep_polling();
                 return;
             }
@@ -1191,9 +1300,10 @@ impl Remote {
         }
     }
 
-    /// Carries out a command and answers it.
-    fn obey(self: &Arc<Self>, via: Via, from: String, id: u64, op: Op) {
+    /// Carries out a command, received at `received` (this device's clock), and answers it.
+    fn obey(self: &Arc<Self>, via: Via, from: String, id: u64, op: Op, received: i64) {
         let body = match op {
+            Op::Clock { t1 } => Body::Clock { t1, t2: received, t3: clock::now_us() },
             Op::Page { from: turn, count } if !matches!(via, Via::Relay(Some(_))) => {
                 let q = self.read_queue(|_, len| turn as usize..(turn.saturating_add(count.min(PAGE_MAX)) as usize).min(len));
                 Body::Page { id, rev: q.rev, from: turn, entries: q.entries }
@@ -1327,8 +1437,11 @@ impl Remote {
             repeat: q.repeat,
             jam: i.hosted.as_ref().map(|h| h.jam.state()),
             handed_to: i.handed_to.clone(),
+            at_us: None,
         };
-        st.position_ms = i.position_now_of(&st);
+        let now = clock::now_us();
+        st.position_ms = i.position_at_of(&st, now);
+        st.at_us = Some(now);
         st
     }
 
@@ -1337,8 +1450,8 @@ impl Remote {
         let mut state = self.state_now();
         let (serving, jam_room, relay) = {
             let mut i = self.inner.lock();
-            if let Some((last, at)) = &i.published {
-                if same_but_time(last, &state, at.elapsed().as_millis() as i64) {
+            if let Some((last, _)) = &i.published {
+                if same_but_time(last, &state) {
                     return;
                 }
             }
@@ -1377,6 +1490,13 @@ fn paged(i: &mut Inner, from: &str, rev: u64, turn: u32, entries: Vec<Entry>) {
     }
 }
 
+/// A time exchange with device `from` came back.
+fn timed(i: &mut Inner, from: &str, exchange: clock::Exchange) {
+    if let Some(m) = i.mirror.as_mut().filter(|m| m.id == from) {
+        m.clock.add(exchange);
+    }
+}
+
 fn note(refused: &mut HashMap<String, Refusal>, from: &str, refusal: Option<Refusal>) {
     match refusal {
         Some(r) => refused.insert(from.to_string(), r),
@@ -1385,9 +1505,10 @@ fn note(refused: &mut HashMap<String, Refusal>, from: &str, refusal: Option<Refu
 }
 
 /// Whether `now` is `last` with only its position run on as time passed.
-fn same_but_time(last: &DeviceState, now: &DeviceState, elapsed_ms: i64) -> bool {
+fn same_but_time(last: &DeviceState, now: &DeviceState) -> bool {
+    let elapsed_ms = now.at_us.zip(last.at_us).map_or(0, |(now, last)| (now - last) / 1000);
     let expected = nori_remote::position_now(last, elapsed_ms);
-    (expected - now.position_ms).abs() <= POSITION_SLACK_MS && DeviceState { position_ms: now.position_ms, seq: now.seq, ..last.clone() } == *now
+    (expected - now.position_ms).abs() <= POSITION_SLACK_MS && DeviceState { position_ms: now.position_ms, seq: now.seq, at_us: now.at_us, ..last.clone() } == *now
 }
 
 #[cfg(test)]
@@ -1396,29 +1517,36 @@ mod tests {
 
     #[test]
     fn only_time_moving_is_not_news() {
-        let last = DeviceState { playing: true, position_ms: 10_000, rev: 2, ..Default::default() };
-        assert!(same_but_time(&last, &DeviceState { position_ms: 15_200, ..last.clone() }, 5_000));
-        assert!(!same_but_time(&last, &DeviceState { position_ms: 40_000, ..last.clone() }, 5_000), "a seek");
-        assert!(!same_but_time(&last, &DeviceState { position_ms: 15_000, rev: 3, ..last.clone() }, 5_000), "the queue changed");
-        let paused = DeviceState { playing: false, ..last.clone() };
-        assert!(!same_but_time(&last, &DeviceState { position_ms: 15_000, ..paused }, 5_000), "paused");
+        let last = DeviceState { playing: true, position_ms: 10_000, rev: 2, at_us: Some(1_000_000), ..Default::default() };
+        let later = |position_ms: i64| DeviceState { position_ms, at_us: Some(6_000_000), ..last.clone() };
+        assert!(same_but_time(&last, &later(15_003)));
+        assert!(!same_but_time(&last, &later(15_020)), "a place 20 ms off is said again");
+        assert!(!same_but_time(&last, &later(40_000)), "a seek");
+        assert!(!same_but_time(&last, &DeviceState { rev: 3, ..later(15_000) }), "the queue changed");
+        assert!(!same_but_time(&last, &DeviceState { playing: false, ..later(15_000) }), "paused");
     }
 
     #[test]
-    fn a_mirrored_playhead_runs_on_from_when_its_state_arrived() {
+    fn a_mirrored_playhead_runs_on_from_when_it_was_heard_there() {
         let entries = vec![Entry { index: 0, duration: 300, ..Default::default() }];
-        let st = DeviceState { seq: 4, playing: true, position_ms: 10_000, index: Some(0), len: 1, entries, ..Default::default() };
+        let st = DeviceState { seq: 4, playing: true, position_ms: 10_000, index: Some(0), len: 1, entries, at_us: Some(50_000_000), ..Default::default() };
         let mut m = Mirrored::new("desk".into());
-        let arrived = Instant::now() - Duration::from_secs(2);
-        assert!(m.heard(&st, arrived));
-        let at = |m: &Mirrored| m.view("Desk".into(), DeviceKind::Desktop, None).unwrap().position_ms;
-        assert!((12_000..12_500).contains(&at(&m)), "{}", at(&m));
+        let view = |m: &Mirrored| m.view("Desk".into(), DeviceKind::Desktop, None).unwrap();
+        // Its clock not known yet: as of when the state arrived.
+        assert!(m.heard(&st, 2_000_000));
+        assert_eq!((view(&m).position_ms, view(&m).at_us), (10_000, 2_000_000));
         // The same state read again (every poll answer carries it) does not start the clock again.
-        assert!(!m.heard(&st, Instant::now()));
-        assert!(at(&m) >= 12_000);
-        // A new publish of the same place does.
-        assert!(m.heard(&DeviceState { seq: 5, ..st }, Instant::now()));
-        assert!(at(&m) < 10_500);
+        assert!(!m.heard(&st, 3_000_000));
+        assert_eq!(view(&m).at_us, 2_000_000);
+        // Its clock 49.2 s ahead of this one's: heard there at 0.8 s here, though it arrived at 2 s.
+        m.clock.add(clock::Exchange { t1: 1_000_000, t2: 50_201_000, t3: 50_201_500, t4: 1_002_500 });
+        let v = view(&m);
+        assert_eq!(v.at_us, 800_000);
+        assert_eq!(v.position_at(1_800_000), 11_000);
+        assert_eq!(v.position_at(400_000_000), 300_000, "held at the song's end");
+        // A command foreseen here runs on from when it was sent.
+        m.foresee(&Op::Pause);
+        assert!(!view(&m).playing && view(&m).position_at(900_000_000) == view(&m).position_ms);
     }
 
     #[test]

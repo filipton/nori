@@ -356,8 +356,10 @@ class PlaybackService : MediaLibraryService() {
         }
 
         // A seek moves the lyrics widget's line; the song's own playing on is worked out from the last announce.
+        // The engine landing it, or placing the song again where it is heard, is announced too: other devices
+        // run the place on from the last word.
         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
-            if (reason == Player.DISCONTINUITY_REASON_SEEK) announce()
+            if (reason == Player.DISCONTINUITY_REASON_SEEK || reason == Player.DISCONTINUITY_REASON_INTERNAL) announce()
         }
 
         override fun onPlaybackParametersChanged(playbackParameters: androidx.media3.common.PlaybackParameters) = announce()
@@ -506,8 +508,8 @@ class PlaybackService : MediaLibraryService() {
                 is dev.nori.music.ffi.remote.Op.Star -> scope.launch {
                     runCatching { nori.library.star(StarKind.SONG, op.id, op.on) }.onFailure { dev.nori.music.NoriLog.w("star from another device failed: $it") }
                 }
-                // The core keeps transfers, pages and jam ops to itself.
-                is dev.nori.music.ffi.remote.Op.Transfer, is dev.nori.music.ffi.remote.Op.Page, is dev.nori.music.ffi.remote.Op.Request,
+                // The core keeps transfers, pages, time exchanges and jam ops to itself.
+                is dev.nori.music.ffi.remote.Op.Transfer, is dev.nori.music.ffi.remote.Op.Page, is dev.nori.music.ffi.remote.Op.Clock, is dev.nori.music.ffi.remote.Op.Request,
                 is dev.nori.music.ffi.remote.Op.Decide, is dev.nori.music.ffi.remote.Op.Promote, is dev.nori.music.ffi.remote.Op.Kick -> {}
             }
             remoteState()

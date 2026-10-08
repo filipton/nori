@@ -95,8 +95,6 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
      * while there is one; null while this phone plays.
      */
     private var mirror: Mirror? = null
-    /** When [mirror]'s position was right, elapsedRealtime. */
-    private var mirrorAt = 0L
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     init {
@@ -106,7 +104,6 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     private fun mirrored(m: Mirror?) {
         val was = mirror
         mirror = m
-        mirrorAt = android.os.SystemClock.elapsedRealtime()
         when {
             m != null -> showMirror(m)
             // Back here: the page shows this phone's own player again.
@@ -132,9 +129,9 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         )
     }
 
-    /** The mirrored device's place now: its last word run on from when it came, within the song. */
+    /** The mirrored device's place now: where its listener is, within the song (the core's clock is elapsedRealtime's). */
     private fun mirrorPosition(m: Mirror): Long {
-        val ran = if (m.playing) android.os.SystemClock.elapsedRealtime() - mirrorAt else 0L
+        val ran = if (m.playing) (android.os.SystemClock.elapsedRealtimeNanos() / 1_000 - m.atUs) / 1_000 else 0L
         val end = _state.value.durationMs.takeIf { it > 0 } ?: Long.MAX_VALUE
         return (m.positionMs + ran).coerceIn(0, end)
     }
