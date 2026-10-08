@@ -11,6 +11,7 @@
 
 #import <AVFoundation/AVFoundation.h>
 #import <AudioToolbox/AudioToolbox.h>
+#include <mach/mach_time.h>
 
 #import "NoriAudio.h"
 
@@ -27,6 +28,8 @@ static double clientRate = 0;
 static double hardwareRate = 0;
 static NSObject *lock;
 static dispatch_queue_t rebuilds;
+/// Host time ticks to nanoseconds.
+static mach_timebase_info_data_t timebase;
 
 static void note(NSString *line) {
     nori_ios_audio_log(line.UTF8String);
@@ -150,12 +153,18 @@ static void unwatch(void) {
 static OSStatus render(void *ref, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *list) {
     (void)ref;
     (void)flags;
-    (void)ts;
     (void)bus;
     if (!list || list->mNumberBuffers < 1 || !list->mBuffers[0].mData) {
         return noErr;
     }
-    nori_ios_render(frames, (float *)list->mBuffers[0].mData);
+    // The timestamp's host time is when this buffer's first frame leaves the unit; the route's
+    // outputLatency comes after it.
+    uint64_t ahead_us = 0;
+    uint64_t now = mach_absolute_time();
+    if (ts && (ts->mFlags & kAudioTimeStampHostTimeValid) && ts->mHostTime > now && timebase.denom) {
+        ahead_us = (ts->mHostTime - now) * timebase.numer / timebase.denom / 1000;
+    }
+    nori_ios_render(frames, (float *)list->mBuffers[0].mData, ahead_us);
     return noErr;
 }
 
@@ -230,6 +239,7 @@ int nori_audio_open(uint32_t rate, uint32_t channels, uint32_t io_ms, NoriGrant 
     dispatch_once(&once, ^{
         lock = [NSObject new];
         rebuilds = dispatch_queue_create("nori.audio.rebuild", DISPATCH_QUEUE_SERIAL);
+        mach_timebase_info(&timebase);
     });
     @synchronized(lock) {
     session = [AVAudioSession sharedInstance];

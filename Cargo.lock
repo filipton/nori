@@ -3861,6 +3861,7 @@ dependencies = [
  "nori-look",
  "nori-player",
  "nori-testdir",
+ "parking_lot",
  "serde_json",
 ]
 

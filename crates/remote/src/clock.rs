@@ -8,12 +8,17 @@ use std::collections::VecDeque;
 
 /// This device's clock for remote timing, µs: monotonic, and running on while the device sleeps
 /// (CLOCK_BOOTTIME on Android and Linux, which Android's `SystemClock.elapsedRealtimeNanos` reads).
+/// On Apple's systems CLOCK_MONOTONIC_RAW, `mach_continuous_time`: their CLOCK_MONOTONIC is the wall
+/// clock less the boot time, so NTP's corrections slew it, and `mach_absolute_time` (CLOCK_UPTIME_RAW,
+/// the audio timestamps' clock) stops while the device sleeps.
 #[cfg(unix)]
 #[allow(clippy::unnecessary_cast, reason = "time_t and c_long are 32 bits on 32-bit Android")]
 pub fn now_us() -> i64 {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     const CLOCK: libc::clockid_t = libc::CLOCK_BOOTTIME;
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    #[cfg(target_vendor = "apple")]
+    const CLOCK: libc::clockid_t = libc::CLOCK_MONOTONIC_RAW;
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
     const CLOCK: libc::clockid_t = libc::CLOCK_MONOTONIC;
     let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: `t` is a valid timespec to write into.

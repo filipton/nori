@@ -2,13 +2,14 @@
 //!
 //! The real sink is AURemoteIO (`ios/Sound/NoriAudio.m`). Tests use a simulated one. The render
 //! callback is [`nori_ios_render`]: the audio unit calls a C function, which has no Rust pointer of
-//! ours, so the playing feed is a static. That path pulls and stamps; it does not lock or allocate.
+//! ours, so the device's render state is a static. That path pulls and stamps; it does not lock or
+//! allocate.
 
 use std::ffi::{c_char, CStr};
 use std::sync::atomic::{
     AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering,
 };
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use nori_engine::{AudioOutput, Device, DeviceWatch, Feed, OutputFormat, OutputKind};
@@ -61,25 +62,23 @@ fn port_of(kind: OutputKind) -> i32 {
     }
 }
 
-/// When the last frame rendered will have been heard.
+/// When the last music rendered will have been heard.
 struct Heard {
     until_us: AtomicU64,
 }
 
-impl Default for Heard {
-    fn default() -> Self {
+impl Heard {
+    const fn new() -> Heard {
         Heard {
             until_us: AtomicU64::new(0),
         }
     }
-}
 
-impl Heard {
-    /// A callback at `now_us` rendered `frames` of music at `rate`, heard `delay_us` after it starts.
-    fn pulled(&self, now_us: u64, delay_us: u64, frames: usize, rate: u32) {
+    /// `frames` of music at `rate` leave the unit at `out_us` and reach the ear `delay_us` later.
+    fn pulled(&self, out_us: u64, delay_us: u64, frames: usize, rate: u32) {
         let play = frames as u64 * 1_000_000 / rate.max(1) as u64;
         self.until_us.store(
-            now_us.saturating_add(delay_us).saturating_add(play),
+            out_us.saturating_add(delay_us).saturating_add(play),
             Ordering::Relaxed,
         );
     }
@@ -89,65 +88,87 @@ impl Heard {
     }
 }
 
-/// The playing feed, for [`nori_ios_render`]. Written while the unit is stopped.
-static FEED: AtomicPtr<Feed> = AtomicPtr::new(std::ptr::null_mut());
-static RATE: AtomicU32 = AtomicU32::new(44_100);
-static CHANNELS: AtomicU32 = AtomicU32::new(2);
-static LATENCY: AtomicU64 = AtomicU64::new(0);
-static KIND: AtomicI32 = AtomicI32::new(0);
-/// A media-services reset the engine has not reopened for yet.
-static RESET: AtomicBool = AtomicBool::new(false);
-static WATCH: Mutex<Option<std::sync::Arc<DeviceWatch>>> = Mutex::new(None);
-static LOST: AtomicBool = AtomicBool::new(false);
-static INTERRUPT: AtomicU8 = AtomicU8::new(0);
-
-fn render_heard() -> &'static Heard {
-    static HEARD: OnceLock<Heard> = OnceLock::new();
-    HEARD.get_or_init(Heard::default)
+/// What the render callback reads: the playing feed, its format, the route and when the music rendered
+/// will have been heard. The device's is [`device_render`], as the audio unit's C callback carries no
+/// pointer of ours; a test's output has its own.
+pub(crate) struct Render {
+    /// Written while the unit is stopped.
+    feed: AtomicPtr<Feed>,
+    rate: AtomicU32,
+    channels: AtomicU32,
+    /// The route's own latency (the session's `outputLatency`): from leaving the unit to the ear.
+    latency_us: AtomicU64,
+    /// A `PORT_` code.
+    port: AtomicI32,
+    heard: Heard,
 }
 
-/// Fills `out` from the feed (silence when there is none) and stamps when its music will be heard. Only
-/// music counts: a running unit playing silence holds nothing, so a reopen waiting for it to drain goes on.
-fn paint(
-    feed: *mut Feed,
-    heard: &Heard,
-    out: &mut [f32],
-    rate: u32,
-    delay_us: u64,
-    now_us: u64,
-) {
-    let music = if feed.is_null() {
-        out.fill(0.0);
-        0
-    } else {
-        // SAFETY: published while the unit is stopped, and the unit is stopped before it is cleared.
-        unsafe { (*feed).pull(out) }
-    };
-    if music > 0 {
-        heard.pulled(now_us, delay_us, music, rate);
+impl Render {
+    const fn new() -> Render {
+        Render {
+            feed: AtomicPtr::new(std::ptr::null_mut()),
+            rate: AtomicU32::new(44_100),
+            channels: AtomicU32::new(2),
+            latency_us: AtomicU64::new(0),
+            port: AtomicI32::new(0),
+            heard: Heard::new(),
+        }
+    }
+
+    /// Fills `out` from the feed (silence when there is none) at `now_us`, for a buffer that leaves the
+    /// unit `ahead_us` later (its render timestamp), and stamps when its music will have been heard. Only
+    /// music counts: a running unit playing silence holds nothing, so a reopen waiting for it to drain goes
+    /// on. Returns the frames of music.
+    pub(crate) fn paint(&self, out: &mut [f32], now_us: u64, ahead_us: u64) -> usize {
+        let feed = self.feed.load(Ordering::Acquire);
+        let music = if feed.is_null() {
+            out.fill(0.0);
+            0
+        } else {
+            // SAFETY: published while the unit is stopped, and the unit is stopped before it is cleared.
+            unsafe { (*feed).pull(out) }
+        };
+        if music > 0 {
+            self.heard.pulled(
+                now_us.saturating_add(ahead_us),
+                self.latency_us.load(Ordering::Relaxed),
+                music,
+                self.rate.load(Ordering::Relaxed),
+            );
+        }
+        music
+    }
+
+    fn channels(&self) -> usize {
+        self.channels.load(Ordering::Relaxed).max(1) as usize
     }
 }
 
-/// The audio unit's render callback.
+fn device_render() -> &'static Arc<Render> {
+    static DEVICE: OnceLock<Arc<Render>> = OnceLock::new();
+    DEVICE.get_or_init(|| Arc::new(Render::new()))
+}
+
+/// A media-services reset the engine has not reopened for yet.
+static RESET: AtomicBool = AtomicBool::new(false);
+static WATCH: Mutex<Option<Arc<DeviceWatch>>> = Mutex::new(None);
+static LOST: AtomicBool = AtomicBool::new(false);
+static INTERRUPT: AtomicU8 = AtomicU8::new(0);
+
+/// The audio unit's render callback. `ahead_us`: how long after this call the buffer's first frame
+/// leaves the unit (its timestamp's host time less now).
 ///
 /// # Safety
 /// `out` is `frames` × the channel count set at open, interleaved float, for this call only.
 #[no_mangle]
-pub unsafe extern "C" fn nori_ios_render(frames: u32, out: *mut f32) {
+pub unsafe extern "C" fn nori_ios_render(frames: u32, out: *mut f32, ahead_us: u64) {
     if out.is_null() || frames == 0 {
         return;
     }
-    let channels = CHANNELS.load(Ordering::Relaxed).max(1) as usize;
+    let render = device_render();
     // SAFETY: the caller's promise above.
-    let buf = unsafe { std::slice::from_raw_parts_mut(out, frames as usize * channels) };
-    paint(
-        FEED.load(Ordering::Acquire),
-        render_heard(),
-        buf,
-        RATE.load(Ordering::Relaxed),
-        LATENCY.load(Ordering::Relaxed),
-        HostClock.now_us(),
-    );
+    let buf = unsafe { std::slice::from_raw_parts_mut(out, frames as usize * render.channels()) };
+    render.paint(buf, HostClock.now_us(), ahead_us);
 }
 
 /// The shim's route notification. `unavailable`: headphones pulled, or a Bluetooth device gone.
@@ -161,8 +182,9 @@ pub unsafe extern "C" fn nori_ios_route(
     latency_us: u64,
     unavailable: i32,
 ) {
-    LATENCY.store(latency_us, Ordering::Relaxed);
-    KIND.store(port, Ordering::Relaxed);
+    let render = device_render();
+    render.latency_us.store(latency_us, Ordering::Relaxed);
+    render.port.store(port, Ordering::Relaxed);
     if unavailable != 0 {
         LOST.store(true, Ordering::Release);
     }
@@ -198,7 +220,7 @@ pub unsafe extern "C" fn nori_ios_audio_log(line: *const c_char) {
 #[no_mangle]
 pub extern "C" fn nori_ios_media_reset() {
     RESET.store(true, Ordering::Release);
-    let feed = FEED.load(Ordering::Acquire);
+    let feed = device_render().feed.load(Ordering::Acquire);
     if !feed.is_null() {
         // SAFETY: the same promise as [`nori_ios_render`]: published only while the feed is alive.
         unsafe { (*feed).wake_engine() };
@@ -256,23 +278,21 @@ impl Clock for HostClock {
     }
 }
 
-/// The engine's output. `publish` is the process's one card: its feed is what [`nori_ios_render`] pulls.
+/// The engine's output. The device's ([`IosOutput::device`]) renders what [`nori_ios_render`] pulls and
+/// hears the shim's notifications.
 pub struct IosOutput<C: Clock = HostClock> {
     sink: Box<dyn Sink>,
     clock: C,
-    heard: Heard,
-    /// Use the process-wide render state. One output does, the tests' do not.
-    publish: bool,
+    pub(crate) render: Arc<Render>,
+    /// The process's one card: its render state is [`device_render`]'s and the shim's notifications reach it.
+    device: bool,
     format: Option<OutputFormat>,
     channels: usize,
-    rate: u32,
     io_ms: u32,
     shallow: bool,
     opened: bool,
     playing: bool,
-    route_latency_us: u64,
-    kind: OutputKind,
-    watch: Option<std::sync::Arc<DeviceWatch>>,
+    watch: Option<Arc<DeviceWatch>>,
     failed: Option<String>,
     /// [`IosOutput::note_reset`]: a reset the next [`AudioOutput::failed`] reopens for.
     reset: bool,
@@ -284,17 +304,14 @@ impl<C: Clock> IosOutput<C> {
         IosOutput {
             sink,
             clock,
-            heard: Heard::default(),
-            publish: false,
+            render: Arc::new(Render::new()),
+            device: false,
             format: None,
             channels: 2,
-            rate: 44_100,
             io_ms: DEEP_IO_MS,
             shallow: false,
             opened: false,
             playing: false,
-            route_latency_us: 0,
-            kind: OutputKind::Speaker,
             watch: None,
             failed: None,
             reset: false,
@@ -313,74 +330,16 @@ impl<C: Clock> IosOutput<C> {
         self.reset = true;
     }
 
-    /// One period, for tests. The device's callback is [`nori_ios_render`].
-    pub fn render(&mut self, out: &mut [f32]) {
-        let feed = self
-            .feed
-            .as_mut()
-            .map(|f| &mut **f as *mut Feed)
-            .unwrap_or(std::ptr::null_mut());
-        let heard = if self.publish {
-            render_heard()
-        } else {
-            &self.heard
-        };
-        paint(
-            feed,
-            heard,
-            out,
-            self.rate,
-            self.delay_us(),
-            self.clock.now_us(),
-        );
-    }
-
-    fn delay_us(&self) -> u64 {
-        if self.publish {
-            LATENCY.load(Ordering::Relaxed)
-        } else {
-            self.route_latency_us
-        }
-    }
-
     fn note_route(&mut self, kind: OutputKind, name: String, latency_us: u64) {
-        self.kind = kind;
-        self.route_latency_us = latency_us;
-        if self.publish {
-            KIND.store(port_of(kind), Ordering::Relaxed);
-            LATENCY.store(latency_us, Ordering::Relaxed);
-        }
+        self.render.port.store(port_of(kind), Ordering::Relaxed);
+        self.render.latency_us.store(latency_us, Ordering::Relaxed);
         if let Some(w) = &self.watch {
             w(Device { kind, name });
         }
     }
 
-    fn publish_format(&self) {
-        if !self.publish {
-            return;
-        }
-        RATE.store(self.rate, Ordering::Relaxed);
-        CHANNELS.store(self.channels.max(1) as u32, Ordering::Relaxed);
-        LATENCY.store(self.route_latency_us, Ordering::Relaxed);
-        KIND.store(port_of(self.kind), Ordering::Relaxed);
-    }
-
-    fn publish_feed(&self) {
-        if !self.publish {
-            return;
-        }
-        let p = self
-            .feed
-            .as_ref()
-            .map(|f| &**f as *const Feed as *mut Feed)
-            .unwrap_or(std::ptr::null_mut());
-        FEED.store(p, Ordering::Release);
-    }
-
     fn clear_feed(&mut self) {
-        if self.publish {
-            FEED.store(std::ptr::null_mut(), Ordering::Release);
-        }
+        self.render.feed.store(std::ptr::null_mut(), Ordering::Release);
         self.feed = None;
     }
 
@@ -399,7 +358,6 @@ impl<C: Clock> IosOutput<C> {
     }
 
     fn took(&mut self, g: Grant) {
-        self.rate = g.rate;
         self.io_ms = g.io_ms;
         self.opened = true;
         self.format = Some(OutputFormat {
@@ -407,8 +365,11 @@ impl<C: Clock> IosOutput<C> {
             channels: self.channels,
             bits: 0,
         });
+        self.render.rate.store(g.rate, Ordering::Relaxed);
+        self.render
+            .channels
+            .store(self.channels.max(1) as u32, Ordering::Relaxed);
         self.note_route(g.kind, g.name, g.latency_us);
-        self.publish_format();
     }
 
     fn apply_io(&mut self) -> Result<(), String> {
@@ -425,7 +386,8 @@ impl IosOutput<HostClock> {
     /// The process's output, over the audio unit in `ios/Sound/NoriAudio.m`.
     pub fn device() -> IosOutput<HostClock> {
         let mut out = IosOutput::new(Box::new(DeviceSink), HostClock);
-        out.publish = true;
+        out.render = device_render().clone();
+        out.device = true;
         out
     }
 }
@@ -445,7 +407,7 @@ impl<C: Clock> IosOutput<C> {
             self.opened = false;
         }
         self.playing = false;
-        if self.publish {
+        if self.device {
             *WATCH.lock().unwrap_or_else(|p| p.into_inner()) = None;
         }
     }
@@ -453,8 +415,8 @@ impl<C: Clock> IosOutput<C> {
 
 impl<C: Clock> AudioOutput for IosOutput<C> {
     fn watch(&mut self, changed: DeviceWatch) {
-        let w = std::sync::Arc::new(changed);
-        if self.publish {
+        let w = Arc::new(changed);
+        if self.device {
             *WATCH.lock().unwrap_or_else(|p| p.into_inner()) = Some(w.clone());
         }
         self.watch = Some(w);
@@ -471,8 +433,11 @@ impl<C: Clock> AudioOutput for IosOutput<C> {
         // Starts paused: the engine resumes when it wants sound.
         self.sink.stop();
         self.clear_feed();
-        self.feed = Some(Box::new(feed));
-        self.publish_feed();
+        let mut feed = Box::new(feed);
+        self.render
+            .feed
+            .store(&mut *feed as *mut Feed, Ordering::Release);
+        self.feed = Some(feed);
         self.playing = false;
         Ok(())
     }
@@ -490,25 +455,12 @@ impl<C: Clock> AudioOutput for IosOutput<C> {
     }
 
     fn latency_us(&self) -> u64 {
-        let heard = if self.publish {
-            render_heard()
-        } else {
-            &self.heard
-        };
-        heard.left_us(self.clock.now_us())
+        self.render.heard.left_us(self.clock.now_us())
     }
 
     fn mixed_us(&self) -> u64 {
-        let (kind, latency) = if self.publish {
-            (
-                kind_of(KIND.load(Ordering::Relaxed)),
-                LATENCY.load(Ordering::Relaxed),
-            )
-        } else {
-            (self.kind, self.route_latency_us)
-        };
-        if kind == OutputKind::Bluetooth {
-            latency
+        if kind_of(self.render.port.load(Ordering::Relaxed)) == OutputKind::Bluetooth {
+            self.render.latency_us.load(Ordering::Relaxed)
         } else {
             0
         }
@@ -536,7 +488,7 @@ impl<C: Clock> AudioOutput for IosOutput<C> {
     }
 
     fn failed(&mut self) -> Option<String> {
-        let reset = self.reset || (self.publish && RESET.swap(false, Ordering::AcqRel));
+        let reset = self.reset || (self.device && RESET.swap(false, Ordering::AcqRel));
         self.reset = false;
         if reset {
             if let Err(e) = self.reopen() {
@@ -705,30 +657,32 @@ impl Sink for DeviceSink {
     }
 }
 
+/// A simulated audio unit: what the session grants, the route, and the unit rendering whenever a test's
+/// clock says a callback is due.
 #[cfg(test)]
-mod tests {
+pub(crate) mod sim {
     use super::*;
-    use std::sync::atomic::AtomicU64;
-    use std::sync::Arc;
 
-    use nori_engine::AudioOutput;
-
-    struct State {
-        grant_rate: Option<u32>,
-        latency_us: u64,
-        kind: OutputKind,
-        name: String,
-        opens: Vec<(u32, usize, u32)>,
-        io_sets: Vec<u32>,
-        starts: u32,
-        fail_start: bool,
+    pub(crate) struct State {
+        pub grant_rate: Option<u32>,
+        pub latency_us: u64,
+        pub kind: OutputKind,
+        pub name: String,
+        pub opens: Vec<(u32, usize, u32)>,
+        pub io_sets: Vec<u32>,
+        pub starts: u32,
+        pub fail_start: bool,
+        running: bool,
+        io_ms: u32,
+        /// Each buffer of music rendered: when it left the unit, and its frames.
+        rendered: Vec<(u64, u64)>,
     }
 
     #[derive(Clone)]
-    struct Sim(Arc<Mutex<State>>);
+    pub(crate) struct Sim(Arc<Mutex<State>>);
 
     impl Sim {
-        fn new() -> Sim {
+        pub(crate) fn new() -> Sim {
             Sim(Arc::new(Mutex::new(State {
                 grant_rate: None,
                 latency_us: 12_000,
@@ -738,11 +692,60 @@ mod tests {
                 io_sets: Vec::new(),
                 starts: 0,
                 fail_start: false,
+                running: false,
+                io_ms: DEEP_IO_MS,
+                rendered: Vec::new(),
             })))
         }
 
-        fn lock(&self) -> std::sync::MutexGuard<'_, State> {
+        pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, State> {
             self.0.lock().unwrap_or_else(|p| p.into_inner())
+        }
+
+        /// The I/O buffer, frames at `rate`, and how long it plays.
+        fn buffer(&self, rate: u32) -> (usize, u64) {
+            let frames = (self.lock().io_ms as u64 * rate as u64 / 1000).max(1);
+            (frames as usize, frames * 1_000_000 / rate.max(1) as u64)
+        }
+
+        /// How often the unit calls back, µs.
+        pub(crate) fn period_us(&self, render: &Render) -> u64 {
+            self.buffer(render.rate.load(Ordering::Relaxed)).1
+        }
+
+        /// One callback at `now_us`, if the unit runs: an I/O buffer rendered from `render`, leaving the unit
+        /// one buffer later, as RemoteIO's do. True when the pull woke the engine. The unit's lock is held
+        /// throughout, so a stop waits for a callback under way, as `AudioOutputUnitStop` does.
+        pub(crate) fn callback(&self, render: &Render, now_us: u64) -> bool {
+            let rate = render.rate.load(Ordering::Relaxed);
+            let (frames, play_us) = self.buffer(rate);
+            let mut s = self.lock();
+            if !s.running {
+                return false;
+            }
+            let feed = render.feed.load(Ordering::Acquire);
+            // SAFETY: the feed changes only while the unit is stopped, which waits for this lock.
+            let waits = || !feed.is_null() && unsafe { (*feed).engine_waits() };
+            let waited = waits();
+            let mut out = vec![0.0f32; frames * render.channels()];
+            let music = render.paint(&mut out, now_us, play_us);
+            if music > 0 {
+                s.rendered.push((now_us + play_us, music as u64));
+            }
+            waited && !waits()
+        }
+
+        /// Frames of music the listener has heard by `now_us`.
+        pub(crate) fn heard(&self, render: &Render, now_us: u64) -> u64 {
+            let rate = render.rate.load(Ordering::Relaxed) as u64;
+            let s = self.lock();
+            s.rendered
+                .iter()
+                .map(|&(out_us, frames)| {
+                    let at = out_us + s.latency_us;
+                    (now_us.saturating_sub(at) * rate / 1_000_000).min(frames)
+                })
+                .sum()
         }
     }
 
@@ -750,6 +753,7 @@ mod tests {
         fn open(&mut self, rate: u32, channels: usize, io_ms: u32) -> Result<Grant, String> {
             let mut s = self.lock();
             s.opens.push((rate, channels, io_ms));
+            s.io_ms = io_ms;
             Ok(Grant {
                 rate: s.grant_rate.unwrap_or(rate),
                 io_ms,
@@ -765,13 +769,18 @@ mod tests {
                 return Err("the output would not start".into());
             }
             s.starts += 1;
+            s.running = true;
             Ok(())
         }
 
-        fn stop(&mut self) {}
+        fn stop(&mut self) {
+            self.lock().running = false;
+        }
 
         fn set_io_ms(&mut self, io_ms: u32) -> Result<u32, String> {
-            self.lock().io_sets.push(io_ms);
+            let mut s = self.lock();
+            s.io_sets.push(io_ms);
+            s.io_ms = io_ms;
             Ok(io_ms)
         }
 
@@ -782,6 +791,43 @@ mod tests {
 
         fn close(&mut self) {}
     }
+
+    /// 16-bit stereo PCM at 44.1 kHz, a 440 Hz tone, `seconds` long.
+    pub(crate) fn wav(seconds: u32) -> Vec<u8> {
+        let rate = 44_100u32;
+        let frames = rate * seconds;
+        let data = frames * 4;
+        let mut w = Vec::with_capacity(44 + data as usize);
+        w.extend_from_slice(b"RIFF");
+        w.extend_from_slice(&(36 + data).to_le_bytes());
+        w.extend_from_slice(b"WAVEfmt ");
+        w.extend_from_slice(&16u32.to_le_bytes());
+        w.extend_from_slice(&1u16.to_le_bytes());
+        w.extend_from_slice(&2u16.to_le_bytes());
+        w.extend_from_slice(&rate.to_le_bytes());
+        w.extend_from_slice(&(rate * 4).to_le_bytes());
+        w.extend_from_slice(&4u16.to_le_bytes());
+        w.extend_from_slice(&16u16.to_le_bytes());
+        w.extend_from_slice(b"data");
+        w.extend_from_slice(&data.to_le_bytes());
+        for i in 0..frames {
+            let s =
+                ((i as f64 * 440.0 * std::f64::consts::TAU / rate as f64).sin() * 8000.0) as i16;
+            w.extend_from_slice(&s.to_le_bytes());
+            w.extend_from_slice(&s.to_le_bytes());
+        }
+        w
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sim::Sim;
+    use super::*;
+    use std::sync::atomic::AtomicU64;
+    use std::time::Duration;
+
+    use nori_engine::AudioOutput;
 
     #[derive(Clone)]
     struct Manual(Arc<AtomicU64>);
@@ -825,11 +871,11 @@ mod tests {
 
     #[test]
     fn latency_is_the_route_plus_the_music_pulled() {
-        let heard = Heard::default();
-        heard.pulled(1_000_000, 12_000, 128, 44_100);
-        // 128 frames at 44.1 kHz is 2902 µs, on top of the route's 12 ms.
-        assert_eq!(heard.left_us(1_000_000), 12_000 + 128 * 1_000_000 / 44_100);
-        assert_eq!(heard.left_us(1_000_000 + 12_000 + 2_902), 0, "heard");
+        let heard = Heard::new();
+        // Music that leaves the unit at 1.093 s: 128 frames at 44.1 kHz is 2902 µs, heard 12 ms after.
+        heard.pulled(1_093_000, 12_000, 128, 44_100);
+        assert_eq!(heard.left_us(1_000_000), 93_000 + 12_000 + 128 * 1_000_000 / 44_100);
+        assert_eq!(heard.left_us(1_093_000 + 12_000 + 2_902), 0, "heard");
     }
 
     #[test]
@@ -838,11 +884,11 @@ mod tests {
         // for another rate waited for ever (the first tap on a song of another rate was silent).
         let sim = Sim::new();
         let clock = Manual(Arc::new(AtomicU64::new(1_000_000)));
-        let mut out = opened(&sim, &clock);
+        let out = opened(&sim, &clock);
         let mut buf = [1.0f32; 256];
         for period in 0..3 {
             clock.0.store(1_000_000 + period * 2_902, Ordering::Relaxed);
-            out.render(&mut buf);
+            out.render.paint(&mut buf, clock.now_us(), 0);
             assert!(buf.iter().all(|s| *s == 0.0), "nothing is playing: silence");
             assert!(!out.holding(), "period {period}");
         }
@@ -911,17 +957,10 @@ mod tests {
 
     #[test]
     fn render_does_not_allocate() {
-        let heard = Heard::default();
+        let render = Render::new();
         let mut out = [0.5f32; 256];
         let before = crate::counting::n();
-        paint(
-            std::ptr::null_mut(),
-            &heard,
-            &mut out,
-            44_100,
-            12_000,
-            1_000_000,
-        );
+        render.paint(&mut out, 1_000_000, 93_000);
         assert_eq!(crate::counting::n(), before);
         assert!(out.iter().all(|s| *s == 0.0));
     }
@@ -955,5 +994,94 @@ mod tests {
             seen.lock().unwrap_or_else(|p| p.into_inner()).clone(),
             Some((OutputKind::Wired, String::new()))
         );
+    }
+
+    /// Songs as WAV files in memory.
+    struct Wavs(Vec<(String, Arc<Vec<u8>>)>);
+
+    impl nori_engine::ByteSource for Wavs {
+        fn open(&self, url: &str, from: u64) -> Result<nori_engine::Body, nori_engine::OpenError> {
+            let f = self.0.iter().find(|(id, _)| id == url).ok_or("no such song")?.1.clone();
+            Ok(nori_engine::Body {
+                start: from,
+                len: Some(f.len() as u64),
+                reader: Box::new(std::io::Cursor::new(f[from as usize..].to_vec())),
+            })
+        }
+    }
+
+    struct Songs(Arc<Wavs>);
+
+    impl nori_engine::Library for Songs {
+        fn locate(&mut self, id: &str) -> Result<nori_engine::Located, String> {
+            Ok(nori_engine::Located {
+                source: nori_engine::Source::Url { url: id.to_string(), bytes: self.0.clone() },
+                hint: Some("wav".into()),
+                duration_ms: Some(60_000),
+                estimated: false,
+            })
+        }
+
+        fn about(&self, id: &str) -> nori_player::transitions::WindowSong {
+            nori_player::transitions::WindowSong { id: id.to_string(), duration_ms: 60_000, ..Default::default() }
+        }
+    }
+
+    /// The test's clock as the output reads it.
+    struct Ticks(nori_engine::testing::Virtual);
+
+    impl Clock for Ticks {
+        fn now_us(&self) -> u64 {
+            (self.0.now_ns() / 1_000) as u64
+        }
+    }
+
+    /// The audio unit calling back on the test's clock.
+    struct Unit {
+        sim: Sim,
+        render: Arc<Render>,
+        next_ns: i64,
+    }
+
+    impl nori_engine::testing::Device for Unit {
+        fn due_ns(&self) -> i64 {
+            self.next_ns
+        }
+
+        fn tick(&mut self, now_ns: i64) -> bool {
+            self.next_ns = now_ns + self.sim.period_us(&self.render) as i64 * 1_000;
+            self.sim.callback(&self.render, (now_ns / 1_000) as u64)
+        }
+    }
+
+    /// Behind the deep I/O buffer (each buffer leaves the unit 93 ms after its callback, heard 12 ms after
+    /// that), the engine's place is the one the listener hears, which devices mirroring the iPod show.
+    #[test]
+    fn a_deep_output_says_the_place_heard() {
+        let clock = nori_engine::testing::Virtual::default();
+        let sim = Sim::new();
+        let out = IosOutput::new(Box::new(sim.clone()), Ticks(clock.clone()));
+        let render = out.render.clone();
+        let wavs = Arc::new(Wavs(vec![("a".into(), Arc::new(sim::wav(60)))]));
+        let queue = nori_engine::SharedQueue::default();
+        queue.0.lock().set(vec!["a".into()], Some(0), false, 0);
+        let mut app = nori_player::sim::App::new();
+        app.prefs = nori_player::sim::prefs_off();
+        let engine = nori_engine::Engine::start_on(Songs(wavs), app, queue, Box::new(out), None, nori_engine::Config::default(), clock.clone(), |_| {});
+        let unit = Unit { sim: sim.clone(), render: render.clone(), next_ns: 0 };
+        let time = nori_engine::testing::Stepper::new(clock.clone(), Arc::new(parking_lot::Mutex::new(unit)));
+        let heard_ms = || sim.heard(&render, (clock.now_ns() / 1_000) as u64) as i64 * 1_000 / 44_100;
+        engine.queue_changed();
+        engine.play_at(0, 0);
+        assert!(time.until(Duration::from_secs(20), || heard_ms() > 10_000), "it plays");
+        // Read at moments through a buffer, not only as one starts.
+        for _ in 0..5 {
+            time.run(Duration::from_millis(37));
+            engine.look();
+            clock.settle();
+            let off = engine.status().position_ms - heard_ms();
+            assert!(off.abs() <= 5, "the engine says {off} ms off what is heard");
+        }
+        engine.stop();
     }
 }

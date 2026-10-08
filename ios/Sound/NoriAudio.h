@@ -26,8 +26,9 @@ int nori_audio_set_io_ms(uint32_t io_ms, uint32_t *granted_ms, char *err, uint32
 void nori_audio_route(NoriGrant *out);
 void nori_audio_close(void);
 
-/// Rust, called from the render callback. `out` is interleaved float, `frames` × the opened channels.
-void nori_ios_render(uint32_t frames, float *out);
+/// Rust, called from the render callback. `out` is interleaved float, `frames` × the opened channels;
+/// `ahead_us` is how long after the call the buffer's first frame leaves the unit.
+void nori_ios_render(uint32_t frames, float *out, uint64_t ahead_us);
 /// `unavailable` when the previous device is gone (headphones pulled).
 void nori_ios_route(int32_t port, const char *name, uint64_t latency_us, int unavailable);
 void nori_ios_media_reset(void);
