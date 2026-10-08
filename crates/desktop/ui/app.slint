@@ -184,6 +184,8 @@ export global Jam {
     // Why jams cannot start here, when they are switched on and cannot.
     in property <string> note;
     in property <string> link;
+    // Why the invite works only at home (the server's address is a home network's), or empty.
+    in property <string> reach;
     in property <image> qr;
     // Who joined, the host left out.
     in property <[JamPerson]> people;
@@ -1942,6 +1944,13 @@ component JamHeader inherits VerticalLayout {
                 Text {
                     text: "Others join by scanning this code with nori, or by opening the link.";
                     color: Theme.dim;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                }
+                if Jam.reach != "": Text {
+                    text: Jam.reach;
+                    color: #ff9f0a;
                     font-size: 12px;
                     wrap: word-wrap;
                     horizontal-alignment: center;

@@ -1452,6 +1452,8 @@ impl App {
         if link != self.jam_link {
             g.set_qr(if link.is_empty() { Image::default() } else { crate::jam::qr(&link) });
             g.set_link(link.as_str().into());
+            let home = nori_core::remote::parse_invite(&link).map(|(server, _)| server).filter(|s| nori_core::remote::is_home_only(s));
+            g.set_reach(home.map_or_else(String::new, |s| words::jam_home_only(&s)).into());
             self.jam_link = link;
         }
         let shown = view.as_ref().map(crate::jam::shown);

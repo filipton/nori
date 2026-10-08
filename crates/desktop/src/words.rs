@@ -168,6 +168,11 @@ pub fn jam_role(role: nori_core::remote::wire::Role) -> &'static str {
 
 pub const JAM_UNSUPPORTED: &str = "Your server doesn't support jams yet. They need octo-fiesta with nori support in front of it.";
 pub const JAM_FAILED: &str = "Couldn't start the jam. Jams need octo-fiesta in front of your server.";
+/// Under the invite, when the server's address is a home network's.
+pub fn jam_home_only(address: &str) -> String {
+    format!("This invite only works on your home network ({address}). Set a public address in the server settings for guests elsewhere.")
+}
+
 pub const LINK_COPIED: &str = "Link copied";
 
 #[cfg(test)]

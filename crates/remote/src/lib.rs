@@ -71,6 +71,32 @@ pub fn is_invite(link: &str) -> bool {
     parse_invite(link).is_some()
 }
 
+/// Whether server address `url` can be reached only on a home network (a private, loopback or
+/// link-local address, or a name only such a network resolves), so an invite to it fails elsewhere.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn is_home_only(url: &str) -> bool {
+    use std::net::{IpAddr, Ipv6Addr};
+    let rest = url.trim().split_once("://").map_or(url.trim(), |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = match host_port.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None if host_port.matches(':').count() == 1 => host_port.split(':').next().unwrap_or_default(),
+        None => host_port,
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return false;
+    }
+    let v6_home = |a: &Ipv6Addr| a.is_loopback() || a.is_unspecified() || (a.segments()[0] & 0xfe00) == 0xfc00 || (a.segments()[0] & 0xffc0) == 0xfe80;
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(a)) => a.is_private() || a.is_loopback() || a.is_link_local() || a.is_unspecified(),
+        Ok(IpAddr::V6(a)) => v6_home(&a) || a.to_ipv4_mapped().is_some_and(|v4| v4.is_private() || v4.is_loopback() || v4.is_link_local()),
+        // A single label (a NAS's name) resolves only where the home network's DNS answers.
+        Err(_) => !host.contains('.') || [".local", ".localhost", ".home.arpa"].iter().any(|s| host.ends_with(s)),
+    }
+}
+
 /// A new random id (a device's, kept by the app).
 pub fn new_id() -> String {
     use sha2::{Digest, Sha256};
@@ -122,6 +148,35 @@ mod tests {
         }
         assert!(is_guest_key(&guest_key("abc")) && !is_guest_key("abc"));
         assert_ne!(new_id(), new_id());
+    }
+
+    #[test]
+    fn home_only_addresses() {
+        let cases = [
+            ("http://192.168.1.5:4533", true),
+            ("http://10.0.0.2", true),
+            ("https://172.16.4.1/navidrome", true),
+            ("http://172.32.0.1", false),
+            ("http://127.0.0.1:5274", true),
+            ("http://localhost:4533", true),
+            ("http://169.254.10.3", true),
+            ("http://nas.local:4533", true),
+            ("http://nas:4533", true),
+            ("http://music.home.arpa", true),
+            ("http://[fd12:3456::1]:4533", true),
+            ("http://[fe80::1]", true),
+            ("http://[::1]:4533", true),
+            ("http://[::ffff:192.168.0.9]", true),
+            ("http://[2001:db8::1]:4533", false),
+            ("https://music.example.com", false),
+            ("https://user:pw@music.example.com:8443/octo", false),
+            ("http://100.101.102.103", false),
+            ("http://8.8.8.8", false),
+            ("", false),
+        ];
+        for (url, home) in cases {
+            assert_eq!(is_home_only(url), home, "{url}");
+        }
     }
 
     #[test]
