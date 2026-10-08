@@ -235,7 +235,10 @@ fn support(got: &Result<Vec<u8>, NetError>) -> Option<RelaySupport> {
 
 struct Peer {
     service: String,
-    base: String,
+    /// Where its door was seen (mDNS tells each of the device's addresses), the one answering first.
+    bases: Vec<String>,
+    /// Polls failed in a row, each at the next address.
+    failed: usize,
     member: Member,
     received: Instant,
     since: Option<u64>,
@@ -428,6 +431,12 @@ struct Inner {
     next_id: u64,
     refused: HashMap<String, Refusal>,
     door: Option<Door>,
+}
+
+impl Peer {
+    fn base(&self) -> String {
+        self.bases[0].clone()
+    }
 }
 
 impl Inner {
@@ -699,7 +708,7 @@ impl Remote {
                 m.foresee(&op);
             }
             i.refused.remove(&device);
-            let lan = i.peers.iter().find(|p| p.member.id == device).map(|p| Link::Lan(p.base.clone()));
+            let lan = i.peers.iter().find(|p| p.member.id == device).map(|p| Link::Lan(p.base()));
             match lan {
                 Some(l) => l,
                 None if i.relay == RelaySupport::Unsupported => return,
@@ -727,11 +736,19 @@ impl Remote {
         }
         let kind = serde_json::from_value(serde_json::Value::String(get("kind"))).unwrap_or_default();
         let host = if host.contains(':') && !host.starts_with('[') { format!("[{host}]") } else { host };
+        let base = format!("http://{host}:{port}");
         {
             let mut i = self.inner.lock();
+            // Seen again, maybe at another of its addresses: its poller goes on, and tries that one too.
+            if let Some(p) = i.peers.iter_mut().find(|p| p.service == service && p.member.id == id) {
+                if !p.bases.contains(&base) {
+                    p.bases.push(base);
+                }
+                return;
+            }
             i.peers.retain(|p| p.service != service && p.member.id != id);
             let member = Member { id, name: get("name"), kind, state: None };
-            i.peers.push(Peer { service, base: format!("http://{host}:{port}"), member, received: Instant::now(), since: None, polling: false });
+            i.peers.push(Peer { service, bases: vec![base], failed: 0, member, received: Instant::now(), since: None, polling: false });
         }
         self.keep_polling();
     }
@@ -1027,7 +1044,7 @@ impl Remote {
                     i.peers[at].polling = false;
                     return;
                 }
-                (i.peers[at].base.clone(), i.peers[at].since)
+                (i.peers[at].base(), i.peers[at].since)
             };
             let Some((_, secret)) = self.client.core.account.read().clone() else { return };
             let query = match since {
@@ -1037,8 +1054,19 @@ impl Remote {
             let url = format!("{base}{}", lan::signed(&secret, "GET", &query, b"", db::now_ms()));
             let got = block_on(transport::get(&*self.client.transport, url, POLL_TIMEOUT_MS)).ok().and_then(|b| serde_json::from_slice::<Answer>(&b).ok());
             let Some(a) = got else {
-                self.lan_lost(service);
-                return;
+                // Not there at this address: the next one it was seen at, until none answers.
+                let gone = {
+                    let mut i = self.inner.lock();
+                    let Some(p) = i.peers.iter_mut().find(|p| p.service == service) else { return };
+                    p.failed += 1;
+                    p.bases.rotate_left(1);
+                    p.failed >= p.bases.len()
+                };
+                if gone {
+                    self.lan_lost(service);
+                    return;
+                }
+                continue;
             };
             let mut commands = Vec::new();
             let (from, base) = {
@@ -1051,7 +1079,8 @@ impl Remote {
                     }
                     p.member.state = m.state;
                 }
-                let (from, base) = (p.member.id.clone(), p.base.clone());
+                p.failed = 0;
+                let (from, base) = (p.member.id.clone(), p.base());
                 for e in a.events {
                     match e.body {
                         Body::Command { id, op } => commands.push((id, *op)),
@@ -1243,7 +1272,7 @@ impl Remote {
         if to == from {
             self.answer_to(via.clone(), to.clone(), command);
         } else {
-            let link = self.inner.lock().peers.iter().find(|p| p.member.id == to).map_or(Link::Relay, |p| Link::Lan(p.base.clone()));
+            let link = self.inner.lock().peers.iter().find(|p| p.member.id == to).map_or(Link::Relay, |p| Link::Lan(p.base()));
             self.out(Out::send(link, Outgoing { to: Some(to.clone()), body: Some(command), ..Default::default() }));
         }
         self.player.apply(Op::Pause);

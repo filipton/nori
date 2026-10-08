@@ -247,7 +247,8 @@ impl Transport for Relay {
 
     async fn send(&self, request: Exchange) -> Result<TransportResponse, TransportError> {
         if request.url.starts_with("http://127.0.0.1:") {
-            return Ok(lan_exchange(&request));
+            self.hub.lock().asked.push(format!("lan {}", request.url));
+            return lan_exchange(&request);
         }
         let Some(rest) = request.url.strip_prefix(&format!("{SERVER}/rest/")) else {
             return Err(TransportError::Failed { kind: FailureKind::Connect, detail: Some("unreachable".into()) });
@@ -264,12 +265,13 @@ impl Transport for Relay {
     }
 }
 
-/// One HTTP/1.1 exchange with a door on this machine.
-fn lan_exchange(request: &Exchange) -> TransportResponse {
+/// One HTTP/1.1 exchange with a door on this machine; refused where no door listens.
+fn lan_exchange(request: &Exchange) -> Result<TransportResponse, TransportError> {
     use std::io::{BufRead, BufReader, Read, Write};
     let rest = request.url.strip_prefix("http://127.0.0.1:").unwrap();
     let (port, target) = rest.split_at(rest.find('/').unwrap());
-    let mut c = std::net::TcpStream::connect(("127.0.0.1", port.parse::<u16>().unwrap())).unwrap();
+    let refused = |_| TransportError::Failed { kind: FailureKind::Connect, detail: Some("refused".into()) };
+    let mut c = std::net::TcpStream::connect(("127.0.0.1", port.parse::<u16>().unwrap())).map_err(refused)?;
     let (method, body) = request.json.as_deref().map_or(("GET", ""), |b| ("POST", b));
     write!(c, "{method} {target} HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
     let mut r = BufReader::new(c);
@@ -289,7 +291,7 @@ fn lan_exchange(request: &Exchange) -> TransportResponse {
     }
     let mut body = vec![0; length];
     r.read_exact(&mut body).unwrap();
-    TransportResponse { status, body }
+    Ok(TransportResponse { status, body })
 }
 
 /// What a device's discovery was asked to announce.
@@ -522,6 +524,25 @@ fn nearby_devices_need_no_relay() {
     desk.remote.clone().pick(Some(seen.id.clone()));
     phone.remote.clone().played(Playing { playing: false, position_ms: 9_000, index: None, volume: None, ..Default::default() });
     desk.until("the phone's newer word", |r| r.active().filter(|m| m.position_ms == 9_000 && m.rows.len() == 2));
+
+    // The door seen again (mDNS reports it once per network interface) is still followed by the one poller.
+    let first_polls = || relay.asked().iter().filter(|a| a.starts_with("lan ") && a.contains("noriRemote.poll") && !a.contains("since=")).count();
+    let before = first_polls();
+    for _ in 0..3 {
+        desk.remote.clone().lan_found(door.name.clone(), "127.0.0.1".into(), door.port, txt());
+    }
+    phone.remote.clone().played(Playing { playing: true, position_ms: 1_000, index: None, volume: None, ..Default::default() });
+    desk.until("the phone playing", |r| r.active().filter(|m| m.playing));
+    assert_eq!(first_polls(), before, "no poller started over");
+
+    // Seen at an address of this machine's no door answers at (another network interface): the phone is
+    // still followed where it answers.
+    let nowhere = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    desk.remote.clone().lan_found(door.name.clone(), "127.0.0.1".into(), nowhere, txt());
+    phone.remote.clone().played(Playing { playing: false, position_ms: 3_000, index: None, volume: None, ..Default::default() });
+    desk.until("the phone paused", |r| r.active().filter(|m| !m.playing));
+    phone.remote.clone().played(Playing { playing: true, position_ms: 4_000, index: None, volume: None, ..Default::default() });
+    desk.until("the phone playing again", |r| r.active().filter(|m| m.playing));
 
     // A device of the same user with an old password is not shown the door.
     let stranger = Device::new(&relay, ann("old"), DeviceKind::Desktop, "Old");
