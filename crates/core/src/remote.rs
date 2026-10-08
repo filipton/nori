@@ -334,6 +334,11 @@ impl Mirrored {
         true
     }
 
+    /// Whether the device plays as shown here: its playhead runs on, so its clock matters.
+    fn playing(&self) -> bool {
+        self.shown.as_ref().is_some_and(|s| s.playing)
+    }
+
     /// When `shown`'s position was right, on this device's clock: the device's own word, once its clock
     /// is known here.
     fn shown_at(&self) -> i64 {
@@ -801,6 +806,8 @@ impl Remote {
                     }
                 }
                 m.foresee(&op);
+                // A play foreseen starts the time keeper.
+                self.timing.notify_all();
             }
             i.refused.remove(&device);
             let lan = i.peers.iter().find(|p| p.member.id == device).map(|p| Link::Lan(p.base()));
@@ -1486,8 +1493,9 @@ impl Remote {
     }
 
     /// While the device mirrored stays the same (`generation`), learns how its clock stands to this one's:
-    /// a burst of time exchanges, then one every [`clock::EVERY_US`]. Through its door when it is near,
-    /// else through the relay, whose answer comes with a poll.
+    /// a burst of time exchanges, then one every [`clock::EVERY_US`], only while it plays (paused, its
+    /// playhead stands still and nothing wakes for it). Through its door when it is near, else through the
+    /// relay, whose answer comes with a poll.
     fn keep_time(self: Arc<Self>, generation: u64) {
         for sent in 0.. {
             let (id, link) = {
@@ -1496,6 +1504,9 @@ impl Remote {
                     let wait = if sent < clock::BURST { Duration::from_millis(BURST_GAP_MS) } else { Duration::from_micros(clock::EVERY_US as u64) };
                     let until = Instant::now() + wait;
                     while i.timing == generation && !self.timing.wait_until(&mut i, until).timed_out() {}
+                }
+                while i.timing == generation && !i.mirror.as_ref().is_some_and(Mirrored::playing) {
+                    self.timing.wait(&mut i);
                 }
                 if i.timing != generation {
                     return;
@@ -1547,7 +1558,11 @@ impl Remote {
             let me = self.id.clone();
             let m = i.mirror.as_mut().expect("mirrored");
             let moved = match heard {
-                Some((st, at)) if m.heard(&st, at) => st.handed_to.filter(|to| *to != me && *to != id),
+                Some((st, at)) if m.heard(&st, at) => {
+                    // It may have started or stopped playing: the time keeper looks again.
+                    self.timing.notify_all();
+                    st.handed_to.filter(|to| *to != me && *to != id)
+                }
                 _ => None,
             };
             if moved.is_none() {

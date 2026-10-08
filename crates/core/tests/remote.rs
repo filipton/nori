@@ -787,6 +787,37 @@ fn a_picker_opened_asks_again_whether_the_server_relays() {
     relay.close();
 }
 
+impl Relay {
+    /// Time exchanges sent through the relay so far.
+    fn clocks(&self) -> usize {
+        let hub = self.hub.lock();
+        hub.rooms.values().flat_map(|r| &r.events).filter(|(_, _, _, b)| matches!(b, Body::Command { op, .. } if matches!(**op, Op::Clock { .. }))).count()
+    }
+}
+
+#[test]
+fn a_paused_device_mirrored_is_not_timed_until_it_plays() {
+    let relay = Relay::new();
+    let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    phone.playing(&["s1", "s2"], 0);
+    phone.remote.clone().played(Playing { playing: false, position_ms: 5_000, ..Default::default() });
+    phone.remote.clone().serve(true);
+    let phone_id = phone.remote.id();
+    desk.remote.clone().watch(true);
+    desk.until("the phone", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state));
+    desk.remote.clone().watch(false);
+    desk.remote.clone().pick(Some(phone_id.clone()));
+    desk.until("the phone mirrored, paused", |r| r.active().filter(|m| !m.playing));
+    // A whole burst's time.
+    std::thread::sleep(Duration::from_millis(2_500));
+    assert_eq!(relay.clocks(), 0, "nothing wakes for a playhead standing still");
+
+    phone.remote.clone().played(Playing { playing: true, position_ms: 5_000, ..Default::default() });
+    desk.until("timed once it plays", |_| (relay.clocks() > 0).then_some(()));
+    relay.close();
+}
+
 impl Device {
     /// Polls this device has asked of the relay.
     fn polls(&self, relay: &Relay) -> usize {
