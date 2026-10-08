@@ -681,9 +681,8 @@ impl Session {
     /// Stars or unstars a song once: through `there` while the song is in its queue (that device tells
     /// the server and shows it), else from here.
     pub fn star_song(&self, id: String, on: bool, there: Option<&crate::remote::Elsewhere>) {
-        match there.filter(|e| e.starred(&id).is_some()) {
-            Some(e) => e.send(Op::Star { id, on }),
-            None => self.star(Starrable::Song, id, on),
+        if !there.is_some_and(|e| e.star(&id, on)) {
+            self.star(Starrable::Song, id, on);
         }
     }
 

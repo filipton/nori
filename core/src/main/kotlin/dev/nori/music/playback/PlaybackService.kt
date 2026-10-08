@@ -804,8 +804,10 @@ class PlaybackService : MediaLibraryService() {
                     val on = !currentStarred(item)
                     // The same path as the app's heart: the mark goes up at once (and redraws both hearts),
                     // the request runs on an IO thread inside Library, and a failure puts the mark back.
-                    scope.launch { runCatching { nori.library.star(StarKind.SONG, item.mediaId, on) }.onFailure { dev.nori.music.NoriLog.w("star from the notification failed: $it") } }
-                    nori.remotes.starred(item.mediaId, on)
+                    scope.launch {
+                        runCatching { if (!nori.remotes.starWherePlaying(item.mediaId, on)) nori.library.star(StarKind.SONG, item.mediaId, on) }
+                            .onFailure { dev.nori.music.NoriLog.w("star from the notification failed: $it") }
+                    }
                 }
             }
             if (command.customAction == CMD_SHUFFLE) shown.shuffleModeEnabled = !shown.shuffleModeEnabled

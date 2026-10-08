@@ -845,6 +845,16 @@ impl Remote {
         true
     }
 
+    /// A heart pressed for song `id` while another device plays: sent there when its queue has the song
+    /// (that device stars it on the server and shows it), so the server hears it once. False when this
+    /// device stars it itself: nothing is mirrored, or the song is not in that queue.
+    pub fn star_where_playing(&self, id: String, on: bool) -> bool {
+        let device = self.inner.lock().mirror.as_ref().filter(|m| m.rows().iter().any(|e| e.id == id)).map(|m| m.id.clone());
+        let Some(device) = device else { return false };
+        self.send(device, Op::Star { id, on });
+        true
+    }
+
     /// Hands this device's queue and position to device `to`, which plays on; this one pauses.
     pub fn hand_over(self: Arc<Self>, to: String) {
         let me = self.id.clone();

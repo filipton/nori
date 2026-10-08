@@ -217,9 +217,14 @@ class Remotes(private val context: Context, private val nori: Nori) {
         mirrorNow()
     }
 
-    /** A song's heart changed here: the mirrored device marks it too. */
-    fun starred(id: String, on: Boolean) {
-        if (_mirror.value != null) command(Op.Star(id, on))
+    /**
+     * A heart pressed for song [id]: sent to the mirrored device when its queue has the song (the core's
+     * `star_where_playing`), so the server hears it once. False when this phone stars it itself.
+     */
+    suspend fun starWherePlaying(id: String, on: Boolean): Boolean = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val starred = remote?.starWherePlaying(id, on) == true
+        if (starred) mirrorNow()
+        starred
     }
 
     /** Everything else a screen asks, on the worker; [then] gets the answer back on the main thread. */

@@ -144,8 +144,7 @@ class ActionsViewModel(app: Application) : NoriViewModel(app) {
     }
 
     fun star(song: Song, on: Boolean) = favourite(on) {
-        nori.remotes.starred(song.id, on)
-        nori.library.star(StarKind.SONG, song.id, on)
+        if (!nori.remotes.starWherePlaying(song.id, on)) nori.library.star(StarKind.SONG, song.id, on)
     }
     fun starAlbum(id: String, on: Boolean) = favourite(on) { nori.library.star(StarKind.ALBUM, id, on) }
     fun starArtist(id: String, on: Boolean) = favourite(on) { nori.library.star(StarKind.ARTIST, id, on) }

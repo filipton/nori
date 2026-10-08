@@ -792,7 +792,8 @@ fn a_device_playing_elsewhere_is_mirrored_whole() {
     assert!(!m.playing);
     assert_eq!(phone.told(), Op::Pause);
     desk.remote.send(phone_id.clone(), Op::Volume { percent: 15 });
-    desk.remote.send(phone_id.clone(), Op::Star { id: "s60".into(), on: true });
+    assert!(desk.remote.star_where_playing("s60".into(), true), "a song of its queue is starred there");
+    assert!(!desk.remote.star_where_playing("elsewhere".into(), true), "any other here");
     let m = desk.remote.active().unwrap();
     assert_eq!(m.volume, Some(15));
     assert!(m.rows[m.at.unwrap() as usize].song.starred);

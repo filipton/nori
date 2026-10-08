@@ -183,6 +183,11 @@ impl Elsewhere {
         self.mirror.rows.iter().find(|r| r.song.id == id).map(|r| r.song.starred)
     }
 
+    /// Stars song `id` there when its queue has it ([`Remote::star_where_playing`]); false otherwise.
+    pub(crate) fn star(&self, id: &str, on: bool) -> bool {
+        self.remote.star_where_playing(id.to_string(), on)
+    }
+
     fn row(&self) -> Option<&MirrorRow> {
         self.mirror.at.and_then(|a| self.mirror.rows.get(a as usize))
     }
