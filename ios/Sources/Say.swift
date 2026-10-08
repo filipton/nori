@@ -160,6 +160,9 @@ enum Say {
         ("Messages", [
             ("favouriteNotice", "Confirm favorites"),
         ]),
+        ("Remote control", [
+            ("remoteControl", "Control from other devices"),
+        ]),
         ("Server", [
             ("scrobble", "Scrobble plays"),
             ("scrobblePercent", "Scrobble after (percent)"),

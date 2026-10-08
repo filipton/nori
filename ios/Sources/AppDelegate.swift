@@ -24,6 +24,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         self.window = window
         Core.shared.start()
         NowPlaying.shared.start()
+        Bonjour.shared.start()
         let dir = dataDirectory().path
         nori_ios_keep_log(dir, Int32(TimeZone.current.secondsFromGMT() / 60))
         DispatchQueue.global(qos: .userInitiated).async {

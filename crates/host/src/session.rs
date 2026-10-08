@@ -174,8 +174,8 @@ pub struct Open<'a> {
     pub profile: SavedServer,
     /// The sound card. The client built it and owns its device volume.
     pub output: Box<dyn AudioOutput>,
-    /// The volume, set through [`Session::set_volume`] (or followed with [`Level::set`] and
-    /// [`Session::volume_changed`] where the system keeps it).
+    /// The volume, set through [`Session::set_volume`] (or followed with [`Session::volume_followed`] where
+    /// the system keeps it).
     pub volume: Arc<Level>,
     /// Bytes the engine may hold for songs ahead. 256 on the desktop, less on a phone.
     pub memory_mb: u32,
@@ -186,6 +186,9 @@ pub struct Open<'a> {
     pub mpris: Option<MediaControls>,
     /// This device as the account's other devices list it (remote control).
     pub device: nori_core::remote::RemoteMe,
+    /// The platform's mDNS for remote control (Bonjour on iOS). None: with `desktop`, the session's own
+    /// (mdns-sd); without, no nearby devices.
+    pub discovery: Option<Arc<dyn nori_core::remote::Discovery>>,
     pub out: Out,
 }
 
@@ -215,6 +218,7 @@ pub struct Session {
     device: nori_core::remote::RemoteMe,
     /// The profile is a jam guest's: songs picked are asked of the jam's host, and nothing else plays.
     pub guest: bool,
+    discovery: Option<Arc<dyn nori_core::remote::Discovery>>,
     out: Out,
 }
 
@@ -248,7 +252,7 @@ impl Session {
         let remotes = Arc::new(crate::remote::Remotes::new(level.clone()));
         let keeper = Keeper::start(core.clone(), engine.clone());
         let guest = nori_remote::is_guest_key(&o.profile.api_key);
-        let s = Session { core, client, engine, store, downloader, covers, level, search: SearchSession::new(), offline: o.offline, #[cfg(feature = "desktop")] mpris: o.mpris, keeper, db: PathBuf::from(db), remotes, device: o.device, guest, out: o.out };
+        let s = Session { core, client, engine, store, downloader, covers, level, search: SearchSession::new(), offline: o.offline, #[cfg(feature = "desktop")] mpris: o.mpris, keeper, db: PathBuf::from(db), remotes, device: o.device, guest, discovery: o.discovery, out: o.out };
         #[cfg(feature = "desktop")]
         if let Some(m) = &s.mpris {
             let cover = crate::remote::NowCover::new(s.covers.clone(), s.core.clone(), Arc::downgrade(m));
@@ -434,11 +438,11 @@ impl Session {
         }
         let remote = self.remotes.get().unwrap_or_else(|| {
             #[cfg(feature = "desktop")]
-            let mdns = crate::remote::Mdns::start();
+            let mdns = self.discovery.is_none().then(crate::remote::Mdns::start).flatten();
             #[cfg(feature = "desktop")]
-            let discovery = mdns.clone().map(|m| m as Arc<dyn nori_core::remote::Discovery>);
+            let discovery = self.discovery.clone().or_else(|| mdns.clone().map(|m| m as Arc<dyn nori_core::remote::Discovery>));
             #[cfg(not(feature = "desktop"))]
-            let discovery = None;
+            let discovery = self.discovery.clone();
             let player = Arc::new(crate::remote::HostPlayer(self.handle()));
             let shown = crate::remote::Shown { out: self.out.clone(), remotes: self.remotes.clone(), engine: self.engine.clone() };
             let r = nori_core::remote::Remote::new(self.client.clone(), self.device.clone(), player, Arc::new(shown), discovery);
@@ -562,10 +566,10 @@ impl Session {
         Some(change)
     }
 
-    /// The listener volume moved enough to change loudness compensation: rebuilds the chain when that
-    /// compensation is on.
-    pub fn volume_changed(&self) {
-        self.handle().loudness_moved();
+    /// The system moved the volume by itself (its keys, where it keeps the volume), 0 to 1: loudness
+    /// compensation follows, and the account's other devices see it.
+    pub fn volume_followed(&self, v: f32) {
+        self.handle().set_volume(v);
     }
 
     /// The volume, 0 to 1.

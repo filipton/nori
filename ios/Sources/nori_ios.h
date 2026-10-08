@@ -23,7 +23,8 @@ void nori_ios_free(char *s);
 
 /// One session report. `id` and `text` are valid only for the duration of the callback.
 /// `kind`: 1 state, 2 song, 3 looped, 4 position, 5 error, 6 output, 7 buffering, 8 stopped,
-/// 9 note, 10 reachable, 11 lyrics, 12 search, 13 title, 14 mixing, 15 bridge, 16 placed, 17 awake.
+/// 9 note, 10 reachable, 11 lyrics, 12 search, 13 title, 14 mixing, 15 bridge, 16 placed, 17 awake,
+/// 19 volume (another device set it: `ms` thousandths).
 /// `state`: 0 idle, 1 playing, 2 paused, 3 ended.
 typedef struct NoriReport {
     int32_t kind;
@@ -91,8 +92,17 @@ void nori_ios_remove_server(const char *data_dir, const char *id);
 /// 1 when a playback session is open.
 int32_t nori_ios_is_open(void);
 
-/// The system volume moved (0 to 1): loudness compensation follows it.
+/// The system volume moved (0 to 1): loudness compensation follows it, and the other devices see it.
 void nori_ios_volume(float fraction);
+
+/// Remote control's mDNS. `announce`: this device's door (`name`, `port`, TXT record as a JSON object
+/// of strings), or withdrawn (`name` NULL). `browse`: look for other doors while `on` is 1.
+typedef void (*NoriAnnounceFn)(const char *name, uint16_t port, const char *txt);
+typedef void (*NoriBrowseFn)(int32_t on);
+void nori_ios_on_bonjour(NoriAnnounceFn announce, NoriBrowseFn browse);
+/// A door found: `service` at `host`:`port`, TXT record as a JSON object of strings.
+void nori_ios_lan_found(const char *service, const char *host, uint16_t port, const char *txt);
+void nori_ios_lan_lost(const char *service);
 
 /// Note report codes (`flag`; `index` is the count where there is one).
 #define NORI_NOTE_QUEUED_NEXT 1

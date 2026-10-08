@@ -213,6 +213,7 @@ impl Session {
             offline: false,
             mpris,
             device: nori_core::remote::RemoteMe { name: nori_host::device_name(), kind },
+            discovery: None,
             out,
         };
         Ok(Session { id, host: nori_host::session::Session::open(o)?, tx })

@@ -491,7 +491,7 @@ mod tests {
         remotes.buffering(true);
         assert!(remotes.playing(&status).buffering);
 
-        // A volume the system keeps is followed, not offered.
+        // A volume this client cannot set is followed, not offered.
         let system = Remotes::new(Level::new(0.4, None));
         assert_eq!(system.playing(&status).volume, None);
     }

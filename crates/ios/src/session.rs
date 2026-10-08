@@ -5,6 +5,7 @@ use std::ffi::{c_char, CStr, CString};
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, Once, OnceLock};
 
+use nori_core::remote::Discovery;
 use nori_core::rules::QueueMoment;
 use nori_core::settings::SavedServer;
 use nori_core::settings::StoredPrefs;
@@ -51,6 +52,8 @@ pub const REPORT_BRIDGE: i32 = 15;
 pub const REPORT_PLACED: i32 = 16;
 /// Whether the CPU must stay awake (`flag` 1) or may sleep (`flag` 0).
 pub const REPORT_AWAKE: i32 = 17;
+/// Another device set the volume; the app sets the system's. [`Report::ms`] is it in thousandths.
+pub const REPORT_VOLUME: i32 = 19;
 
 pub const STATE_IDLE: i32 = 0;
 pub const STATE_PLAYING: i32 = 1;
@@ -215,8 +218,12 @@ fn pack(said: &Said) -> Packed {
             p.kind = REPORT_REACHABLE;
             p.text = c(&e.to_string());
         }
-        // The iPod lists no other devices, and the system keeps its volume.
-        Said::Remote | Said::Volume(_) | Said::Starred(_) => {}
+        Said::Volume(v) => {
+            p.kind = REPORT_VOLUME;
+            p.ms = (v * 1000.0).round() as i64;
+        }
+        // The iPod lists no other devices yet; hearts are read again when a page or the player is.
+        Said::Remote | Said::Starred(_) => {}
     }
     p
 }
@@ -349,15 +356,21 @@ pub(crate) fn audio_changed() {
     });
 }
 
-/// The system's volume, which the app follows and does not set.
-static LEVEL: OnceLock<Arc<Level>> = OnceLock::new();
+/// The system's volume, which the app follows. A process-wide slot: the system tells it before a
+/// session opens.
+fn level() -> &'static Arc<Level> {
+    static LEVEL: OnceLock<Arc<Level>> = OnceLock::new();
+    // Nothing of nori's multiplies samples for volume; another device setting it is told to the app
+    // ([`REPORT_VOLUME`]), which sets the system's.
+    LEVEL.get_or_init(|| Level::new(1.0, Some(Box::new(|_| {}))))
+}
 
-/// The system volume moved (0 to 1): loudness compensation follows it.
+/// The system volume moved (0 to 1): loudness compensation follows it, and the account's other devices
+/// see it.
 #[no_mangle]
 pub extern "C" fn nori_ios_volume(fraction: f32) {
-    let Some(level) = LEVEL.get() else { return };
-    if level.set(fraction) {
-        with_session(|s| s.volume_changed());
+    if with_session(|s| s.volume_followed(fraction)).is_none() {
+        level().set(fraction);
     }
 }
 
@@ -385,13 +398,14 @@ fn device_output() -> Result<Box<dyn AudioOutput>, String> {
     }
 }
 
-/// Opens `profile` on `output`. The playback test passes a [`nori_engine::WavOutput`].
+/// Opens `profile` on `output`, finding nearby devices through `discovery`.
 #[cfg(test)]
 pub(crate) fn start(
     dir: &Path,
     profile: SavedServer,
     output: Box<dyn AudioOutput>,
     offline: bool,
+    discovery: Option<Arc<dyn Discovery>>,
 ) -> Result<(), String> {
     let queue = Arc::new(nori_core::queue::Session::new(
         nori_core::settings_store::Settings::new(),
@@ -400,7 +414,7 @@ pub(crate) fn start(
         .settings
         .open(&nori_host::db_path(dir))
         .map_err(|e| format!("the database: {e}"))?;
-    start_queue(dir, queue, profile, output, offline)
+    start_queue(dir, queue, profile, output, offline, discovery)
 }
 
 fn start_queue(
@@ -409,11 +423,12 @@ fn start_queue(
     profile: SavedServer,
     output: Box<dyn AudioOutput>,
     offline: bool,
+    discovery: Option<Arc<dyn Discovery>>,
 ) -> Result<(), String> {
     if held().is_some() {
         return Err("already open".into());
     }
-    let volume = LEVEL.get_or_init(|| Level::new(1.0, None)).clone();
+    let volume = level().clone();
     let out: Out = Arc::new(enqueue);
     let session = Session::open(Open {
         queue,
@@ -427,6 +442,7 @@ fn start_queue(
         offline,
         mpris: None,
         device: nori_core::remote::RemoteMe { name: "iPod touch".into(), kind: nori_core::remote::wire::DeviceKind::Phone },
+        discovery,
         out,
     })?;
     if !offline {
@@ -464,7 +480,7 @@ fn open_saved(dir: &Path, server_id: &str) -> Result<(), String> {
         .open(&nori_host::db_path(dir))
         .map_err(|e| format!("the database: {e}"))?;
     let profile = saved(&prefs, server_id).ok_or_else(|| "no saved server".to_string())?;
-    start_queue(dir, queue, profile, device_output()?, false)
+    start_queue(dir, queue, profile, device_output()?, false, Some(Arc::new(crate::remote::Bonjour)))
 }
 
 fn text(p: *const c_char) -> Option<String> {
@@ -673,8 +689,8 @@ mod tests {
     use nori_engine::WavOutput;
 
     use super::{
-        Report, ReportFn, REPORT_ERROR, REPORT_POSITION, REPORT_SONG, REPORT_STATE, STATE_PAUSED,
-        STATE_PLAYING,
+        Report, ReportFn, REPORT_ERROR, REPORT_POSITION, REPORT_SONG, REPORT_STATE, REPORT_VOLUME,
+        STATE_PAUSED, STATE_PLAYING,
     };
 
     struct Sink {
@@ -758,33 +774,6 @@ mod tests {
         r
     }
 
-    /// 16-bit stereo PCM, a 440 Hz tone, `seconds` long.
-    fn wav(seconds: u32) -> Vec<u8> {
-        let rate = 44_100u32;
-        let frames = rate * seconds;
-        let data = frames * 4;
-        let mut w = Vec::with_capacity(44 + data as usize);
-        w.extend_from_slice(b"RIFF");
-        w.extend_from_slice(&(36 + data).to_le_bytes());
-        w.extend_from_slice(b"WAVEfmt ");
-        w.extend_from_slice(&16u32.to_le_bytes());
-        w.extend_from_slice(&1u16.to_le_bytes());
-        w.extend_from_slice(&2u16.to_le_bytes());
-        w.extend_from_slice(&rate.to_le_bytes());
-        w.extend_from_slice(&(rate * 4).to_le_bytes());
-        w.extend_from_slice(&4u16.to_le_bytes());
-        w.extend_from_slice(&16u16.to_le_bytes());
-        w.extend_from_slice(b"data");
-        w.extend_from_slice(&data.to_le_bytes());
-        for i in 0..frames {
-            let s =
-                ((i as f64 * 440.0 * std::f64::consts::TAU / rate as f64).sin() * 8000.0) as i16;
-            w.extend_from_slice(&s.to_le_bytes());
-            w.extend_from_slice(&s.to_le_bytes());
-        }
-        w
-    }
-
     fn song(id: &str) -> Song {
         Song {
             id: id.into(),
@@ -811,13 +800,51 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_controls_play_a_queue_of_files() {
+    fn hear_reports() {
         SINK.get_or_init(|| Sink {
             got: Mutex::new(Vec::new()),
             cv: Condvar::new(),
         });
         unsafe { super::nori_ios_on_report(Some(on_report as ReportFn)) };
+    }
+
+    /// The process holds one session: the tests that open it take turns.
+    fn one_session() -> std::sync::MutexGuard<'static, ()> {
+        static ONE: Mutex<()> = Mutex::new(());
+        ONE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn profile() -> SavedServer {
+        SavedServer {
+            id: "test".into(),
+            name: "Test".into(),
+            url: "http://127.0.0.1:9".into(),
+            user: "u".into(),
+            password: "p".into(),
+            ..SavedServer::default()
+        }
+    }
+
+    /// Puts `songs` in the open session's downloads as `seconds` long WAV files.
+    fn downloaded(songs: &[Song], seconds: u32) {
+        let bytes = crate::output::sim::wav(seconds);
+        let h = super::held().unwrap();
+        let s = h.session.lock().unwrap();
+        s.core.download_queue(songs.to_vec()).unwrap();
+        s.core
+            .download_settle(songs.iter().map(|s| s.id.clone()).collect(), vec![true; songs.len()])
+            .unwrap();
+        for song in songs {
+            let path = s.store.download_path(&song.id);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+        }
+    }
+
+    #[test]
+    fn the_controls_play_a_queue_of_files() {
+        let _one = one_session();
+        hear_reports();
 
         let empty = nori_testdir::TempDir::new("ios-open");
         let path = CString::new(empty.path().to_str().unwrap()).unwrap();
@@ -830,37 +857,21 @@ mod tests {
 
         let dir = nori_testdir::TempDir::new("ios-play");
         let _close = Close;
-        let profile = SavedServer {
-            id: "test".into(),
-            name: "Test".into(),
-            url: "http://127.0.0.1:9".into(),
-            user: "u".into(),
-            password: "p".into(),
-            ..SavedServer::default()
-        };
         super::start(
             dir.path(),
-            profile,
+            profile(),
             Box::new(WavOutput::new(dir.path().join("heard.wav"), 2.0)),
             true,
+            None,
         )
         .unwrap();
 
         let songs = vec![song("a"), song("b")];
-        let bytes = wav(20);
+        downloaded(&songs, 20);
         let at = mark();
         {
             let h = super::held().unwrap();
             let s = h.session.lock().unwrap();
-            s.core.download_queue(songs.clone()).unwrap();
-            s.core
-                .download_settle(vec!["a".into(), "b".into()], vec![true, true])
-                .unwrap();
-            for id in ["a", "b"] {
-                let path = s.store.download_path(id);
-                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                std::fs::write(&path, &bytes).unwrap();
-            }
             s.play(songs, 0, false, None);
         }
 
@@ -983,11 +994,133 @@ mod tests {
             },
             Box::new(WavOutput::new(dir.path().join("again.wav"), 2.0)),
             true,
+            None,
         )
         .unwrap();
         assert_eq!(album_order(), "newest");
         let reopened = super::held().unwrap();
         let s = reopened.session.lock().unwrap();
         assert_eq!(s.core.load_queue().unwrap().songs.len(), ids.len());
+    }
+
+    /// What the iPod's remote asked Bonjour to announce.
+    #[derive(Default)]
+    struct Announced(Mutex<Option<nori_core::remote::Announcement>>);
+
+    impl nori_core::remote::Discovery for Announced {
+        fn announce(&self, door: Option<nori_core::remote::Announcement>) {
+            *self.0.lock().unwrap() = door;
+        }
+
+        fn browse(&self, _: bool) {}
+    }
+
+    struct Obeys;
+
+    impl nori_core::remote::RemotePlayer for Obeys {
+        fn apply(&self, _: nori_core::remote::wire::Op) {}
+    }
+
+    /// Change notices, so the test waits for news rather than for time.
+    struct News(Mutex<std::sync::mpsc::Sender<()>>);
+
+    impl nori_core::remote::RemoteShown for News {
+        fn changed(&self) {
+            let _ = self.0.lock().unwrap().send(());
+        }
+    }
+
+    /// The iPod's session as a device of the account, on the simulated audio unit called back in real time,
+    /// and a phone controlling it over the network: it starts the iPod playing, and the playhead it mirrors
+    /// is the place the iPod's listener hears.
+    #[test]
+    fn a_phone_controls_the_ipod_and_mirrors_the_place_heard() {
+        use crate::output::sim::Sim;
+        use crate::output::{Clock, HostClock};
+        use nori_core::remote::wire::{DeviceKind, Op};
+        use nori_core::remote::{Remote, RemoteMe};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let _one = one_session();
+        hear_reports();
+        let dir = nori_testdir::TempDir::new("ios-remote");
+        let _close = Close;
+        let sim = Sim::new();
+        let out = crate::IosOutput::new(Box::new(sim.clone()), HostClock);
+        let render = out.render.clone();
+        let announced = Arc::new(Announced::default());
+        super::start(dir.path(), profile(), Box::new(out), false, Some(announced.clone())).unwrap();
+        // The audio unit, calling back a buffer ahead of each one it plays.
+        let stop = Arc::new(AtomicBool::new(false));
+        let unit = {
+            let (sim, render, stop) = (sim.clone(), render.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let mut due = HostClock.now_us();
+                while !stop.load(Ordering::Relaxed) {
+                    let now = HostClock.now_us();
+                    if now < due {
+                        std::thread::sleep(Duration::from_micros(due - now));
+                        continue;
+                    }
+                    sim.callback(&render, due);
+                    due += sim.period_us(&render);
+                }
+            })
+        };
+        let songs = vec![Song { duration: 60, ..song("a") }];
+        downloaded(&songs, 60);
+        let ipod = {
+            let h = super::held().unwrap();
+            let s = h.session.lock().unwrap();
+            assert!(s.setting("remoteControl", "true").is_some());
+            s.remote().expect("remote control on").id()
+        };
+        let door = announced.0.lock().unwrap().clone().expect("the door announced");
+
+        // The phone, signed in to the same account, finds the door as Bonjour would.
+        let core = nori_core::Core::new(String::new(), "phone".into(), Default::default()).unwrap();
+        core.configure(nori_host::config(&profile())).unwrap();
+        let client = nori_core::client::Client::new(core, nori_http::Http::new(), Default::default());
+        client.set_profile(nori_host::net(&profile()));
+        let (news_to, news) = std::sync::mpsc::channel();
+        let me = RemoteMe { name: "Phone".into(), kind: DeviceKind::Phone };
+        let phone = Remote::new(client, me, Arc::new(Obeys), Arc::new(News(Mutex::new(news_to))), None);
+        phone.clone().watch(true);
+        phone.clone().lan_found(door.name.clone(), "127.0.0.1".into(), door.port, door.txt.clone());
+        let until = |what: &str, ready: &dyn Fn(&Remote) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !ready(&phone) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                assert!(news.recv_timeout(left).is_ok(), "waited for {what}");
+            }
+        };
+        until("the iPod listed", &|r| r.devices().iter().any(|d| d.id == ipod && d.name == "iPod touch"));
+        phone.clone().pick(Some(ipod.clone()));
+        until("the iPod mirrored", &|r| r.active().is_some());
+        phone.send(ipod.clone(), Op::Replace { songs, index: 0, position_ms: 0, play: true, order: None, shuffle: false, repeat: 0 });
+
+        let heard_ms = || sim.heard(&render, HostClock.now_us()) as i64 * 1_000 / 44_100;
+        until("three seconds heard", &|r| r.active().is_some_and(|m| m.playing) && heard_ms() > 3_000);
+        for _ in 0..5 {
+            let _ = news.recv_timeout(Duration::from_millis(300));
+            let m = phone.active().expect("still mirrored");
+            let (shown, heard) = (m.position_now(), heard_ms());
+            assert!((shown - heard).abs() <= 20, "the phone shows {shown} ms, {heard} ms heard on the iPod");
+        }
+
+        // The volume: set from the phone, the app is told to set the system's; moved by the iPod's own
+        // buttons, the phone sees it.
+        let volume = |r: &Remote| r.devices().into_iter().find(|d| d.id == ipod).and_then(|d| d.state?.volume);
+        let at = mark();
+        phone.send(ipod.clone(), Op::Volume { percent: 30 });
+        expect(at, REPORT_VOLUME, |r| r.ms == 300);
+        super::nori_ios_volume(0.55);
+        until("the iPod's own volume", &|r| volume(r) == Some(55));
+        // The iPod first: its door closing answers the phone's held poll.
+        super::close();
+        phone.clone().stop();
+        stop.store(true, Ordering::Relaxed);
+        unit.join().unwrap();
     }
 }

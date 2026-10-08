@@ -177,7 +177,8 @@ final class Core {
             let id = r.id.map { String(cString: $0) } ?? ""
             let flag = r.flag
             let count = r.index
-            DispatchQueue.main.async { Core.shared.reported(kind: kind, id: id, text: text, flag: flag, count: count) }
+            let ms = r.ms
+            DispatchQueue.main.async { Core.shared.reported(kind: kind, id: id, text: text, flag: flag, count: count, ms: ms) }
         }
         nori_ios_on_page { token, text in
             guard let text else { return }
@@ -277,10 +278,12 @@ final class Core {
         NotificationCenter.default.post(name: .noriOpened, object: nil)
     }
 
-    private func reported(kind: Int32, id: String, text: String, flag: Int32, count: Int32) {
+    private func reported(kind: Int32, id: String, text: String, flag: Int32, count: Int32, ms: Int64) {
         switch kind {
         case 1, 2, 3, 4, 8, 14, 16:
             refresh()
+        case 19:
+            SystemVolume.set(Float(ms) / 1000)
         case 5:
             Toast.show(Say.playbackError(text))
         case 7:

@@ -310,4 +310,11 @@ the AutoEQ search, the lyric clock lighting and filling a line and landing a tap
 a cover handed over without a copy living until the app lets go, and the login form's
 advanced fields. What only the device shows is UIKit's part, looked at by eye: the card and queue
 sliding under a finger, the word fill drawn with CoreText, the drawn icons, a queue row dragged.
+
+Remote control on the iPod is tested in Rust as well: behind the deep I/O buffer the engine's place is
+the one the simulated unit's listener hears (virtual clock), and the session as a device on that unit
+called back in real time: a phone's core finds its door, starts a song on it, mirrors a playhead within
+20 ms of what was heard, sets its volume and sees the iPod's own. What only the device shows: Bonjour
+announcing and finding, the render timestamps' host time, the volume view moving the system volume, and
+the lock screen while another device plays.
 Battery and CPU are `tools/ipod-bench.sh` (unplugged, SSH over Wi-Fi), never on the host.

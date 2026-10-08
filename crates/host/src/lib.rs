@@ -59,7 +59,7 @@ pub fn volume_db(v: f32) -> f64 {
 /// and set it too (remote control).
 pub struct Level {
     value: AtomicU32,
-    /// Sets the sound card's level; None where the system keeps the volume (iOS), which is then followed
+    /// Sets the sound card's level; None where this client cannot set the volume, which is then followed
     /// but not offered to other devices.
     card: Option<Box<dyn Fn(f32) + Send + Sync>>,
     /// The volume in dB, for loudness compensation.

@@ -237,6 +237,7 @@ impl Session {
             offline: o.offline,
             mpris: o.mpris,
             device: nori_core::remote::RemoteMe { name: nori_host::device_name(), kind: nori_core::remote::wire::DeviceKind::Terminal },
+            discovery: None,
             out,
         })?;
         Ok(Session { id, host, tx: o.tx })
