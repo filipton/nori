@@ -782,10 +782,11 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
     }
 
-    /// Some song's bytes are awaited (a test's clock stands still meanwhile).
+    /// Some song's bytes are awaited, or the vocal mask rows being made that music waits for (a test's clock stands
+    /// still meanwhile).
     fn waiting_for_bytes(&self) -> bool {
         let h = &self.h;
-        self.p.waiting_for_bytes() || h.entering.is_some() || h.takeover.as_ref().is_some_and(|m| !m.ready) || h.probe.as_ref().is_some_and(|p| p.2.is_none()) || self.off.as_ref().is_some_and(Offload::waiting_for_bytes)
+        self.p.waiting_for_bytes() || self.p.sink.rows_coming() || h.entering.is_some() || h.takeover.as_ref().is_some_and(|m| !m.ready) || h.probe.as_ref().is_some_and(|p| p.2.is_none()) || self.off.as_ref().is_some_and(Offload::waiting_for_bytes)
     }
 
     // ---- the CPU and offload paths as one player ----
@@ -2081,7 +2082,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
 
     /// How long the thread may sleep: `None` until a command, `Some(0)` not at all. The music's timers,
     /// and while music should move, the stall checks ([`Worker::restart_if_stalled`]).
-    fn wake_in(&self, now: i64) -> Option<i64> {
+    fn wake_in(&mut self, now: i64) -> Option<i64> {
         let d = self.wake_for_music(now);
         let look = match &self.stall {
             Some(q) if q.standing && now - q.since < STALL_SAY_MS => Some((q.since + STALL_SAY_MS - now).max(1)),
@@ -2092,7 +2093,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         [d, look].into_iter().flatten().min()
     }
 
-    fn wake_for_music(&self, now: i64) -> Option<i64> {
+    fn wake_for_music(&mut self, now: i64) -> Option<i64> {
         let mut d: Option<i64> = None;
         let mut at = |ms: i64| d = Some(d.map_or(ms, |x| x.min(ms)));
         for t in [self.pause_at, self.dip.as_ref().map(|d| d.at), self.idle_at, self.told.title.as_ref().map(|t| t.1)].into_iter().flatten() {
@@ -2109,6 +2110,10 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             at(if m.ready { m.dip_at - now } else { 1_000 });
         }
         let positions = self.told.positions.is_some() && self.state == State::Playing;
+        // Sing: input waiting for its vocal mask's rows goes on without them before the output runs low.
+        if let Some(us) = self.p.sink.sing_wait_us().filter(|_| self.p.playing()) {
+            at(us / 1000 + 1);
+        }
         if let Some(off) = self.chip() {
             if off.unlooked() {
                 return Some(0);

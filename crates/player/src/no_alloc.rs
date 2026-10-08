@@ -261,6 +261,18 @@ fn sing_masker() {
 }
 
 #[test]
+fn sing_feed() {
+    use crate::sing::{Feed, Feeding, VocalMask};
+    let me = std::thread::current();
+    let feed = Feeding(std::sync::Arc::new(Feed::new("a", std::sync::Arc::new(VocalMask::growing(43.0, 1000)), 0, RATE, 30, me.clone(), me)));
+    let made = steady(&tone(8.0, 440.0), CHUNK, |c| {
+        feed.push(c, FMT);
+        feed.flush();
+    });
+    assert_eq!(made, 0);
+}
+
+#[test]
 fn analysis() {
     let x: Vec<f32> = tone(30.0, 440.0).chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).collect();
     // Mono-alike and panned (the side feeds the vocal curve).

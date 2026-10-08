@@ -212,7 +212,7 @@ impl Analyses {
         let hint = hint.or_else(|| song.map(|s| s.suffix).filter(|s| !s.is_empty()));
         let cpu = crate::arriving::thread_cpu_ms();
         // Abandoned once it no longer waits (cancelled or timed out).
-        let decoded = decode(id, "reading back", pieces, hint.as_deref(), expected_ms, classical, listen_now, None, || tracker.with(|t| t.waits(id, Work::Analysis) || t.waits(id, Work::Beats)));
+        let decoded = decode(id, "reading back", pieces, hint.as_deref(), expected_ms, classical, listen_now, || tracker.with(|t| t.waits(id, Work::Analysis) || t.waits(id, Work::Beats)));
         let Some(Decoded { stream, ends }) = decoded else { return };
         let mut stored = false;
         if classical {

@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::ops::Range;
 
-use crate::chain::{Kept, Processors};
+use crate::chain::{Kept, Piece, Processors};
 use crate::dsp::{Band, Effects, Equalizer};
 use crate::engine::Downstream;
 use crate::pcm::{Encoding, Format};
@@ -27,6 +27,11 @@ const REPLAY_FRAMES: u64 = 256;
 /// Kept input reaches this far behind what has played, so a track that replaces from a little before
 /// its play head (one that drops what its device holds) finds a kept state there.
 const KEPT_BEHIND_US: i64 = 500_000;
+
+/// Sing: input whose vocal mask rows have not come waits while the output holds this much ahead of the ear; below
+/// it the input goes on as it is, [`SING_STEP_US`] at a time.
+pub const SING_LEAD_US: i64 = 750_000;
+const SING_STEP_US: i64 = 250_000;
 
 /// How long a splice blends what the track held into what replaces it, µs.
 pub const BLEND_US: i64 = 5_000;
@@ -322,6 +327,10 @@ pub struct Sink<T: Track> {
     carry: f64,
     /// The source ended: running dry is the end, not a gap.
     pub source_ended: bool,
+    /// Sing: kept input waits for its vocal mask's rows.
+    holds: bool,
+    /// Sing: the timeline position of the first input that went on before its mask's rows came.
+    unmasked: Option<i64>,
     /// Largest limiter reduction seen, dB.
     pub gain_reduction_db: f32,
     pub track: T,
@@ -354,6 +363,8 @@ impl<T: Track> Sink<T> {
             pending_media: 0.0,
             carry: 0.0,
             source_ended: false,
+            holds: false,
+            unmasked: None,
             gain_reduction_db: 0.0,
             track,
         }
@@ -583,8 +594,10 @@ impl<T: Track> Sink<T> {
                 return false;
             }
             self.back_at(back, written);
-            // The kept state may be from before the settings last changed: they are applied from here.
+            // The kept state may be from before the settings last changed: they are applied from here, and a later
+            // change made again from here runs them.
             self.apply(self.settings.clone());
+            self.kept.mark_changed(self.run, self.made, self.run_media, &self.runner.chain);
         }
         self.submitted_frames -= self.kept.media_from(at);
         while self.paces.back().is_some_and(|p| p.0 > self.submitted_frames) {
@@ -657,6 +670,9 @@ impl<T: Track> Sink<T> {
     pub fn fill(&mut self) -> bool {
         let Some(f) = self.format else { return true };
         let float = f.encoding == Encoding::Float;
+        // Output frame up to which input goes on without its vocal mask's rows, once asked.
+        let mut release = None;
+        self.holds = false;
         loop {
             if !self.write_pending() {
                 return false;
@@ -669,14 +685,82 @@ impl<T: Track> Sink<T> {
                 }
                 return true;
             };
+            let mut to = self.masked_to(piece, end, f.rate);
+            if to < end {
+                let release = *release.get_or_insert_with(|| self.release_to(f.rate));
+                if self.made < release {
+                    self.unmasked = self.unmasked.or(Some(piece.at(to, f.rate).0));
+                    to = end;
+                } else if to == self.run {
+                    self.holds = true;
+                    return true;
+                }
+            }
             self.mark();
-            let media = (end - self.run) as f64 * piece.pace;
+            let media = (to - self.run) as f64 * piece.pace;
             self.carry += media;
-            self.runner.run(self.kept.frames(self.run, end), float, Some(piece.at(self.run, f.rate)), piece.gain);
+            self.runner.run(self.kept.frames(self.run, to), float, Some(piece.at(self.run, f.rate)), piece.gain);
             self.run_media += media;
-            self.run = end;
+            self.run = to;
             self.made_output(0.0);
         }
+    }
+
+    /// The input frame (of `piece`, from the one run next, up to `end`) the masker has its vocal mask's rows for.
+    fn masked_to(&self, piece: Piece, end: u64, rate: u32) -> u64 {
+        if self.runner.chain.sing.as_ref().is_none_or(|m| m.level() >= 1.0) {
+            return end;
+        }
+        let (pts, pace) = piece.at(self.run, rate);
+        let Some(p) = self.runner.masks.iter().find(|p| p.at.contains(&pts)) else { return end };
+        let until = p.ready_until(pts);
+        if until == i64::MAX {
+            return end;
+        }
+        let frames = ((until - pts).max(0) as f64 * rate as f64 / (1e6 * pace)) as u64;
+        if self.run + frames < end {
+            p.mask.await_rows();
+        }
+        (self.run + frames).min(end)
+    }
+
+    /// Output frames made ahead of the ear, µs.
+    fn lead_us(&mut self, rate: u32) -> i64 {
+        (self.made.saturating_sub(self.track.played()) as i128 * 1_000_000 / rate as i128) as i64
+    }
+
+    /// The output frame input goes on to without its rows: a step past the lead if the output holds less, else none.
+    fn release_to(&mut self, rate: u32) -> u64 {
+        if self.lead_us(rate) >= SING_LEAD_US {
+            return 0;
+        }
+        self.track.played() + ((SING_LEAD_US + SING_STEP_US) * rate as i64 / 1_000_000) as u64
+    }
+
+    /// Sing: how long until input waiting for its vocal mask's rows goes on without them, µs; `None` when none waits.
+    pub fn sing_wait_us(&mut self) -> Option<i64> {
+        let rate = self.format?.rate;
+        self.holds.then(|| (self.lead_us(rate) - SING_LEAD_US).max(0))
+    }
+
+    /// Sing: input waits for rows that are being made.
+    pub fn rows_coming(&self) -> bool {
+        self.holds && self.runner.masks.iter().any(|p| p.mask.rows_coming())
+    }
+
+    /// Sing: the rows came for input that went on without them: it is made again from the first frame the track
+    /// can still replace.
+    pub fn remask(&mut self) -> Option<(u64, u64)> {
+        let pts = self.unmasked?;
+        let Some(p) = self.runner.masks.iter().find(|p| p.at.contains(&pts) && !p.mask.given_up()) else {
+            self.unmasked = None;
+            return None;
+        };
+        if p.ready_until(pts) <= pts {
+            return None;
+        }
+        self.unmasked = None;
+        self.splice()
     }
 
     /// Keeps the chain's state before the next input, now and then, and lets go of what has played.
@@ -814,6 +898,8 @@ impl<T: Track> Sink<T> {
         self.run_media = 0.0;
         self.made = 0;
         self.end = End::Open;
+        self.holds = false;
+        self.unmasked = None;
     }
 
     /// End of the queue: drains the chain once the kept input has all been run.
@@ -933,15 +1019,16 @@ impl<T: Track> Downstream for Sink<T> {
         // Timeline position of the input's first frame.
         let pts = pts_us + ((from / fb) as f64 * self.pace * 1_000_000.0 / f.rate as f64) as i64;
         if self.runner.processing(self.gain) {
+            // Input waiting for its vocal mask fills the buffer with what the track holds: no more yet.
+            let waiting = f.us((self.kept.end() - self.run) as usize * fb);
+            if waiting > 0 && waiting + self.queued_us() >= self.capacity_us {
+                self.owed = Some(key);
+                return (false, 0);
+            }
             self.note_pace();
-            let media = (input.len() / fb) as f64 * self.pace;
-            self.submitted_frames += media;
-            self.mark();
+            self.submitted_frames += (input.len() / fb) as f64 * self.pace;
             self.kept.keep(input, self.pace, pts, self.gain);
-            self.runner.run(input, f.encoding == Encoding::Float, Some((pts, self.pace)), self.gain);
-            self.run += (input.len() / fb) as u64;
-            self.run_media += media;
-            self.made_output(media);
+            self.fill();
             return (true, input.len());
         }
         let n = self.room_bytes().min(input.len()) / fb * fb;

@@ -456,6 +456,8 @@ pub struct AudioTrack {
     pub heard_frames: u64,
     /// Underruns mid-song: (frame, silent frames).
     pub gaps: Vec<(u64, u64)>,
+    /// A device holding seconds: a sound change plays what was written first.
+    pub deep: bool,
 }
 
 impl AudioTrack {
@@ -475,6 +477,7 @@ impl AudioTrack {
             capture: 0..u64::MAX,
             heard_frames: 0,
             gaps: Vec::new(),
+            deep: false,
         }
     }
 
@@ -578,8 +581,11 @@ impl pipeline::Track for AudioTrack {
         self.played
     }
 
-    fn freeze(&mut self, _why: Remake) -> u64 {
-        self.played
+    fn freeze(&mut self, why: Remake) -> u64 {
+        match (why, self.format) {
+            (Remake::Sound, Some(f)) if self.deep => self.played + (self.queued_bytes / f.frame_bytes()) as u64,
+            _ => self.played,
+        }
     }
 
     fn cut(&mut self, at: u64) -> f64 {
@@ -682,6 +688,12 @@ pub struct App {
     /// Sing's vocal masks by song, and whether one came since the player last asked.
     pub masks: std::collections::HashMap<String, std::sync::Arc<crate::sing::VocalMask>>,
     pub masks_made: bool,
+    /// Sing makes masks from what the player feeds, at the start of each turn, with this model.
+    pub separator: Option<Box<dyn crate::sing::Separator + Send>>,
+    /// No rows are made before the clock reaches this (a slow model).
+    pub rows_from_ms: i64,
+    /// The feeds the masks are being made from.
+    pub making: Vec<(std::sync::Arc<crate::sing::Feed>, crate::sing::MaskMaker)>,
 }
 
 /// No crossfade, no AutoMix: gapless.
@@ -723,7 +735,34 @@ impl App {
             device_sounds: Default::default(),
             masks: Default::default(),
             masks_made: false,
+            separator: None,
+            rows_from_ms: 0,
+            making: Vec::new(),
         }
+    }
+
+    /// Makes what rows the feeds allow, as the app's mask maker would on its own thread.
+    fn make_rows(&mut self) {
+        let Some(model) = self.separator.as_deref() else { return };
+        if self.now_ms < self.rows_from_ms {
+            return;
+        }
+        let mut x = Vec::new();
+        self.making.retain_mut(|(feed, maker)| {
+            x.clear();
+            let n = feed.take(&mut x);
+            maker.feed(&x);
+            if feed.ended() && feed.done() {
+                feed.mask.end(maker.end());
+            }
+            if maker.due() || feed.done() || feed.mask.awaited() {
+                while maker.waiting() > 0 {
+                    maker.answer(model, &feed.mask).expect("the model answers");
+                }
+            }
+            feed.mask.made(n);
+            !feed.done()
+        });
     }
 
     pub fn logged(&self, what: &str) -> bool {
@@ -856,7 +895,30 @@ impl pipeline::App for App {
     }
 
     fn masks_made(&mut self) -> bool {
+        self.make_rows();
         std::mem::take(&mut self.masks_made)
+    }
+
+    fn sings(&mut self) -> bool {
+        self.separator.is_some()
+    }
+
+    fn sing_feed(&mut self, song_id: &str, from: u64, rate: u32, duration_us: i64) -> Option<crate::sing::Feeding> {
+        self.separator.as_ref()?;
+        let fps = crate::sing::MaskMaker::fps(rate);
+        let mask = match self.masks.get(song_id) {
+            Some(m) if m.whole() => return None,
+            Some(m) => m.clone(),
+            None => {
+                let m = std::sync::Arc::new(crate::sing::VocalMask::growing(fps, (duration_us as f64 / 1e6 * fps as f64) as usize + 64));
+                self.masks.insert(song_id.to_string(), m.clone());
+                m
+            }
+        };
+        let me = std::thread::current();
+        let feed = std::sync::Arc::new(crate::sing::Feed::new(song_id, mask, from, rate, 30, me.clone(), me));
+        self.making.push((feed.clone(), crate::sing::MaskMaker::new(rate, from)));
+        Some(crate::sing::Feeding(feed))
     }
 
     fn spliced(&mut self, what: &str, at: pipeline::Splice) {

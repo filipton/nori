@@ -1,9 +1,11 @@
 //! Sing: a song's vocals turned down to a level the listener picks. Open-Unmix's vocals model ([`model`], behind
-//! `neural-beats`) makes each song's [`VocalMask`] ahead of playback, the vocal share of each time-frequency cell; in the
-//! chain the [`Masker`] plays `mix * (1 - (1 - level) * mask)` through a short-time Fourier transform. A song without a
-//! mask plays unchanged.
+//! `neural-beats`) makes each song's [`VocalMask`] from its samples as the player decodes them ([`Feed`], [`MaskMaker`]):
+//! the vocal share of each time-frequency cell. In the chain the [`Masker`] plays `mix * (1 - (1 - level) * mask)`
+//! through a short-time Fourier transform; the sink holds back input whose rows have not come while the track holds
+//! enough ahead of the ear (`crate::sink`). A song or a stretch without a mask plays unchanged.
 
 use std::ops::Range;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use rustfft::num_complex::Complex32;
@@ -12,8 +14,13 @@ use rustfft::{Fft, FftPlanner};
 use crate::dither::Dither;
 use crate::pcm::Encoding;
 
+mod feed;
+mod maker;
 #[cfg(feature = "neural-beats")]
 pub mod model;
+
+pub use feed::{Feed, Feeding};
+pub use maker::{MaskMaker, Separator, IN_BINS};
 
 /// The model's spectrum: 4096 points at 44.1 kHz, so 2049 bins 10.77 Hz apart, a frame every 1024 samples.
 pub const MODEL_RATE: f64 = 44_100.0;
@@ -59,39 +66,167 @@ pub enum MaskError {
 }
 
 /// A song's vocal mask: per frame (`fps` a second, frame `k` centred on second `k / fps`), the vocal share of each
-/// band, both channels together.
-#[derive(Debug, Clone, PartialEq)]
+/// band, both channels together. Whole when read back, or growing while its maker's thread puts rows and the player
+/// reads them: a row is read only once its bit in `done` says it is in.
 pub struct VocalMask {
     pub fps: f32,
     bands: usize,
-    data: Vec<u8>,
+    cells: Box<[AtomicU8]>,
+    /// A bit per frame: its row is in.
+    done: Box<[AtomicU64]>,
+    rows: AtomicUsize,
+    /// The song's frames once its end was read; the room until then.
+    frames: AtomicUsize,
+    ended: AtomicBool,
+    /// Its making was given up: nothing waits for it.
+    given_up: AtomicBool,
+    /// The player waits for rows not in yet.
+    awaited: AtomicBool,
+    /// Frames fed for it and not yet made into rows.
+    coming: AtomicU64,
 }
 
 impl VocalMask {
-    /// From rows of [`bands`] bytes each.
+    /// A whole mask, from rows of [`bands`] bytes each.
     pub fn new(fps: f32, data: Vec<u8>) -> VocalMask {
-        VocalMask { fps, bands: bands(), data }
+        let m = VocalMask::growing(fps, data.len() / bands());
+        for (k, row) in data.chunks_exact(m.bands).enumerate() {
+            m.put(k, row);
+        }
+        m.end(m.frames());
+        m
     }
 
+    /// An empty mask with room for `frames` rows.
+    pub fn growing(fps: f32, frames: usize) -> VocalMask {
+        let bands = bands();
+        VocalMask {
+            fps,
+            bands,
+            cells: (0..frames * bands).map(|_| AtomicU8::new(0)).collect(),
+            done: (0..frames.div_ceil(64)).map(|_| AtomicU64::new(0)).collect(),
+            rows: AtomicUsize::new(0),
+            frames: AtomicUsize::new(frames),
+            ended: AtomicBool::new(false),
+            given_up: AtomicBool::new(false),
+            coming: AtomicU64::new(0),
+            awaited: AtomicBool::new(false),
+        }
+    }
+
+    /// The song's frames once its end is known, else the room.
     pub fn frames(&self) -> usize {
-        self.data.len() / self.bands.max(1)
+        self.frames.load(Ordering::Acquire)
     }
 
-    pub fn row(&self, frame: usize) -> &[u8] {
-        &self.data[frame * self.bands..(frame + 1) * self.bands]
+    /// Whether row `k` is in.
+    pub fn has(&self, k: usize) -> bool {
+        k < self.frames() && self.done[k / 64].load(Ordering::Acquire) & (1 << (k % 64)) != 0
     }
 
+    /// Row `k`'s share in `band`, once [`VocalMask::has`] it.
+    pub fn cell(&self, k: usize, band: usize) -> u8 {
+        self.cells[k * self.bands + band].load(Ordering::Relaxed)
+    }
+
+    fn row_is_zero(&self, k: usize) -> bool {
+        self.cells[k * self.bands..(k + 1) * self.bands].iter().all(|c| c.load(Ordering::Relaxed) == 0)
+    }
+
+    /// Puts row `k`; one past the room, or already in, is left as it is.
+    pub fn put(&self, k: usize, row: &[u8]) {
+        if k >= self.frames() || self.has(k) {
+            return;
+        }
+        for (c, v) in self.cells[k * self.bands..(k + 1) * self.bands].iter().zip(row) {
+            c.store(*v, Ordering::Relaxed);
+        }
+        self.done[k / 64].fetch_or(1 << (k % 64), Ordering::Release);
+        self.rows.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// The song has `frames` frames.
+    pub fn end(&self, frames: usize) {
+        self.frames.fetch_min(frames, Ordering::AcqRel);
+        self.ended.store(true, Ordering::Release);
+    }
+
+    fn ended(&self) -> bool {
+        self.ended.load(Ordering::Acquire)
+    }
+
+    /// Every row of the song is in.
+    pub fn whole(&self) -> bool {
+        self.ended() && self.first_missing(0) == self.frames()
+    }
+
+    /// Some row is in.
+    pub fn begun(&self) -> bool {
+        self.rows.load(Ordering::Acquire) > 0
+    }
+
+    /// Nothing waits for it any more.
+    pub fn give_up(&self) {
+        self.given_up.store(true, Ordering::Release);
+    }
+
+    pub fn given_up(&self) -> bool {
+        self.given_up.load(Ordering::Acquire)
+    }
+
+    /// `n` more frames were fed for it.
+    fn fed(&self, n: u64) {
+        self.coming.fetch_add(n, Ordering::AcqRel);
+    }
+
+    /// `n` frames fed were made into what rows they can make.
+    pub fn made(&self, n: u64) {
+        self.coming.fetch_sub(n, Ordering::AcqRel);
+    }
+
+    /// The player waits for rows not in yet.
+    pub fn await_rows(&self) {
+        self.awaited.store(true, Ordering::Release);
+    }
+
+    /// Whether the player waited for rows since last asked.
+    pub fn awaited(&self) -> bool {
+        self.awaited.swap(false, Ordering::AcqRel)
+    }
+
+    /// Rows are being made of frames already fed.
+    pub fn rows_coming(&self) -> bool {
+        self.coming.load(Ordering::Acquire) > 0
+    }
+
+    /// The first row from `k` on that is not in (the song's frames when all are).
+    fn first_missing(&self, k: usize) -> usize {
+        let frames = self.frames();
+        let mut k = k.min(frames);
+        while k < frames {
+            let missing = !self.done[k / 64].load(Ordering::Acquire) >> (k % 64);
+            if missing != 0 {
+                return (k + missing.trailing_zeros() as usize).min(frames);
+            }
+            k = (k / 64 + 1) * 64;
+        }
+        frames
+    }
+
+    /// The bytes it is kept in.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut b = Vec::with_capacity(HEADER + self.data.len());
+        let frames = self.frames();
+        let mut b = Vec::with_capacity(HEADER + frames * self.bands);
         b.extend_from_slice(MAGIC);
         b.push(VERSION);
         b.extend_from_slice(&(self.bands as u16).to_le_bytes());
         b.extend_from_slice(&self.fps.to_le_bytes());
-        b.extend_from_slice(&(self.frames() as u32).to_le_bytes());
-        b.extend_from_slice(&self.data);
+        b.extend_from_slice(&(frames as u32).to_le_bytes());
+        b.extend(self.cells[..frames * self.bands].iter().map(|c| c.load(Ordering::Relaxed)));
         b
     }
 
+    /// A whole mask from its bytes.
     pub fn from_bytes(b: &[u8]) -> Result<VocalMask, MaskError> {
         if b.len() < HEADER || &b[..4] != MAGIC {
             return Err(MaskError::NotAMask);
@@ -106,7 +241,21 @@ impl VocalMask {
         if data.len() != frames * bands || fps.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
             return Err(MaskError::Truncated);
         }
-        Ok(VocalMask { fps, bands, data: data.to_vec() })
+        Ok(VocalMask::new(fps, data.to_vec()))
+    }
+}
+
+/// Alike when both are whole or both not, with the same rows.
+impl PartialEq for VocalMask {
+    fn eq(&self, o: &VocalMask) -> bool {
+        self.whole() == o.whole() && self.to_bytes() == o.to_bytes()
+    }
+}
+
+impl std::fmt::Debug for VocalMask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let whole = if self.whole() { ", whole" } else { "" };
+        write!(f, "VocalMask {{ fps: {}, {} of {} rows{whole} }}", self.fps, self.rows.load(Ordering::Relaxed), self.frames())
     }
 }
 
@@ -115,6 +264,23 @@ impl VocalMask {
 pub struct Placed {
     pub at: Range<i64>,
     pub mask: Arc<VocalMask>,
+}
+
+impl Placed {
+    /// How far on from timeline position `pts` the masker has the rows it reads: each moment's frame and the one
+    /// after it. `i64::MAX` when none is missing, or none is awaited.
+    pub fn ready_until(&self, pts: i64) -> i64 {
+        let m = &self.mask;
+        if m.given_up() {
+            return i64::MAX;
+        }
+        let k = ((pts - self.at.start).max(0) as f64 / 1e6 * m.fps as f64) as usize + 1;
+        let missing = m.first_missing(k);
+        if missing >= m.frames() && m.ended() {
+            return i64::MAX;
+        }
+        self.at.start + (missing.saturating_sub(1) as f64 * 1e6 / m.fps as f64) as i64
+    }
 }
 
 /// The chain's vocal masker: a short-time Fourier transform (sqrt-Hann windows, 75 % overlap) whose bins are scaled by
@@ -409,7 +575,8 @@ impl Masker {
         }
     }
 
-    /// Fills the bins' gains for a frame centred at timeline position `pts`; false when they are all 1.
+    /// Fills the bins' gains for a frame centred at timeline position `pts`; false when they are all 1 (no mask,
+    /// or its row not in yet).
     fn gains_at(&mut self, pts: i64, masks: &[Placed]) -> bool {
         if self.level >= 1.0 {
             return false;
@@ -420,14 +587,18 @@ impl Masker {
         if f.is_nan() || f < 0.0 || m.frames() == 0 {
             return false;
         }
-        let k = (f as usize).min(m.frames() - 1);
-        let (a, b, t) = (m.row(k), m.row((k + 1).min(m.frames() - 1)), (f - k as f64).min(1.0) as f32);
-        if a.iter().chain(b).all(|v| *v == 0) {
+        // Past a whole song's last frame, its last row.
+        let k = if m.ended() { (f as usize).min(m.frames() - 1) } else { f as usize };
+        if !m.has(k) {
+            return false;
+        }
+        let (b, t) = if m.has(k + 1) { (k + 1, (f - k as f64).min(1.0) as f32) } else { (k, 0.0) };
+        if m.row_is_zero(k) && m.row_is_zero(b) {
             return false;
         }
         let cut = (1.0 - self.level) / 255.0;
         for (g, band) in self.gains.iter_mut().zip(self.band.iter()) {
-            let (x, y) = (a[*band as usize] as f32, b[*band as usize] as f32);
+            let (x, y) = (m.cell(k, *band as usize) as f32, m.cell(b, *band as usize) as f32);
             *g = 1.0 - cut * (x + (y - x) * t);
         }
         true
