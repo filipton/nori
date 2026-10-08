@@ -1,6 +1,7 @@
-//! What a song's menu, the sleep timer, a row swipe and a page's download entry offer; the client
-//! draws and words each action.
+//! What a song's menu, its artist line's links, the sleep timer, a row swipe and a page's download entry
+//! offer; the client draws and words each action.
 
+use nori_model::model::ArtistRef;
 use nori_model::{DownloadPhase, Song};
 use nori_settings::settings::SwipeAction;
 
@@ -95,6 +96,64 @@ pub fn song_menu(song: Song, starred: bool, download: SongDownload, player: bool
     }
     add(SongAction::Details, true);
     out
+}
+
+/// A song's artist line as names that open their artists' pages.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArtistLine {
+    /// One artist, or none known: the whole line opens `artist_id`.
+    One,
+    /// The line read as the credited artists in order, each with its id, and what stands between them
+    /// without one.
+    Split(Vec<ArtistPiece>),
+    /// Several artists the line does not name one by one: a click on it lists them.
+    Several(Vec<ArtistRef>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtistPiece {
+    pub text: String,
+    pub id: Option<String>,
+}
+
+/// Words that may stand between two artists' names on a line.
+const JOINERS: [&str; 10] = ["feat.", "feat", "ft.", "ft", "featuring", "with", "and", "x", "vs.", "vs"];
+
+/// How `song`'s artist line links its credited artists (OpenSubsonic `artists`, those with an id).
+pub fn artist_line(song: &Song) -> ArtistLine {
+    let artists: Vec<&ArtistRef> = song.artists.iter().filter(|a| !a.id.is_empty() && !a.name.is_empty()).collect();
+    if artists.len() < 2 {
+        return ArtistLine::One;
+    }
+    match split_line(&song.artist, &artists) {
+        Some(pieces) => ArtistLine::Split(pieces),
+        None => ArtistLine::Several(artists.into_iter().cloned().collect()),
+    }
+}
+
+/// `line` as `artists`' names in order, with only joiners between them and nothing around them.
+fn split_line(line: &str, artists: &[&ArtistRef]) -> Option<Vec<ArtistPiece>> {
+    let mut pieces = Vec::with_capacity(artists.len() * 2);
+    let mut rest = line;
+    for (k, a) in artists.iter().enumerate() {
+        let at = rest.find(a.name.as_str())?;
+        let between = &rest[..at];
+        if k == 0 && !between.trim().is_empty() || k > 0 && !joiner(between) {
+            return None;
+        }
+        if k > 0 {
+            pieces.push(ArtistPiece { text: between.to_string(), id: None });
+        }
+        pieces.push(ArtistPiece { text: a.name.clone(), id: Some(a.id.clone()) });
+        rest = &rest[at + a.name.len()..];
+    }
+    rest.trim().is_empty().then_some(pieces)
+}
+
+/// Punctuation such as ", " or " & ", or a joining word such as " feat. ".
+fn joiner(between: &str) -> bool {
+    let word = between.trim_matches(|c: char| c.is_whitespace() || ",&/;+•·×-".contains(c));
+    !between.trim().is_empty() && (word.is_empty() || JOINERS.contains(&word.to_lowercase().as_str()))
 }
 
 /// One sleep timer choice; all zeros is "Off".
@@ -211,7 +270,6 @@ pub fn download_missing<'a>(songs: impl IntoIterator<Item = &'a str>, done: impl
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nori_model::model::ArtistRef;
 
     #[test]
     fn a_partly_downloaded_page_offers_the_rest_and_removal() {
@@ -259,6 +317,30 @@ mod tests {
         );
         let done = song_menu(Song::default(), false, SongDownload::Done, false, false);
         assert_eq!(done[4].action, SongAction::RemoveDownload);
+    }
+
+    #[test]
+    fn artist_lines_link_each_artist_they_name() {
+        let r = |id: &str, name: &str| ArtistRef { id: id.into(), name: name.into() };
+        let piece = |text: &str, id: Option<&str>| ArtistPiece { text: text.into(), id: id.map(str::to_string) };
+        let two = vec![r("a", "Alpha Waves"), r("b", "Beta Band")];
+        let split = |joiner: &str| ArtistLine::Split(vec![piece("Alpha Waves", Some("a")), piece(joiner, None), piece("Beta Band", Some("b"))]);
+        let cases = [
+            ("Alpha Waves feat. Beta Band", two.clone(), split(" feat. ")),
+            ("Alpha Waves • Beta Band", two.clone(), split(" • ")),
+            ("Alpha Waves, Beta Band", two.clone(), split(", ")),
+            ("Alpha Waves X Beta Band", two.clone(), split(" X ")),
+            ("Alpha Waves Beta Band", two.clone(), ArtistLine::Several(two.clone())),
+            ("Beta Band & Alpha Waves", two.clone(), ArtistLine::Several(two.clone())),
+            ("The Alpha Waves & Beta Band Show", two.clone(), ArtistLine::Several(two.clone())),
+            ("Alpha Waves and friends with Beta Band", two.clone(), ArtistLine::Several(two.clone())),
+            ("Alpha Waves", vec![r("a", "Alpha Waves")], ArtistLine::One),
+            ("Alpha Waves feat. Nobody", vec![r("a", "Alpha Waves"), r("", "Nobody")], ArtistLine::One),
+        ];
+        for (line, artists, want) in cases {
+            let song = Song { artist: line.into(), artists, ..Default::default() };
+            assert_eq!(artist_line(&song), want, "{line}");
+        }
     }
 
     #[test]

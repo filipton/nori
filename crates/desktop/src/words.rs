@@ -72,6 +72,9 @@ pub fn song_action(a: &nori_core::menus::SongAction) -> Option<String> {
     Some(match a {
         A::Favourite { on: true } => "Add to Favorites".into(),
         A::Favourite { on: false } => "Remove from Favorites".into(),
+        A::GoToAlbum { .. } => "Go to Album".into(),
+        A::GoToArtist { name, named: true, .. } => format!("Go to {name}"),
+        A::GoToArtist { named: false, .. } => "Go to Artist".into(),
         _ => return None,
     })
 }

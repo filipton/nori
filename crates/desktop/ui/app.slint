@@ -66,6 +66,20 @@ export struct JamAsk {
     art: string,
 }
 
+// A name on an artist line and the artist page it opens; empty for the words between names.
+export struct ArtistLink {
+    text: string,
+    id: string,
+}
+
+// How a song's artist line links its artists (menus.rs's artist_line): its names one by one (`pieces`), or
+// the artists a click on it lists (`choices`) where it does not name them one by one. Both empty: the line
+// opens its one artist.
+export struct Credits {
+    pieces: [ArtistLink],
+    choices: [ArtistLink],
+}
+
 // A line of a song's menu beyond playing it: 0 its heart, 1 its album, 2 one of its artists (`id` the page).
 export struct SongGo {
     title: string,
@@ -76,6 +90,7 @@ export struct SongGo {
 export struct SongRow {
     title: string,
     artist: string,
+    credits: Credits,
     // The heart, the album and the artists, in its menu.
     menu: [SongGo],
     album: string,
@@ -253,6 +268,89 @@ component Link inherits Text {
         width: min(root.width, root.preferred-width);
         height: 1px;
         background: root.color;
+    }
+}
+
+// A song's artists as links: each name its own where the line names them one by one, else the line opens
+// its one artist, or lists its several artists to choose from.
+component ArtistLine inherits HorizontalLayout {
+    in property <string> text;
+    in property <string> artist;
+    in property <Credits> credits;
+    in property <brush> color;
+    in property <length> font-size: 13px;
+    alignment: start;
+    for p in root.credits.pieces: Link {
+        text: p.text;
+        artist: p.id;
+        color: root.color;
+        font-size: root.font-size;
+        vertical-alignment: center;
+        overflow: elide;
+        // Only names elide; what stands between them stays whole.
+        min-width: p.id == "" ? self.preferred-width : 0;
+    }
+    if root.credits.pieces.length == 0 && root.credits.choices.length == 0: Link {
+        text: root.text;
+        artist: root.artist;
+        color: root.color;
+        font-size: root.font-size;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    if root.credits.choices.length > 0: Text {
+        text: root.text;
+        color: root.color;
+        font-size: root.font-size;
+        vertical-alignment: center;
+        overflow: elide;
+        ta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { list.show(); }
+        }
+        if ta.has-hover: Rectangle {
+            y: parent.height / 2 + root.font-size * 0.55;
+            width: min(parent.width, parent.preferred-width);
+            height: 1px;
+            background: root.color;
+        }
+        list := PopupWindow {
+            x: 0;
+            y: parent.height + 4px;
+            width: 220px;
+            close-policy: close-on-click-outside;
+            Rectangle {
+                border-radius: 8px;
+                background: #2c2a2cf5;
+                border-width: 1px;
+                border-color: #ffffff1a;
+                drop-shadow-blur: 16px;
+                drop-shadow-color: #00000080;
+                VerticalLayout {
+                    padding: 4px;
+                    for c in root.credits.choices: Rectangle {
+                        height: 26px;
+                        border-radius: 5px;
+                        background: ca.has-hover ? Theme.accent : transparent;
+                        Text {
+                            x: 10px;
+                            width: parent.width - 20px;
+                            text: c.text;
+                            color: Theme.text;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        ca := TouchArea {
+                            clicked => {
+                                list.close();
+                                Go.artist(c.id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -920,12 +1018,11 @@ component SongLine inherits Rectangle {
                     font-size: 13px;
                     overflow: elide;
                 }
-                if (root.thumb || root.show-album) && !root.table: Link {
+                if (root.thumb || root.show-album) && !root.table: ArtistLine {
                     text: root.song.artist;
                     artist: root.song.artist-id;
+                    credits: root.song.credits;
                     color: root.song.playing ? #ffffffcc : Theme.dim;
-                    font-size: 13px;
-                    overflow: elide;
                 }
             }
             if root.show-album && !root.table: Link {
@@ -953,15 +1050,14 @@ component SongLine inherits Rectangle {
                 width: 44px;
             }
         }
-        if root.table: Link {
+        if root.table: ArtistLine {
             x: 8px + 44px + 12px + root.cols * 0.5 + 12px;
             width: root.cols * 0.25;
             text: root.song.artist;
             artist: root.song.artist-id;
+            credits: root.song.credits;
             color: root.song.playing ? #ffffffcc : Theme.dim;
-            font-size: 13px;
-            vertical-alignment: center;
-            overflow: elide;
+            height: root.height;
         }
         if root.table: Link {
             x: 8px + 44px + 12px + root.cols * 0.75 + 24px;
@@ -1135,6 +1231,7 @@ component PlayerControls inherits Rectangle {
     in property <string> now-album;
     in property <string> now-artist-id;
     in property <string> now-album-id;
+    in property <Credits> now-credits;
     in property <bool> now-starred;
     in property <string> now-art;
     in property <bool> playing;
@@ -1267,12 +1364,14 @@ component PlayerControls inherits Rectangle {
                         }
                         if !line.elsewhere && !seek.hot: HorizontalLayout {
                             horizontal-stretch: 1;
-                            Link {
+                            ArtistLine {
                                 max-width: self.preferred-width;
+                                // The artists before the album, which elides first.
+                                horizontal-stretch: 0;
                                 text: root.now-artist;
                                 artist: root.now-artist-id;
+                                credits: root.now-credits;
                                 color: Theme.dim;
-                                overflow: elide;
                             }
                             if root.now-album != "": Text {
                                 text: " — ";
@@ -2089,13 +2188,15 @@ component QueueView inherits Rectangle {
                             overflow: elide;
                         }
                         HorizontalLayout {
-                            Link {
+                            ArtistLine {
                                 max-width: self.preferred-width;
+                                // The artists before the album, which elides first.
+                                horizontal-stretch: 0;
                                 text: s.artist;
                                 artist: s.artist-id;
+                                credits: s.credits;
                                 color: Theme.dim;
                                 font-size: 11px;
-                                overflow: elide;
                             }
                             if s.album != "": Text {
                                 text: " — ";
@@ -3138,6 +3239,7 @@ export component AppWindow inherits Window {
     in property <string> now-artist;
     in property <string> now-album;
     in property <string> now-artist-id;
+    in property <Credits> now-credits;
     in property <bool> now-starred;
     in property <string> now-album-id;
     in property <string> now-art;
@@ -4160,6 +4262,7 @@ export component AppWindow inherits Window {
                         now-artist: root.now-artist;
                         now-album: root.now-album;
                         now-artist-id: root.now-artist-id;
+                        now-credits: root.now-credits;
                         now-starred: root.now-starred;
                         now-album-id: root.now-album-id;
                         now-art: root.now-art;
@@ -4489,13 +4592,15 @@ export component AppWindow inherits Window {
                             overflow: elide;
                         }
                         HorizontalLayout {
-                            Link {
+                            ArtistLine {
                                 max-width: self.preferred-width;
+                                // The artists before the album, which elides first.
+                                horizontal-stretch: 0;
                                 text: root.now-artist;
                                 artist: root.now-artist-id;
+                                credits: root.now-credits;
                                 color: #ffffffa6;
                                 font-size: 14px;
-                                overflow: elide;
                             }
                             if root.now-album != "": Text {
                                 text: " — ";
@@ -4791,6 +4896,7 @@ export component PlayerBar inherits Window {
     in property <string> now-artist;
     in property <string> now-album;
     in property <string> now-artist-id;
+    in property <Credits> now-credits;
     in property <bool> now-starred;
     in property <string> now-album-id;
     in property <string> now-art;
@@ -4830,6 +4936,7 @@ export component PlayerBar inherits Window {
         now-artist: root.now-artist;
         now-album: root.now-album;
         now-artist-id: root.now-artist-id;
+        now-credits: root.now-credits;
         now-starred: root.now-starred;
         now-album-id: root.now-album-id;
         now-art: root.now-art;

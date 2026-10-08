@@ -25,7 +25,7 @@ use crate::compositor::{Compositor, Focus};
 use crate::session::{self, CoverKey, CoverSize, Data, Fetch, Msg, Req, Session, Tx};
 use crate::settings::{Act, Target};
 use crate::words;
-use crate::{AppWindow, Card, LyricPiece, Pick, PlayerBar, Shelf, SidebarWindow, SongGo, SongRow};
+use crate::{AppWindow, ArtistLink, Card, Credits, LyricPiece, Pick, PlayerBar, Shelf, SidebarWindow, SongGo, SongRow};
 
 /// Cover fetch sizes, px square.
 const SMALL_PX: u32 = 256;
@@ -1252,6 +1252,7 @@ impl App {
             p.set_now_album(ui.get_now_album());
             p.set_now_artist_id(ui.get_now_artist_id());
             p.set_now_album_id(ui.get_now_album_id());
+            p.set_now_credits(ui.get_now_credits());
             p.set_now_starred(ui.get_now_starred());
             p.set_now_art(ui.get_now_art());
             p.set_playing(ui.get_playing());
@@ -1589,6 +1590,7 @@ impl App {
         ui.set_now_album(song.album.as_str().into());
         ui.set_now_artist_id(song.artist_id.clone().unwrap_or_default().into());
         ui.set_now_album_id(song.album_id.clone().unwrap_or_default().into());
+        ui.set_now_credits(credits(&song));
         ui.set_duration_ms((song.duration as i64 * 1000) as i32);
         let art = song.cover_art.clone().unwrap_or_default();
         ui.set_now_art(art.as_str().into());
@@ -1697,6 +1699,7 @@ fn row(s: &Song, index: usize, playing: bool, starred: bool) -> SongRow {
     SongRow {
         title: s.title.as_str().into(),
         artist: s.artist.as_str().into(),
+        credits: credits(s),
         menu: song_menu(s, starred),
         album: s.album.as_str().into(),
         artist_id: s.artist_id.clone().unwrap_or_default().into(),
@@ -1711,14 +1714,32 @@ fn row(s: &Song, index: usize, playing: bool, starred: bool) -> SongRow {
     }
 }
 
-/// The heart of `s`'s menu (menus.rs's `song_menu`), `starred` as its heart shows.
+/// How `s`'s artist line links its artists (menus.rs's `artist_line`).
+fn credits(s: &Song) -> Credits {
+    use nori_core::menus::{artist_line, ArtistLine};
+    let link = |text: String, id: Option<String>| ArtistLink { text: text.into(), id: id.unwrap_or_default().into() };
+    let model = |v: Vec<ArtistLink>| ModelRc::new(VecModel::from(v));
+    match artist_line(s) {
+        ArtistLine::One => Credits::default(),
+        ArtistLine::Split(pieces) => Credits { pieces: model(pieces.into_iter().map(|p| link(p.text, p.id)).collect()), choices: ModelRc::default() },
+        ArtistLine::Several(artists) => Credits { pieces: ModelRc::default(), choices: model(artists.into_iter().map(|a| link(a.name, Some(a.id))).collect()) },
+    }
+}
+
+/// The heart, album and artists of `s`'s menu (menus.rs's `song_menu`), `starred` as its heart shows.
 fn song_menu(s: &Song, starred: bool) -> ModelRc<SongGo> {
     use nori_core::menus::{song_menu, SongAction, SongDownload};
     let lines: Vec<SongGo> = song_menu(s.clone(), starred, SongDownload::None, false, false)
         .into_iter()
         .filter_map(|item| {
             let title = words::song_action(&item.action)?.into();
-            matches!(item.action, SongAction::Favourite { .. }).then(|| SongGo { title, kind: 0, id: SharedString::default() })
+            let (kind, id) = match item.action {
+                SongAction::Favourite { .. } => (0, String::new()),
+                SongAction::GoToAlbum { id } => (1, id),
+                SongAction::GoToArtist { id, .. } => (2, id),
+                _ => return None,
+            };
+            Some(SongGo { title, kind, id: id.into() })
         })
         .collect();
     ModelRc::new(VecModel::from(lines))
