@@ -5,7 +5,6 @@ import androidx.lifecycle.viewModelScope
 import dev.nori.music.ffi.JamView
 import dev.nori.music.ffi.RelaySupport
 import dev.nori.music.ffi.RemoteDevice
-import dev.nori.music.ffi.model.Song
 import dev.nori.music.ffi.remote.Op
 import dev.nori.music.ffi.remote.QrCode
 import dev.nori.music.settings.server
@@ -23,7 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * The devices sheet and the jam (its header in the queue, the invite, the people, a guest's app) over the
+ * The devices sheet and the jam (its header in the queue, the invite, the people, a guest's requests) over the
  * core's remote control (Remotes). Everything is the core's: the jam is read again whenever the core says
  * something changed, and the devices only while a sheet is watching.
  */
@@ -51,9 +50,9 @@ class RemoteViewModel(app: Application) : NoriViewModel(app) {
         on && relay != RelaySupport.UNSUPPORTED && jam == null
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
-    private val _found = MutableStateFlow<List<Song>>(emptyList())
-    /** A jam guest's search results. */
-    val found: StateFlow<List<Song>> = _found.asStateFlow()
+    /** The songs this guest asked for that the host has not decided on yet, by id. */
+    val asked: StateFlow<Set<String>> = remotes.jam.map { j -> j?.takeIf { !it.hosting }?.let { v -> v.pending.filter { it.from == v.you }.map { it.song.id }.toSet() }.orEmpty() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
     private val _jamFailed = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     /** A jam asked for here did not start. */
@@ -99,15 +98,7 @@ class RemoteViewModel(app: Application) : NoriViewModel(app) {
     /** Sends member [id] out of the jam. */
     fun remove(id: String) = jamAct(Op.Kick(id))
 
-    fun request(song: Song) = jamAct(Op.Request(song))
-
     fun leave() = viewModelScope.launch { nori.leaveJam() }
-
-    /** A guest's search, through the host's server. */
-    fun search(query: String) = viewModelScope.launch {
-        if (query.isBlank()) { _found.value = emptyList(); return@launch }
-        _found.value = runCatching { nori.library.search(query).songs }.getOrDefault(emptyList())
-    }
 
     /** The server's address when an invite to it works only on a home network (the core's `is_home_only`). */
     fun homeOnly(): String? = nori.settings.value.server?.url?.takeIf { dev.nori.music.ffi.remote.isHomeOnly(it) }

@@ -1004,10 +1004,44 @@ impl Remote {
         self.shown.changed();
     }
 
-    /// Who asked for each song that came in through the jam this device hosts, by song id, for "added by"
-    /// on the whole queue (the published window holds only a few songs); empty with no jam.
+    /// Who asked for each song that came in through the jam, by song id, for "added by" on the queue: the
+    /// whole of it while hosting (the published window holds only a few songs), the songs the host's state
+    /// lists in a guest's; empty with no jam.
     pub fn jam_added(&self) -> HashMap<String, String> {
-        self.inner.lock().hosted.as_ref().map(|h| h.jam.added().clone()).unwrap_or_default()
+        let i = self.inner.lock();
+        if let Some(h) = &i.hosted {
+            return h.jam.added().clone();
+        }
+        let listed = i.joined().and_then(|(_, host)| host?.state.as_ref());
+        listed.map(|s| s.entries.iter().filter_map(|e| Some((e.id.clone(), e.by.clone()?))).collect()).unwrap_or_default()
+    }
+
+    /// The jam this device is a guest in, as its player shows it: the host's song, its queue around it and
+    /// the playhead, run on from when the host's state arrived here. None while hosting or in no jam.
+    pub fn jam_playing(&self) -> Option<Mirror> {
+        let i = self.inner.lock();
+        if i.hosted.is_some() {
+            return None;
+        }
+        let host = i.joined()?.1?;
+        let st = host.state.as_ref()?;
+        Some(Mirror {
+            id: host.id.clone(),
+            name: host.name.clone(),
+            kind: host.kind,
+            rows: st.entries.iter().map(|e| MirrorRow { index: e.index, song: e.song() }).collect(),
+            at: st.entries.iter().position(|e| Some(e.index) == st.index).map(|p| p as u32),
+            len: st.len,
+            rev: st.rev,
+            playing: st.playing,
+            buffering: st.buffering,
+            position_ms: st.position_ms,
+            at_us: i.received.get(&host.id).copied().unwrap_or_else(clock::now_us),
+            shuffle: st.shuffle,
+            repeat: st.repeat,
+            volume: None,
+            refused: None,
+        })
     }
 
     /// Leaves the jam this guest profile is in; the app then drops the profile.

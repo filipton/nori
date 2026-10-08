@@ -680,7 +680,8 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                             // A heart, as on an album, an artist and a playlist. The star here was the
                             // odd one out, and a song being "starred" while everything else is
                             // "favourited" is a distinction the server makes and nobody else does.
-                            TitleCircle(
+                            // A jam guest's would be the host's.
+                            if (!state.jamGuest) TitleCircle(
                                 if (starred) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
                                 say.favourite, starred,
                             ) { actions.star(s, !starred) }
@@ -695,14 +696,15 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                     style = MaterialTheme.typography.bodySmall,
                 )
 
-                Box(kept("seek")) { SeekBar(vm, state.playing, state.durationMs) }
+                Box(kept("seek")) { SeekBar(vm, state.playing, state.durationMs, seekable = !state.jamGuest) }
 
                 // Three controls, plain glyphs with no containers. Shuffle and repeat live in the queue header.
                 // Sized off `w4` as a share of the screen's width: Apple's pause glyph stands 9.8 % of the
                 // width tall and the skip glyphs are 9.7 % wide; these were about a fifth smaller. The
                 // seek bar, volume bar and bottom icons below were scaled by their own measured ratios.
                 // Apple leaves a clear gap between the times and these, rather than letting them follow on.
-                Row(kept("transport").fillMaxWidth().padding(top = 24.dp), Arrangement.spacedBy(34.dp, Alignment.CenterHorizontally), Alignment.CenterVertically) {
+                // A jam guest has none: the host plays.
+                if (!state.jamGuest) Row(kept("transport").fillMaxWidth().padding(top = 24.dp), Arrangement.spacedBy(34.dp, Alignment.CenterHorizontally), Alignment.CenterVertically) {
                     // The buttons send the record across exactly as a swipe does, so the two ways of
                     // changing song look like the same thing happening. A previous that only rewinds
                     // this song is not a record change and gets no slide - there is nothing to slide
@@ -723,11 +725,12 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                 }
 
                 if (page == Panel.ART && !across) Spacer(Modifier.weight(0.17f))
-                Box(kept("volume")) { VolumeRow(vm) }
-                val listening by vm.jamListening.collectAsStateWithLifecycle()
-                if (state.playingOn != null || listening != null) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    if (state.playingOn != null) PlayingOnStrip(state.playingOn, live.color(CoverLook.ACCENT))
-                    else JamStrip(listening, live.color(CoverLook.ACCENT))
+                // Nothing sounds on a jam guest's phone to set the volume of.
+                if (!state.jamGuest) Box(kept("volume")) { VolumeRow(vm) }
+                val jam by vm.jamStrip.collectAsStateWithLifecycle()
+                if (state.playingOn != null || jam != null) Box(Modifier.fillMaxWidth().padding(top = if (state.jamGuest) 16.dp else 0.dp), contentAlignment = Alignment.Center) {
+                    if (state.playingOn != null && !state.jamGuest) PlayingOnStrip(state.playingOn, live.color(CoverLook.ACCENT))
+                    else JamStrip(jam, live.color(CoverLook.ACCENT))
                 }
 
                 Row(kept("icons").fillMaxWidth().padding(top = 2.dp, bottom = 4.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
@@ -735,7 +738,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                     // Apple's middle glyph is AirPlay, not a sleep timer: on this screen the thing worth
                     // one tap is where the sound is going. The sleep timer moved to the ⋯ on the title row,
                     // which is where a setting for the evening belongs.
-                    OutputButton(state.playingOn != null)
+                    if (!state.jamGuest) OutputButton(state.playingOn != null)
                     PanelButton(Icons.AutoMirrored.Filled.QueueMusic, say.queue, page == Panel.QUEUE, size = 30.dp, nudge = 0.5.dp) { choose(Panel.QUEUE) }
                 }
                 if (page == Panel.ART && !across) Spacer(Modifier.weight(0.19f))
@@ -2400,7 +2403,7 @@ private fun PanelButton(
  * which, opened in the middle of a song change, was the middle of the last song.
  */
 @Composable
-private fun SeekBar(vm: PlayerViewModel, playing: Boolean, durationMs: Long) {
+private fun SeekBar(vm: PlayerViewModel, playing: Boolean, durationMs: Long, seekable: Boolean) {
     val state by vm.state.collectAsStateWithLifecycle()
     val look = LocalLook.current
     // Read through the gesture rather than keyed: a track that learns its real length mid-scrub
@@ -2482,7 +2485,8 @@ private fun SeekBar(vm: PlayerViewModel, playing: Boolean, durationMs: Long) {
             // The strip is wider than the hairline it draws: a thumb is not a mouse.
             Modifier.fillMaxWidth().height(34.dp)
                 .onSizeChanged { barWidth.floatValue = it.width.toFloat() }
-                .pointerInput(Unit) {
+                .pointerInput(seekable) {
+                    if (!seekable) return@pointerInput
                     // Written out rather than assembled from the drag and tap detectors, because both
                     // let the gesture go: the pointer is claimed on touch-down and every move is
                     // consumed, so the sheet's own vertical drag cannot take a scrub that runs a few
@@ -2677,10 +2681,15 @@ private fun Queue(vm: PlayerViewModel) {
     // Shuffle and repeat live here, pinned above the list - not in the transport, and never scrolled
     // away (the list opens at the playing row, which used to hide them).
     Column(Modifier.fillMaxSize()) {
-        jam?.takeIf { it.hosting }?.let { j -> JamHeader(j) { vm.cover(it, CoverSize.ROW) } }
+        jam?.let { j ->
+            if (j.hosting) JamHeader(j) { vm.cover(it, CoverSize.ROW) }
+            else if (state.jamGuest) GuestJamHeader(j) { vm.cover(it, CoverSize.ROW) }
+        }
+        // A jam guest's queue is the host's to change: it only shows it.
+        val edits = !state.jamGuest
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
             Caption(remember { say.queue }, Modifier.padding(top = 4.dp, bottom = 8.dp))
-            Row(Modifier, Arrangement.spacedBy(4.dp), Alignment.CenterVertically) {
+            if (edits) Row(Modifier, Arrangement.spacedBy(4.dp), Alignment.CenterVertically) {
                 val shuffleOn = state.shuffle
                 val repeatOn = state.repeat != Repeat.OFF
                 IconButton(vm::toggleShuffle, Modifier.size(44.dp)) {
@@ -2694,7 +2703,7 @@ private fun Queue(vm: PlayerViewModel) {
                 }
             }
         }
-    val reorderable = rows.reorderable
+    val reorderable = rows.reorderable && edits
     val queueNow by rememberUpdatedState(state.queue)
     drag.size = state.queue.size
     // A song is dropped only among those still to come: not above the song playing, nor into what has played.
@@ -2834,12 +2843,12 @@ private fun Queue(vm: PlayerViewModel) {
             ) {
                 // The song playing only gives a little and comes back: a swipe does not stop the music
                 // (the × does, on purpose). Leftwards only: rightwards from the edge is the back gesture's.
-                SwipeBackdrop(swipe, null, if (i in kept) null else take, Modifier.matchParentSize(), swipeColours, reveal = true, inset = 12.dp)
+                val taken = if (i in kept || !edits) null else take
+                SwipeBackdrop(swipe, null, taken, Modifier.matchParentSize(), swipeColours, reveal = true, inset = 12.dp)
                 Row(
                     Modifier.fillMaxWidth()
                         .then(if (played) Modifier.graphicsLayer { alpha = QUEUE_PLAYED_ALPHA } else Modifier)
-                        .swipeable(swipe, null, if (i in kept) null else take, null, gone = true, resist = i in kept)
-                        .clickable { tapped = key; vm.skipTo(i) }
+                        .then(if (edits) Modifier.swipeable(swipe, null, taken, null, gone = true, resist = i in kept).clickable { tapped = key; vm.skipTo(i) } else Modifier)
                         .padding(vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -2864,7 +2873,7 @@ private fun Queue(vm: PlayerViewModel) {
                             LookText(s.artist, quiet, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
                         }
                     }
-                    IconButton({ undo.took(s, i, key, 0f); vm.remove(i) }, Modifier.size(38.dp)) {
+                    if (edits) IconButton({ undo.took(s, i, key, 0f); vm.remove(i) }, Modifier.size(38.dp)) {
                         LookIcon(Icons.Filled.Close, say.remove, Modifier.size(19.dp), quiet)
                     }
                     // The handle's room is kept on every row while the list can be reordered, so every ×

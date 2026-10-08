@@ -93,8 +93,6 @@ fun SongMenu(
      * now that the bottom of that screen belongs to the output switcher, the way Apple's does.
      */
     player: dev.nori.music.app.vm.PlayerViewModel? = null,
-    /** Set for a jam guest, whose menu only asks the host for the song. */
-    request: ((Song) -> Unit)? = null,
 ) {
     // Which of the menu's stages is up, fresh each time the menu opens. The sheet slides down as the
     // sleep choices, the details or the playlist picker come up over it, and each of those leaves with
@@ -142,8 +140,9 @@ fun SongMenu(
             // app's (`Say.songAction`), made once when the menu opens. This draws each line with its icon.
             val remote: dev.nori.music.app.vm.RemoteViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
             val jamCan by remote.canStartJam.collectAsState()
+            // A jam guest's Play next and Add to queue ask the host (ActionsViewModel).
             val jam = when {
-                request != null -> dev.nori.music.ffi.library.JamOffer.GUEST
+                LocalJamGuest.current -> dev.nori.music.ffi.library.JamOffer.GUEST
                 jamCan -> dev.nori.music.ffi.library.JamOffer.START
                 else -> null
             }
@@ -157,7 +156,6 @@ fun SongMenu(
                 dev.nori.music.ffi.library.SongAction.RemoveDownload -> Item(label, Icons.Filled.Delete) { actions.removeDownloads(listOf(song.id)); onDismiss() }
                 dev.nori.music.ffi.library.SongAction.StopDownload -> Item(label, Icons.Filled.Close) { actions.cancelDownloads(listOf(song)); onDismiss() }
                 dev.nori.music.ffi.library.SongAction.Download -> Item(label, Icons.Filled.Download) { actions.download(listOf(song)); onDismiss() }
-                // Read where it is used: a jam guest's app has no pages to go to, and no navigation.
                 is dev.nori.music.ffi.library.SongAction.GoToAlbum -> { val nav = LocalNav.current; Item(label, Icons.Filled.Album) { nav.album(a.id); onDismiss() } }
                 // The song's own cover stands in for a lone artist's until their page has one.
                 is dev.nori.music.ffi.library.SongAction.GoToArtist -> { val nav = LocalNav.current; Item(label, Icons.Filled.Person) {
@@ -170,7 +168,6 @@ fun SongMenu(
                 dev.nori.music.ffi.library.SongAction.ExcludeFromMixes -> Item(label, Icons.Filled.Block) { actions.excludeFromMixes(song); onDismiss() }
                 dev.nori.music.ffi.library.SongAction.Share -> Item(label, Icons.Filled.IosShare) { actions.share(song.id); onDismiss() }
                 dev.nori.music.ffi.library.SongAction.Details -> Item(label, Icons.Filled.Info) { details = true }
-                dev.nori.music.ffi.library.SongAction.Request -> Item(label, Icons.AutoMirrored.Filled.QueueMusic) { request?.invoke(song); onDismiss() }
                 // Plays the song and opens the queue, where the jam's invite is.
                 dev.nori.music.ffi.library.SongAction.StartJam -> { val nav = LocalNav.current; Item(label, Icons.Filled.Groups) {
                     actions.play(listOf(song)); remote.jamStart(); onDismiss(); nav.player(Panel.QUEUE)

@@ -68,6 +68,8 @@ data class PlayerState(
     val origin: Int = 0,
     /** The device playing while it is not this phone: the page shows and controls that one. */
     val playingOn: String? = null,
+    /** [playingOn] is the host of a jam this phone is a guest in: the page shows it and controls nothing. */
+    val jamGuest: Boolean = false,
 ) {
     val current: Song? get() = queue.getOrNull(index)
 }
@@ -92,27 +94,34 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
 
     /**
      * The device playing elsewhere (Remotes.mirror), which the page shows and every control here acts on
-     * while there is one; null while this phone plays.
+     * while there is one, or the host of a jam this phone is a guest in (Remotes.jamPlaying), shown only;
+     * null while this phone plays.
      */
     private var mirror: Mirror? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     init {
-        scope.launch { nori.remotes.mirror.collect(::mirrored) }
+        scope.launch {
+            kotlinx.coroutines.flow.combine(nori.remotes.mirror, nori.remotes.jamPlaying) { m, host -> m?.let { it to false } ?: host?.let { it to true } }
+                .collect { mirrored(it?.first, it?.second == true) }
+        }
     }
 
-    private fun mirrored(m: Mirror?) {
+    private fun mirrored(m: Mirror?, guest: Boolean) {
         val was = mirror
         mirror = m
         when {
-            m != null -> showMirror(m)
+            m != null -> showMirror(m, guest)
             // Back here: the page shows this phone's own player again.
             was != null -> controller?.let { publish(it, queueChanged = true) } ?: run { _state.value = PlayerState() }
         }
     }
 
-    /** The mirrored device's queue and playback as the page's state; its rows are in play order already. */
-    private fun showMirror(m: Mirror) {
+    /**
+     * The mirrored device's queue and playback as the page's state; its rows are in play order already. A
+     * jam [guest] has no song either side to skip to.
+     */
+    private fun showMirror(m: Mirror, guest: Boolean) {
         val old = _state.value
         val songs = m.rows.map { it.song }
         val queue = if (songs == old.queue) old.queue else songs
@@ -120,12 +129,13 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         val all = m.repeat.toInt() == Player.REPEAT_MODE_ALL && m.rows.size.toUInt() == m.len
         _state.value = old.copy(
             connected = true, queue = queue, index = at,
-            nextIndex = if (at < 0) -1 else (at + 1).takeIf { it < queue.size } ?: (if (all) 0 else -1),
-            previousIndex = if (at < 0) -1 else (at - 1).takeIf { it >= 0 } ?: (if (all) queue.lastIndex else -1),
+            nextIndex = if (at < 0 || guest) -1 else (at + 1).takeIf { it < queue.size } ?: (if (all) 0 else -1),
+            previousIndex = if (at < 0 || guest) -1 else (at - 1).takeIf { it >= 0 } ?: (if (all) queue.lastIndex else -1),
             order = if (old.order.size == queue.size && old.order.withIndex().all { (k, v) -> k == v }) old.order else queue.indices.toList(),
             queued = emptySet(), radio = null, playing = m.playing, buffering = m.buffering && m.playing, shuffle = m.shuffle,
             repeat = when (m.repeat.toInt()) { Player.REPEAT_MODE_ALL -> Repeat.ALL; Player.REPEAT_MODE_ONE -> Repeat.ONE; else -> Repeat.OFF },
             durationMs = (queue.getOrNull(at)?.duration?.toLong() ?: 0L) * 1000, error = null, bridging = false, playingOn = m.name,
+            jamGuest = guest,
         )
     }
 

@@ -140,7 +140,9 @@ fun TabBar(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look,
                 .padding(start = BAR_END, end = BAR_END, top = 8.dp, bottom = BAR_OFF),
             Arrangement.spacedBy(BAR_GAP), Alignment.CenterVertically,
         ) {
-            Surface(
+            // A jam guest has Search alone: it stands at the end by itself.
+            if (rest.isEmpty()) Spacer(Modifier.weight(1f).height(BAR_THICK))
+            else Surface(
                 shape = PillShape, color = slab, contentColor = content, shadowElevation = 12.dp,
                 border = androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp.Hairline, edge),
                 modifier = Modifier.weight(1f).height(BAR_THICK),
@@ -496,20 +498,22 @@ fun MiniPlayer(vm: PlayerViewModel, actions: ActionsViewModel, onOpen: () -> Uni
             // The one judgement worth making without opening the player: whether this is a song to keep.
             // Apple has only the transport here; the owner asked for the heart, and the bar has the room
             // for it because the title beside it is already allowed to run out of space gracefully.
-            song?.let { s ->
-                val starred = LocalStarMarks.current.effectiveStar(dev.nori.music.data.StarKind.SONG, s.id, s.starred)
-                FavoriteHeart(starred, tint = content, muted = look.color(CoverLook.CHROME_CONTENT_75)) { actions.star(s, !starred) }
+            // A jam guest controls nothing: the host plays.
+            if (!state.jamGuest) {
+                song?.let { s ->
+                    val starred = LocalStarMarks.current.effectiveStar(dev.nori.music.data.StarKind.SONG, s.id, s.starred)
+                    FavoriteHeart(starred, tint = content, muted = look.color(CoverLook.CHROME_CONTENT_75)) { actions.star(s, !starred) }
+                }
+                IconButton(vm::toggle) { PlayPauseGlyph(state.playing, state.buffering, 26.dp, 20.dp) }
+                IconButton(vm::next) { Icon(Icons.Filled.FastForward, say.next, Modifier.size(25.dp)) }
             }
-            IconButton(vm::toggle) { PlayPauseGlyph(state.playing, state.buffering, 26.dp, 20.dp) }
-            IconButton(vm::next) { Icon(Icons.Filled.FastForward, say.next, Modifier.size(25.dp)) }
         }
-        // Another device plays: said under the song, a tap away from moving it.
-        PlayingOnStrip(state.playingOn, look.color(CoverLook.ACCENT), Modifier.padding(start = 4.dp, bottom = 2.dp))
-        // The jam this phone hosts: said under the song, a tap away from its queue.
-        if (state.playingOn == null) {
-            val listening by vm.jamListening.collectAsStateWithLifecycle()
-            JamStrip(listening, look.color(CoverLook.ACCENT), Modifier.padding(start = 4.dp, bottom = 2.dp))
-        }
+        // The jam this phone hosts or is a guest in: said under the song, a tap away from its queue. Else
+        // another device that plays: a tap away from moving it.
+        val jam by vm.jamStrip.collectAsStateWithLifecycle()
+        val strip = Modifier.padding(start = 4.dp, bottom = 2.dp)
+        if (state.playingOn != null && !state.jamGuest) PlayingOnStrip(state.playingOn, look.color(CoverLook.ACCENT), strip)
+        else JamStrip(jam, look.color(CoverLook.ACCENT), strip)
         }
         }
     }

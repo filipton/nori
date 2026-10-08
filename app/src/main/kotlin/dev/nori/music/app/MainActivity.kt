@@ -58,7 +58,7 @@ class MainActivity : ComponentActivity() {
         joinJam(intent)
     }
 
-    /** A jam invite opened: this phone joins as a guest, and the app shows only the jam (GuestApp). */
+    /** A jam invite opened: this phone joins as a guest, and the app shows the host's playback (App, LocalJamGuest). */
     private fun joinJam(intent: Intent?) {
         val link = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.dataString ?: return
         if (!dev.nori.music.ffi.remote.isInvite(link)) return

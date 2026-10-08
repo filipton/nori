@@ -58,6 +58,14 @@ class Remotes(private val context: Context, private val nori: Nori) {
     /** Who asked for each song of the hosted jam's queue, by song id (the core's `jam_added`). */
     val jamAdded: StateFlow<Map<String, String>> = _jamAdded.asStateFlow()
 
+    private val _jamPlaying = MutableStateFlow<Mirror?>(null)
+
+    /**
+     * The jam this phone is a guest in, as the player shows it (the core's `jam_playing`): the host's song,
+     * queue and playhead. Null while hosting or in no jam.
+     */
+    val jamPlaying: StateFlow<Mirror?> = _jamPlaying.asStateFlow()
+
     private val _relay = MutableStateFlow(RelaySupport.UNKNOWN)
 
     /** Whether the server relays: jams and devices elsewhere only then. */
@@ -98,9 +106,10 @@ class Remotes(private val context: Context, private val nori: Nori) {
     private fun jamNow() {
         val r = remote
         val j = r?.jamView()
-        val added = if (j?.hosting == true) r.jamAdded() else emptyMap()
+        val added = if (j != null) r.jamAdded() else emptyMap()
+        val playing = if (j?.hosting == false) r.jamPlaying() else null
         val relay = r?.relay() ?: RelaySupport.UNKNOWN
-        main.post { _jam.value = j; _jamAdded.value = added; _relay.value = relay }
+        main.post { _jam.value = j; _jamAdded.value = added; _jamPlaying.value = playing; _relay.value = relay }
     }
 
     /**
@@ -138,7 +147,8 @@ class Remotes(private val context: Context, private val nori: Nori) {
         remote
     }
 
-    private fun isGuest() = nori.settings.value.server?.apiKey?.let { isGuestKey(it) } == true
+    /** Whether the profile in use is a jam guest's: songs picked are asked of the host, and nothing plays here. */
+    fun isGuest() = nori.settings.value.server?.apiKey?.let { isGuestKey(it) } == true
 
     /** Whether the profile in use asks for a remote at all. */
     private fun wanted(): Boolean {
@@ -150,7 +160,7 @@ class Remotes(private val context: Context, private val nori: Nori) {
         remote?.stop()
         remote = null
         client = null
-        main.post { _mirror.value = null; _jam.value = null; _jamAdded.value = emptyMap(); _relay.value = RelaySupport.UNKNOWN }
+        main.post { _mirror.value = null; _jam.value = null; _jamAdded.value = emptyMap(); _jamPlaying.value = null; _relay.value = RelaySupport.UNKNOWN }
     }
 
     /** Whether the playback service is up: the device is controllable then, while remote control is on. */
@@ -159,7 +169,8 @@ class Remotes(private val context: Context, private val nori: Nori) {
         if (remote == null && !wanted()) return synchronized(this) { serving = on }
         work {
             serving = on
-            val serves = on && nori.settings.value.remoteControl
+            // A guest's phone is no device of the host's account to control.
+            val serves = on && nori.settings.value.remoteControl && !isGuest()
             current()?.serve(serves)
             main.post { watchKeys(serves) }
         }
@@ -226,6 +237,9 @@ class Remotes(private val context: Context, private val nori: Nori) {
         if (starred) mirrorNow()
         starred
     }
+
+    /** Asks the host of the jam this phone is a guest in for [song]. */
+    fun request(song: dev.nori.music.ffi.model.Song) = ask({ it.jamAct(Op.Request(song)) })
 
     /** Everything else a screen asks, on the worker; [then] gets the answer back on the main thread. */
     fun <T> ask(f: (Remote) -> T, then: (T) -> Unit = {}) = work {

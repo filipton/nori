@@ -13,6 +13,7 @@ use nori_core::client::{Client, NetProfile, Starrable};
 use nori_core::library::StarsShown;
 use nori_core::remote::{jam_join, Discovery, Playing, RelaySupport, Remote, RemoteMe, RemotePlayer, RemoteShown};
 use nori_core::transport::{block_on, Exchange, FailureKind, Transport, TransportError, TransportResponse};
+use nori_player::playlist::Hand;
 use nori_core::{Core, ServerConfig, Song};
 use nori_remote::clock;
 use nori_remote::wire::{Answer, Body, DeviceKind, Event, Member, Op, Outgoing, Refusal, Role, Room};
@@ -616,7 +617,17 @@ fn a_jam_takes_requests_through_its_host() {
     // Dee's own request goes straight in.
     let blue = Song { id: "s5".into(), title: "Blue".into(), ..Default::default() };
     dee.remote.clone().jam_act(Op::Request { song: blue.clone() });
-    assert_eq!(host.told(), Op::Add { songs: vec![blue], next: false });
+    assert_eq!(host.told(), Op::Add { songs: vec![blue.clone()], next: false });
+
+    // What the host plays, as a guest's player shows it: the song, the queue around it, who added each.
+    host.core.session.register(vec![blue]);
+    host.core.session.take(2, vec!["s5".into()], vec![Hand::Last]);
+    host.remote.clone().played(Playing { playing: true, position_ms: 9_000, index: Some(0), ..Default::default() });
+    let m = gus.until("the host's queue in Gus's player", |r| r.jam_playing().filter(|m| m.rows.len() == 3));
+    assert_eq!(m.rows.iter().map(|r| r.song.id.as_str()).collect::<Vec<_>>(), ["s1", "s5", "s2"], "in play order: what was asked for plays next");
+    assert_eq!((m.name.as_str(), m.at, m.playing, m.position_ms), ("Host", Some(0), true, 9_000));
+    assert_eq!(gus.remote.jam_added().get("s5").map(String::as_str), Some("Dee"));
+    assert!(host.remote.jam_playing().is_none(), "the host plays it itself");
 
     dee.remote.clone().jam_act(Op::Decide { request: pending.request, accept: true });
     assert_eq!(host.told(), Op::Add { songs: vec![wish], next: false });

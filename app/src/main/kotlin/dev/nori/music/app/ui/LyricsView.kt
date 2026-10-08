@@ -433,7 +433,7 @@ private fun LyricsBody(vm: PlayerViewModel, found: dev.nori.music.data.FoundLyri
                 val right = line.voice.toInt() == 1
                 val align = if (right) TextAlign.End else TextAlign.Start
                 Column(
-                    Modifier.fillMaxWidth().clickable(enabled = lyrics.synced) { vm.seekTo(clock.tap(i)); show(clock.shown()); shownMs = clock.shownMs() }
+                    Modifier.fillMaxWidth().clickable(enabled = lyrics.synced && !LocalJamGuest.current) { vm.seekTo(clock.tap(i)); show(clock.shown()); shownMs = clock.shownMs() }
                         .padding(vertical = 8.dp)
                         .padding(start = if (duet && right) DUET_LANE else 0.dp, end = if (duet && !right) DUET_LANE else 0.dp),
                     horizontalAlignment = if (right) Alignment.End else Alignment.Start,
@@ -605,7 +605,8 @@ private fun LyricsHeader(vm: PlayerViewModel, actions: ActionsViewModel, song: d
         }
         song?.let { s ->
             val starred = marks.effectiveStar(dev.nori.music.data.StarKind.SONG, s.id, s.starred)
-            TitleCircle(if (starred) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, say.favourite, starred) { actions.star(s, !starred) }
+            // A jam guest's heart would be the host's.
+            if (!LocalJamGuest.current) TitleCircle(if (starred) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, say.favourite, starred) { actions.star(s, !starred) }
             TitleCircle(Icons.Filled.MoreHoriz, say.more, false) { menu(s) }
         }
     }

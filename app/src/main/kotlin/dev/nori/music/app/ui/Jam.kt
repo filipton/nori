@@ -5,7 +5,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,17 +13,13 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -34,7 +29,6 @@ import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -62,20 +56,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.nori.music.app.R
-import dev.nori.music.app.vm.ActionsViewModel
+import dev.nori.music.app.vm.PlayerViewModel
 import dev.nori.music.app.vm.RemoteViewModel
 import dev.nori.music.ffi.JamView
-import dev.nori.music.ffi.model.Song
-import dev.nori.music.ffi.remote.Entry
 import dev.nori.music.ffi.remote.JamMember
 import dev.nori.music.ffi.remote.Pending
 import dev.nori.music.ffi.remote.Role
 import dev.nori.music.look.CoverLook
-import kotlinx.coroutines.delay
 
 /*
  * The jam, inside the player the way Spotify's Jam and Apple's SharePlay sit in theirs: a strip under the
@@ -88,14 +78,16 @@ import kotlinx.coroutines.delay
 internal fun jamListening(n: Int): String = if (n == 0) words(R.string.jam_no_one) else words(R.string.jam_listening, n)
 
 /**
- * "Jam · 2 listening" under the song, in the mini player and the full one, while this phone hosts a jam
- * ([listening] is null otherwise): a tap opens the queue with the jam's header.
+ * "Jam · 2 listening" under the song, in the mini player and the full one, while this phone hosts a jam, or
+ * "Jam · Filip · 2 listening" in one it is a guest in ([jam] is null without one): a tap opens the queue
+ * with the jam's header.
  */
 @Composable
-fun JamStrip(listening: Int?, color: Color, modifier: Modifier = Modifier) {
-    listening ?: return
+fun JamStrip(jam: PlayerViewModel.JamStripState?, color: Color, modifier: Modifier = Modifier) {
+    jam ?: return
     val nav = LocalNav.current
-    val label = words(R.string.jam_strip, jamListening(listening))
+    val listening = jamListening(jam.listening)
+    val label = if (jam.host == null) words(R.string.jam_strip, listening) else words(R.string.jam_strip_guest, jam.host, listening)
     Row(
         modifier.clickable { nav.player(Panel.QUEUE) }.padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -220,6 +212,58 @@ internal fun JamHeader(j: JamView, cover: (String?) -> String?) {
 }
 
 /**
+ * The jam this phone is a guest in, over the host's queue: whose it is, who listens (a tap opens People),
+ * Leave, and the songs asked for here until the host decides. Drawn in the player's own colours.
+ */
+@Composable
+internal fun GuestJamHeader(j: JamView, cover: (String?) -> String?) {
+    val vm: RemoteViewModel = viewModel()
+    val look = LocalLook.current
+    val ink = ColorProducer { look.color(CoverLook.ON) }
+    val quiet = ColorProducer { look.color(CoverLook.ON_VARIANT) }
+    val accent = ColorProducer { look.color(CoverLook.ACCENT) }
+    var people by remember { mutableStateOf(false) }
+    val host = remember(j.members) { j.members.firstOrNull { it.role == Role.HOST } }
+    val listeners = remember(j.members) { j.members.filter { it.role != Role.HOST } }
+    val mine = remember(j.pending, j.you) { j.pending.filter { it.from == j.you } }
+    Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
+        // The host's Invite stands at this row's end; a guest's "Listen here" will.
+        Row(Modifier.fillMaxWidth().padding(top = 2.dp).heightIn(min = 40.dp), verticalAlignment = Alignment.CenterVertically) {
+            LookIcon(Icons.Filled.Groups, null, Modifier.size(22.dp), accent)
+            LookText(
+                host?.let { words(R.string.jam_of, it.name) } ?: words(R.string.jam_title), ink, Modifier.weight(1f).padding(start = 8.dp),
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.weight(1f).clip(RoundedCornerShape(50)).clickable { people = true }.padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Avatars(remember(j.members) { j.members.map { it.name } }) { look.color(CoverLook.BACKGROUND) }
+                LookText(jamListening(listeners.size), quiet, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                LookIcon(Icons.AutoMirrored.Filled.KeyboardArrowRight, words(R.string.jam_people), Modifier.size(18.dp), quiet)
+            }
+            LookText(
+                words(R.string.jam_leave), accent,
+                Modifier.clip(RoundedCornerShape(50)).clickable(onClick = { vm.leave() }).padding(horizontal = 8.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold), maxLines = 1,
+            )
+        }
+        j.refused?.let { r ->
+            Text(refusal(r), Modifier.padding(top = 8.dp), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+        }
+        if (mine.isNotEmpty()) {
+            Caption(words(R.string.jam_yours_waiting), Modifier.padding(top = 12.dp, bottom = 2.dp))
+            Column(Modifier.heightIn(max = 232.dp).verticalScroll(rememberScrollState())) {
+                mine.forEach { p -> key(p.request) { Request(p, cover(p.song.coverArt), decides = false, ink, quiet, vm) } }
+            }
+        }
+    }
+    PeopleSheet(people, j, {}) { people = false }
+}
+
+/**
  * A song asked for: its cover, who asked and, for a provider's song, that accepting it downloads it to the
  * server. The host and admins ([decides]) refuse or accept it with the two discs.
  */
@@ -324,7 +368,10 @@ private fun roleName(role: Role): String = words(
     },
 )
 
-/** Who is in the jam: the host makes a guest an admin (or a guest again) and sends people out. */
+/**
+ * Who is in the jam: the host makes a guest an admin (or a guest again) and sends people out; a guest sees
+ * who is in.
+ */
 @Composable
 private fun PeopleSheet(open: Boolean, j: JamView, onInvite: () -> Unit, onDismiss: () -> Unit) {
     NoriSheet(open, onDismiss) {
@@ -333,18 +380,21 @@ private fun PeopleSheet(open: Boolean, j: JamView, onInvite: () -> Unit, onDismi
             val guests = j.members.filter { it.role != Role.HOST }
             Column(Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding().padding(bottom = 16.dp)) {
                 SectionTitle(words(R.string.jam_people))
-                j.members.firstOrNull { it.role == Role.HOST }?.let { h -> Person(h, words(R.string.jam_you_host)) {} }
+                j.members.firstOrNull { it.role == Role.HOST }?.let { h -> Person(h, if (j.hosting) words(R.string.jam_you_host) else roleName(Role.HOST)) {} }
                 guests.forEach { m ->
                     key(m.id) {
-                        Person(m, roleName(m.role)) {
-                            Chip(words(if (m.role == Role.ADMIN) R.string.jam_make_guest else R.string.jam_make_admin), false) { vm.promote(m.id, m.role != Role.ADMIN) }
-                            IconButton({ vm.remove(m.id) }) {
-                                Icon(Icons.Filled.Close, words(R.string.jam_send_out), Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        val role = roleName(m.role)
+                        Person(m, if (m.id == j.you) words(R.string.jam_you_role, role) else role) {
+                            if (j.hosting) {
+                                Chip(words(if (m.role == Role.ADMIN) R.string.jam_make_guest else R.string.jam_make_admin), false) { vm.promote(m.id, m.role != Role.ADMIN) }
+                                IconButton({ vm.remove(m.id) }) {
+                                    Icon(Icons.Filled.Close, words(R.string.jam_send_out), Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
                             }
                         }
                     }
                 }
-                if (guests.isEmpty()) {
+                if (guests.isEmpty() && j.hosting) {
                     Text(
                         words(R.string.jam_people_none), Modifier.padding(horizontal = Space.gutter, vertical = 12.dp),
                         style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -389,111 +439,5 @@ internal fun JamFailures() {
     val context = LocalContext.current
     LaunchedEffect(vm) {
         vm.jamFailed.collect { android.widget.Toast.makeText(context, R.string.jam_failed, android.widget.Toast.LENGTH_LONG).show() }
-    }
-}
-
-/** The song a state is on, if it lists it. */
-private fun dev.nori.music.ffi.remote.DeviceState.current(): Entry? = entries.firstOrNull { it.index == index }
-
-/** The songs after the current one, in play order. */
-private fun dev.nori.music.ffi.remote.DeviceState.upNext(): List<Entry> = entries.dropWhile { it.index != index }.drop(1)
-
-/**
- * The app as a jam guest sees it: what the host plays, a search to ask for songs (a tap asks), what one
- * asked for, what comes next and who added it, who is in, and leaving. Nothing plays here; the host is
- * followed only while the screen is on.
- */
-@Composable
-fun GuestApp(actions: ActionsViewModel) {
-    val vm: RemoteViewModel = viewModel()
-    LifecycleResumeEffect(Unit) { vm.watch(true); onPauseOrDispose { vm.watch(false) } }
-    val jam by vm.jam.collectAsStateWithLifecycle()
-    val found by vm.found.collectAsStateWithLifecycle()
-    var query by remember { mutableStateOf("") }
-    var menu by remember { mutableStateOf<Song?>(null) }
-    LaunchedEffect(query) { delay(350); vm.search(query) }
-    val context = LocalContext.current
-    val ask = { s: Song ->
-        vm.request(s)
-        android.widget.Toast.makeText(context, context.getString(R.string.jam_asked, s.title), android.widget.Toast.LENGTH_SHORT).show()
-    }
-    SongMenu(menu, actions, { menu = null }, request = ask)
-    val look = LocalLook.current
-    val ink = ColorProducer { look.color(CoverLook.ON) }
-    val quiet = ColorProducer { look.color(CoverLook.ON_VARIANT) }
-    val plate = ColorProducer { look.color(CoverLook.VEIL_13) }
-    Surface(color = MaterialTheme.colorScheme.background, contentColor = MaterialTheme.colorScheme.onBackground) {
-        val j = jam
-        val host = j?.members?.firstOrNull { it.role == Role.HOST }
-        LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(bottom = 24.dp)) {
-            item {
-                LargeTitle(words(R.string.jam_title)) {
-                    IconButton(vm::leave) { Icon(Icons.AutoMirrored.Filled.Logout, words(R.string.jam_leave)) }
-                }
-            }
-            host?.let { h -> item { Caption(words(R.string.jam_hosted_by, h.name), Modifier.padding(horizontal = Space.gutter), caps = false) } }
-            j?.refused?.let { r -> item { Text(refusal(r), Modifier.padding(horizontal = Space.gutter, vertical = 6.dp), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) } }
-            j?.queue?.current()?.let { now -> item { NowPlaying(now, vm.cover(now.coverArt, CoverSize.CARD)) } }
-            item { SearchField(query, { query = it }, words(R.string.jam_search), Modifier.padding(horizontal = Space.gutter, vertical = 8.dp)) }
-            if (query.isNotBlank()) items(found, key = { "s${it.id}" }) { s ->
-                SongRow(s, vm.cover(s.coverArt, CoverSize.ROW), { ask(s) }, { menu = s })
-            }
-            val queue = j?.queue
-            if (j == null || queue == null) item {
-                Text(words(R.string.jam_waiting), Modifier.padding(Space.gutter), color = MaterialTheme.colorScheme.onSurfaceVariant)
-            } else if (query.isBlank()) {
-                val mine = j.pending.filter { it.from == j.you }
-                if (mine.isNotEmpty()) {
-                    item { SectionHeader(words(R.string.jam_yours_waiting)) }
-                    items(mine, key = { "p${it.request}" }) { p ->
-                        Box(Modifier.padding(horizontal = Space.gutter)) { Request(p, vm.cover(p.song.coverArt, CoverSize.ROW), decides = false, ink, quiet, vm) }
-                    }
-                }
-                val next = queue.upNext()
-                if (next.isNotEmpty()) {
-                    item { SectionHeader(words(R.string.devices_up_next)) }
-                    items(next, key = { "q${it.index}" }) { e -> UpNextRow(e, vm.cover(e.coverArt, CoverSize.ROW), ink, quiet, plate) }
-                }
-                item { SectionHeader(words(R.string.jam_people)) }
-                item {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = Space.gutter), Arrangement.spacedBy(14.dp)) {
-                        j.members.forEach { m ->
-                            Column(Modifier.width(56.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                Avatar(m.name, 44.dp)
-                                Text(if (m.id == j.you) words(R.string.jam_you) else m.name, Modifier.padding(top = 4.dp), style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text(roleName(m.role), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** What the host plays, on a guest's screen: a large cover and the song. */
-@Composable
-private fun NowPlaying(e: Entry, coverUrl: String?) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = Space.gutter, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        Cover(coverUrl, 88.dp, radius = Radius.card)
-        Column(Modifier.weight(1f).padding(start = 16.dp)) {
-            Caption(words(R.string.jam_now_playing))
-            Text(e.title, Modifier.padding(top = 2.dp), style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text(e.artist, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-    }
-}
-
-@Composable
-private fun UpNextRow(e: Entry, coverUrl: String?, ink: ColorProducer, quiet: ColorProducer, plate: ColorProducer) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = Space.gutter, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Cover(coverUrl, 44.dp, radius = 6.dp)
-        Column(Modifier.weight(1f).padding(start = 12.dp)) {
-            LookText(e.title, ink, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                e.by?.let { AddedBy(it, ink, plate) }
-                LookText(e.artist, quiet, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
     }
 }

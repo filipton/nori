@@ -28,8 +28,6 @@ pub enum SongAction {
     ExcludeFromMixes,
     Share,
     Details,
-    /// A jam guest asks the host for it.
-    Request,
     /// Plays the song and starts a jam around it.
     StartJam,
 }
@@ -40,7 +38,8 @@ pub enum SongAction {
 pub enum JamOffer {
     /// Jams are on, the server relays them and none is hosted: the song can start one.
     Start,
-    /// A jam guest only asks for songs.
+    /// A jam guest: Play next and Add to queue ask the host for the song, and only the pages a guest may
+    /// open are offered.
     Guest,
 }
 
@@ -70,19 +69,19 @@ pub enum SongDownload {
 pub fn song_menu(song: Song, starred: bool, download: SongDownload, player: bool, jam: Option<JamOffer>) -> Vec<SongMenuItem> {
     let mut out = Vec::with_capacity(16);
     let mut add = |action: SongAction, more: bool| out.push(SongMenuItem { action, more });
-    if jam == Some(JamOffer::Guest) {
-        add(SongAction::Request, false);
-        add(SongAction::Details, false);
-        return out;
+    let guest = jam == Some(JamOffer::Guest);
+    if !guest {
+        add(SongAction::Favourite { on: !starred }, false);
     }
-    add(SongAction::Favourite { on: !starred }, false);
     add(SongAction::PlayNext, false);
     add(SongAction::AddToQueue, false);
-    add(SongAction::AddToPlaylist, false);
-    match download {
-        SongDownload::Done => add(SongAction::RemoveDownload, false),
-        SongDownload::Pending => add(SongAction::StopDownload, false),
-        SongDownload::None => add(SongAction::Download, false),
+    if !guest {
+        add(SongAction::AddToPlaylist, false);
+        match download {
+            SongDownload::Done => add(SongAction::RemoveDownload, false),
+            SongDownload::Pending => add(SongAction::StopDownload, false),
+            SongDownload::None => add(SongAction::Download, false),
+        }
     }
     if let Some(id) = &song.album_id {
         add(SongAction::GoToAlbum { id: id.clone() }, false);
@@ -93,6 +92,10 @@ pub fn song_menu(song: Song, starred: bool, download: SongDownload, player: bool
         }
     } else if let Some(id) = &song.artist_id {
         add(SongAction::GoToArtist { id: id.clone(), name: song.artist.clone(), named: false }, false);
+    }
+    if guest {
+        add(SongAction::Details, false);
+        return out;
     }
     if song.is_provider() {
         add(SongAction::AddToLibrary, false);
@@ -302,7 +305,11 @@ mod tests {
     fn song_menus() {
         let s = Song { id: "1".into(), album_id: Some("al".into()), artist_id: Some("ar".into()), artist: "Björk".into(), ..Default::default() };
         let m = song_menu(s.clone(), false, SongDownload::None, false, None);
-        assert_eq!(actions(&song_menu(s.clone(), false, SongDownload::None, true, Some(JamOffer::Guest))), [(Request, false), (Details, false)], "a jam guest only asks");
+        assert_eq!(
+            actions(&song_menu(s.clone(), false, SongDownload::None, true, Some(JamOffer::Guest))),
+            [(PlayNext, false), (AddToQueue, false), (GoToAlbum { id: "al".into() }, false), (GoToArtist { id: "ar".into(), name: "Björk".into(), named: false }, false), (Details, false)],
+            "a jam guest asks for songs and opens what it may read"
+        );
         let starts = song_menu(s, false, SongDownload::None, false, Some(JamOffer::Start));
         assert_eq!(actions(&starts).into_iter().filter(|(a, _)| *a == StartJam).collect::<Vec<_>>(), [(StartJam, false)], "a jam starts from the menu's first part");
         use SongAction::*;

@@ -593,7 +593,6 @@
     <string name="devices_idle">Not playing</string>
     <string name="devices_playing_on">Playing on %1$s</string>
     <string name="devices_playing_here">Playing here</string>
-    <string name="devices_up_next">Up next</string>
     <string name="devices_stale">The queue changed there. Try again.</string>
     <string name="devices_not_allowed">That device said no.</string>
     <string name="devices_unknown">That is no longer there.</string>
@@ -603,6 +602,8 @@
     <string name="jam_title">Jam</string>
     <!-- The player's strip while this phone hosts a jam: "Jam · 2 listening". -->
     <string name="jam_strip">Jam · %1$s</string>
+    <string name="jam_strip_guest">Jam · %1$s · %2$s</string>
+    <string name="jam_of">%1$s’s Jam</string>
     <string name="jam_listening">%1$d listening</string>
     <string name="jam_no_one">no one yet</string>
     <string name="jam_invite_button">Invite</string>
@@ -617,7 +618,7 @@
     <string name="jam_people">People</string>
     <string name="jam_people_none">No one has joined yet. They join with the invite’s code or link.</string>
     <string name="jam_you_host">You · Host</string>
-    <string name="jam_you">You</string>
+    <string name="jam_you_role">You · %1$s</string>
     <string name="jam_role_host">Host</string>
     <string name="jam_role_admin">Admin</string>
     <string name="jam_role_guest">Guest</string>
@@ -632,16 +633,12 @@
     <string name="jam_added_by">Added by %1$s</string>
     <string name="jam_failed">Couldn’t start the Jam. Jams need octo-fiesta in front of your server.</string>
     <string name="jam_join_failed">Couldn’t join the Jam</string>
-    <string name="jam_leave">Leave the Jam</string>
-    <string name="jam_hosted_by">Hosted by %1$s</string>
+    <string name="jam_leave">Leave</string>
     <string name="jam_yours_waiting">You asked for</string>
     <string name="jam_waiting_for_host">Waiting for the host</string>
-    <string name="jam_now_playing">Now playing</string>
-    <string name="jam_search">Search songs to ask for</string>
-    <string name="jam_asked">Asked for “%1$s”</string>
+    <string name="jam_asked">Asked the host for “%1$s”</string>
+    <string name="jam_asked_mark">Asked</string>
     <string name="jam_too_many">You have as many songs waiting as a Jam allows</string>
-    <string name="jam_waiting">Waiting for the host’s phone</string>
-    <string name="menu_request">Ask for this song</string>
     <string name="jam_unsupported">Your server doesn’t support Jams yet. They need octo-fiesta with nori support in front of it.</string>
     <string name="devices_nearby_only">Devices on this network show up here. To reach them from anywhere, your server needs octo-fiesta with nori support.</string>
 </resources>

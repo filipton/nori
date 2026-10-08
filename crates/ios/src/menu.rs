@@ -32,7 +32,6 @@ fn action_code(a: &SongAction) -> i32 {
         SongAction::ExcludeFromMixes => 13,
         SongAction::Share => 14,
         SongAction::Details => 15,
-        SongAction::Request => 16,
         SongAction::StartJam => 18,
     }
 }

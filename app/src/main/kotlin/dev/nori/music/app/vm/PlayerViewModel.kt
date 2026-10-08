@@ -46,15 +46,23 @@ class PlayerViewModel(app: Application) : NoriViewModel(app) {
         if (state.value.playingOn != null) dev.nori.music.ffi.mirroredQueueRows(len.toUInt(), shuffle, shown)
         else nori.core.queueRows(len.toUInt(), shuffle, shown)
 
+    /** A jam as the player's strip says it: who hosts it ([host] null: this phone) and how many listen. */
+    data class JamStripState(val host: String?, val listening: Int)
+
     /**
-     * The jam this phone hosts, as the player shows it: how many listen (the host not counted), for the
-     * "Jam · 2 listening" strips; null while no jam is hosted.
+     * The jam this phone hosts or is a guest in, for the "Jam · 2 listening" strips (the host not counted
+     * among the listeners); null without one.
      */
-    val jamListening: StateFlow<Int?> = nori.remotes.jam
-        .map { j -> j?.takeIf { it.hosting }?.members?.count { it.role != dev.nori.music.ffi.remote.Role.HOST } }
+    val jamStrip: StateFlow<JamStripState?> = nori.remotes.jam
+        .map { j ->
+            j?.let { v ->
+                val host = v.members.firstOrNull { it.role == dev.nori.music.ffi.remote.Role.HOST }
+                JamStripState(if (v.hosting) null else host?.name.orEmpty(), v.members.count { it.role != dev.nori.music.ffi.remote.Role.HOST })
+            }
+        }
         .distinctUntilChanged().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
-    /** Who asked for each song of the hosted jam, by song id: the queue's "added by" chips. */
+    /** Who asked for each song of the jam, by song id: the queue's "added by" chips. */
     val jamAdded: StateFlow<Map<String, String>> = nori.remotes.jamAdded
 
     /** Just the play/pause flag, for the same reason: the marked row's bars move only while it sounds. */

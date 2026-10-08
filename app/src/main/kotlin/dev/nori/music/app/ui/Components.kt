@@ -1,5 +1,7 @@
 package dev.nori.music.app.ui
 
+import dev.nori.music.app.R
+
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -430,14 +432,18 @@ fun SongRow(
             // the time beside it, "3:44" against "12:05" - and a mark arriving or leaving moves nothing
             // else. The time is last before the menu and in a box of one fixed width, its digits held to
             // the right edge, so it sits against the ⋯ rather than with an empty download slot between.
+            // A jam guest's hearts would be the host's: none are shown.
+            val guest = LocalJamGuest.current
             Box(Modifier.padding(start = 4.dp).width(15.dp), Alignment.Center) {
-                if (LocalStarMarks.current.effectiveStar(dev.nori.music.data.StarKind.SONG, song.id, song.starred)) Icon(Icons.Filled.Favorite, say.favourite, Modifier.size(15.dp), tint)
+                if (!guest && LocalStarMarks.current.effectiveStar(dev.nori.music.data.StarKind.SONG, song.id, song.starred)) Icon(Icons.Filled.Favorite, say.favourite, Modifier.size(15.dp), tint)
             }
             Box(Modifier.width(MARK_SLOT), Alignment.Center) { DownloadSlot(song.id, downloaded, tint) }
+            // A song a jam guest asked for says so in its time's place until the host decides.
+            val asked = guest && song.id in LocalAsked.current.value
             Text(
-                if (song.duration > 0u) duration(song.duration.toLong()) else "",
+                if (asked) words(R.string.jam_asked_mark) else if (song.duration > 0u) duration(song.duration.toLong()) else "",
                 Modifier.widthIn(min = TIME_SLOT), textAlign = TextAlign.End,
-                style = MaterialTheme.typography.bodySmall, color = tint, maxLines = 1, softWrap = false,
+                style = MaterialTheme.typography.bodySmall, color = if (asked) scheme.primary else tint, maxLines = 1, softWrap = false,
             )
             IconButton(onMenu, Modifier.size(40.dp)) { Icon(Icons.Filled.MoreHoriz, say.more, Modifier.size(20.dp), tint) }
         }
@@ -566,6 +572,8 @@ fun LazyListScope.songRows(
 /** The icon and words a swipe setting uncovers under [song]'s row, and the action; null when that side does nothing. */
 @Composable
 internal fun rowSwipe(action: SwipeAction, song: Song, actions: ActionsViewModel): RowSwipe? {
+    // A jam guest's rows ask with a tap; there is nothing of its own to queue, keep or download.
+    if (LocalJamGuest.current) return null
     val starred = action == SwipeAction.FAVOURITE && LocalStarMarks.current.effectiveStar(dev.nori.music.data.StarKind.SONG, song.id, song.starred)
     // What it does is nori-core's (`row_swipe`); there are ten answers in all, so each is asked once. What
     // it says is one of Say's words, read once per locale: a row allocates no text.

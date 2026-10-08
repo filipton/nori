@@ -156,12 +156,27 @@ val LocalPlayerMenu = staticCompositionLocalOf<(Song) -> Unit> { {} }
 /** Opens the devices sheet (RemoteScreens.DevicesHost): where the music plays. */
 val LocalDevices = staticCompositionLocalOf<() -> Unit> { {} }
 
+/**
+ * The profile in use is a jam guest's: the app shows the host's playback and offers only what a guest can
+ * do (search, the albums and artists it may open, asking for songs).
+ */
+val LocalJamGuest = staticCompositionLocalOf { false }
+
+/**
+ * The songs a jam guest asked for that the host has not decided on yet, by id: their rows say "Asked". Read
+ * by the rows, so a request changes them and nothing else.
+ */
+val LocalAsked = staticCompositionLocalOf<androidx.compose.runtime.State<Set<String>>> { androidx.compose.runtime.mutableStateOf(emptySet()) }
+
 private val tabs = listOf(
     Tab("home", say.home, Icons.Filled.Home),
     Tab("search", say.search, Icons.Filled.Search),
     Tab("library", say.library, Icons.Filled.LibraryMusic),
     Tab("settings", say.settings, Icons.Filled.Settings),
 )
+
+/** A jam guest's tabs: Search alone; the rest is the account's, which a guest has none of. */
+private val guestTabs = tabs.filter { it.route == "search" }
 
 /**
  * [launchRoute] is what the activity was asked for from outside - a tap on the download notification, or
@@ -177,20 +192,23 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
         // Sign-in used to cut straight to the app. One short fade is enough: the screens are different
         // enough that a direction would invent a relationship they do not have.
         val plain = reduceMotion()
+        // A jam guest's profile is the same app with less in it, started afresh on joining and on leaving.
+        val guest = remember(prefs.activeServerId, prefs.server?.apiKey) { prefs.server?.apiKey?.let { dev.nori.music.ffi.remote.isGuestKey(it) } == true }
         androidx.compose.animation.Crossfade(
-            targetState = prefs.loggedIn,
+            targetState = prefs.loggedIn to guest,
             animationSpec = if (plain) androidx.compose.animation.core.snap() else androidx.compose.animation.core.tween(280),
             label = "session",
-        ) { loggedIn ->
+        ) { (loggedIn, guest) ->
         if (!loggedIn) {
             LoginScreen(settings)
             return@Crossfade
         }
-        // A jam guest's profile: only the jam (RemoteScreens).
-        if (remember(prefs.activeServerId) { prefs.server?.apiKey?.let { dev.nori.music.ffi.remote.isGuestKey(it) } == true }) {
-            GuestApp(viewModel())
-            return@Crossfade
-        }
+        val home = if (guest) "search" else "home"
+        val shownTabs = if (guest) guestTabs else tabs
+        // A guest follows the host while the app is in sight: what plays, the queue, its requests.
+        val remote: dev.nori.music.app.vm.RemoteViewModel = viewModel()
+        if (guest) androidx.lifecycle.compose.LifecycleResumeEffect(Unit) { remote.watch(true); onPauseOrDispose { remote.watch(false) } }
+        val asked = remote.asked.collectAsStateWithLifecycle()
 
         val controller = rememberNavController()
         val sheetScope = androidx.compose.runtime.rememberCoroutineScope()
@@ -213,6 +231,11 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             }
         }
         val nav = remember(controller) { Nav(controller, sheet) }
+        // A jam just joined opens on it: the player, turned to the queue with the jam over it.
+        if (guest) {
+            var arrived by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+            LaunchedEffect(Unit) { if (!arrived) { arrived = true; nav.player(Panel.QUEUE) } }
+        }
         val actions: ActionsViewModel = viewModel()
         val player: PlayerViewModel = viewModel()
         val snackbar = remember { SnackbarHostState() }
@@ -289,14 +312,16 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             LocalSongMenu provides { menuSong = it; menuFromPlayer = false },
             LocalPlayerMenu provides { menuSong = it; menuFromPlayer = true },
             LocalDevices provides { devicesOpen = true },
+            LocalJamGuest provides guest,
+            LocalAsked provides asked,
         ) {
             val route = controller.currentBackStackEntryAsState().value?.destination?.route
             // The tab the page on screen belongs to, which is the one that stays lit, as Apple's does: a
             // settings group, or an album opened from Home, is still inside that tab. Lit only on the tab
             // roots themselves, the icon went out the moment anything was opened. There is one back stack
             // and a tab tap rebuilds it from the start, so the page's tab is the last root shown.
-            var lastTab by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("home") }
-            val onTab = route?.takeIf { r -> tabs.any { it.route == r } }
+            var lastTab by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(home) }
+            val onTab = route?.takeIf { r -> shownTabs.any { it.route == r } }
             LaunchedEffect(onTab) { if (onTab != null) lastTab = onTab }
             val tabRoute = onTab ?: lastTab
             // This session's star changes, so every heart prefers them over the snapshot it painted with.
@@ -390,7 +415,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
                 // One transition for the whole app, and the same one in both directions. See PageMotion.
                 val plain = reduceMotion()
                 NavHost(
-                    controller, "home",
+                    controller, home,
                     enterTransition = { PageMotion.enter(this, plain) },
                     exitTransition = { PageMotion.exit(this, plain) },
                     popEnterTransition = { PageMotion.popEnter(this, plain) },
@@ -444,9 +469,9 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
               // The tab bar is over the player, not under it: as the player rises it slides down off the
               // screen instead of vanishing under the sheet in one frame. See BottomChrome.
               if (wide) Box(Modifier.align(if (railLeft) Alignment.CenterStart else Alignment.CenterEnd).fillMaxHeight()) {
-                  TabRail(tabRoute, tabs, nav::tab, chromeLook, player, railLeft)
+                  TabRail(tabRoute, shownTabs, nav::tab, chromeLook, player, railLeft)
               }
-              else Box(Modifier.align(Alignment.BottomCenter)) { TabBar(tabRoute, tabs, nav::tab, chromeLook, player) { tabsHeight = it } }
+              else Box(Modifier.align(Alignment.BottomCenter)) { TabBar(tabRoute, shownTabs, nav::tab, chromeLook, player) { tabsHeight = it } }
               }
               // Top: less in the way of the now-playing bar; swipe or the X dismisses.
               SnackbarHost(

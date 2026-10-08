@@ -281,6 +281,7 @@ fun AlbumScreen(id: String, actions: ActionsViewModel, vm: AlbumViewModel = view
 /** An album's page: [detail] null while the songs are on the wire, [failed] when they did not come. */
 @Composable
 private fun AlbumPage(album: Album, detail: AlbumDetail?, failed: String?, actions: ActionsViewModel, vm: AlbumViewModel) {
+    val guest = LocalJamGuest.current
     val done = actions.downloads.collectAsState().value.doneIds
     val selected = selectedIds(actions)
     val menu = LocalSongMenu.current
@@ -302,12 +303,14 @@ private fun AlbumPage(album: Album, detail: AlbumDetail?, failed: String?, actio
             { nav.artist(a, Artist(a, album.artist, album.coverArt, null, 0u, false, false)) }
         },
         // Play and shuffle wait for the songs: pressing them with an empty list would queue nothing.
-        // The row itself is reserved ([awaitingPlay]) so the page does not reflow when they land.
-        awaitingPlay = detail == null && failed == null,
-        onPlay = detail?.let { d -> { actions.play(d.songs, from = from) } },
-        onShuffle = detail?.let { d -> { actions.shuffle(d.songs, from) } },
+        // The row itself is reserved ([awaitingPlay]) so the page does not reflow when they land. A jam
+        // guest has neither: it asks for songs one by one.
+        awaitingPlay = detail == null && failed == null && !guest,
+        onPlay = detail?.takeIf { !guest }?.let { d -> { actions.play(d.songs, from = from) } },
+        onShuffle = detail?.takeIf { !guest }?.let { d -> { actions.shuffle(d.songs, from) } },
         queue = queue,
-        actions = {
+        actions = actions@{
+            if (guest) return@actions
             val albumStarred = LocalStarMarks.current.effectiveStar(dev.nori.music.data.StarKind.ALBUM, album.id, album.starred)
             FavoriteCircle(albumStarred) { actions.starAlbum(album.id, !albumStarred); Unit }
             LateMore(detail != null) {
@@ -321,7 +324,7 @@ private fun AlbumPage(album: Album, detail: AlbumDetail?, failed: String?, actio
     ) {
         when {
             detail != null -> {
-                item(key = "offer", contentType = "offer") { Box(Modifier.arriving(arrival)) { LibraryOffer(album.id, album.isExternal, actions) } }
+                if (!guest) item(key = "offer", contentType = "offer") { Box(Modifier.arriving(arrival)) { LibraryOffer(album.id, album.isExternal, actions) } }
                 // An album is short enough to scroll and its running order is the point of it, so the songs
                 // stay exactly as the record has them, grouped by disc (as the core laid them out,
                 // `pages::album_discs`) and never narrowed. A row each: only the ones on screen are composed.
@@ -364,6 +367,7 @@ fun ArtistScreen(id: String, actions: ActionsViewModel, vm: ArtistViewModel = vi
 /** An artist's page: [ui] null while the detail is on the wire, [failed] when it did not come. */
 @Composable
 private fun ArtistPage(artist: Artist, ui: ArtistUi?, failed: String?, actions: ActionsViewModel, vm: ArtistViewModel, leave: (String) -> Unit) {
+    val guest = LocalJamGuest.current
     val done = actions.downloads.collectAsState().value.doneIds
     val selected = selectedIds(actions)
     val menu = LocalSongMenu.current
@@ -381,12 +385,14 @@ private fun ArtistPage(artist: Artist, ui: ArtistUi?, failed: String?, actions: 
             if (ui != null) say.releases(ui.detail.albums.size)
             else artist.albumCount.takeIf { it > 0u }?.let { say.releases(it.toInt()) }.orEmpty()
         },
-        onPlay = ui?.let { ready -> { actions.playArtist(ready.detail.artist.id) } },
-        onShuffle = ui?.let { ready -> { actions.playArtist(ready.detail.artist.id, shuffle = true) } },
-        awaitingPlay = ui == null && failed == null,
+        // A jam guest asks for songs one by one, from the artist's albums.
+        onPlay = ui?.takeIf { !guest }?.let { ready -> { actions.playArtist(ready.detail.artist.id) } },
+        onShuffle = ui?.takeIf { !guest }?.let { ready -> { actions.playArtist(ready.detail.artist.id, shuffle = true) } },
+        awaitingPlay = ui == null && failed == null && !guest,
         // Only a queue this page's Play or Shuffle started (all the artist's songs), not any song by them.
         queue = rememberPageQueue(rememberOrigin(OriginKind.ARTIST, artist.id), ui?.detail?.queue),
-        actions = {
+        actions = actions@{
+            if (guest) return@actions
             val artistStarred = LocalStarMarks.current.effectiveStar(dev.nori.music.data.StarKind.ARTIST, artist.id, artist.starred)
             FavoriteCircle(artistStarred) { actions.starArtist(artist.id, !artistStarred); Unit }
             LateMore(ui != null) {

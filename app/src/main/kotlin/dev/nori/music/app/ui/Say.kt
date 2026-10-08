@@ -484,7 +484,6 @@ class Say(private val r: Resources) {
         SongAction.ExcludeFromMixes -> menuExclude
         SongAction.Share -> menuShare
         SongAction.Details -> details
-        SongAction.Request -> r.getString(R.string.menu_request)
         SongAction.StartJam -> r.getString(R.string.jam_start)
     }
 
@@ -713,6 +712,7 @@ class Say(private val r: Resources) {
     fun playlistCreated(name: String): String = r.getString(R.string.said_playlist_created, name)
     val playingNext: String get() = r.getString(R.string.said_playing_next)
     val addedToQueue: String get() = r.getString(R.string.said_added_to_queue)
+    fun jamAsked(title: String): String = r.getString(R.string.jam_asked, title)
     val excludedFromMixes: String get() = r.getString(R.string.said_excluded_from_mixes)
     val noServerQueue: String get() = r.getString(R.string.said_no_server_queue)
     val serverDownloading: String get() = r.getString(R.string.said_server_downloading)
