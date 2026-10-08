@@ -230,6 +230,14 @@ impl Playlist {
         (from..self.len()).filter_map(move |p| self.at_position(p))
     }
 
+    /// What clearing the queue removes: the songs after the current one in play order, as list indexes
+    /// highest first, so each still names its song while those before it go one by one.
+    pub fn after_current(&self) -> Vec<usize> {
+        let mut after: Vec<usize> = self.upcoming().skip(1).collect();
+        after.sort_unstable_by(|a, b| b.cmp(a));
+        after
+    }
+
     /// Replaces the queue, starting at `start` (`None`: a random song when shuffling, else 0). Returns
     /// the start. A start on the current song keeps its entry: the list is made around it.
     pub fn set(&mut self, ids: Vec<String>, start: Option<usize>, shuffling: bool, seed: u64) -> Option<usize> {
@@ -656,11 +664,23 @@ mod tests {
     }
 
     #[test]
+    fn clearing_a_shuffled_queue_takes_what_plays_after() {
+        let mut p = Playlist::default();
+        p.set(ids(&["a", "b", "c", "d", "e"]), Some(2), true, 7);
+        let order: Vec<usize> = p.play_order().collect();
+        let at = order.iter().position(|&i| i == 2).unwrap();
+        let mut want = order[at + 1..].to_vec();
+        want.sort_unstable_by(|a, b| b.cmp(a));
+        assert_eq!(p.after_current(), want);
+    }
+
+    #[test]
     fn plain_queue_order_and_repeat() {
         let mut p = Playlist::default();
         assert_eq!(p.set(ids(&["a", "b", "c"]), Some(1), false, 0), Some(1));
         assert_eq!((p.next(), p.previous(), p.songs_after()), (Some(2), Some(0), 1));
         assert_eq!(p.upcoming().collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(p.after_current(), [2], "clearing keeps the song playing");
         p.set_repeat(REPEAT_ALL);
         p.moved_to(2);
         assert_eq!(p.next(), Some(0));

@@ -222,6 +222,7 @@ export global Icons {
     out property <string> chevron: "M9 5.5 L15.5 12 L9 18.5";
     out property <string> chevron-back: "M15 5.5 L8.5 12 L15 18.5";
     out property <string> down: "M5.5 9 L12 15.5 L18.5 9";
+    out property <string> up: "M5.5 15 L12 8.5 L18.5 15";
     out property <string> close: "M6 6 L18 18 M18 6 L6 18";
     out property <string> plus: "M12 5 L12 19 M5 12 L19 12";
     out property <string> bars: "M4 9 L6.5 9 L6.5 19 L4 19 Z M8.5 5 L11 5 L11 19 L8.5 19 Z M13 11 L15.5 11 L15.5 19 L13 19 Z M17.5 7 L20 7 L20 19 L17.5 19 Z";
@@ -399,6 +400,7 @@ component IconButton inherits Rectangle {
     in property <length> icon: 19px;
     in property <color> ink: Theme.text;
     in property <color> base: transparent;
+    out property <bool> hovered: touch.has-hover;
     callback clicked;
     width: root.size;
     height: root.size;
@@ -2064,11 +2066,20 @@ component QueueView inherits Rectangle {
     in property <bool> autoplay;
     in property <bool> automix;
     in property <int> covers-rev;
-    // The queue is this computer's (another device's has no clearing here).
+    // Its songs can be taken out, moved and cleared (here or on the device playing).
     in property <bool> editable: true;
+    // Rows move up and down: the list plays in its order (not shuffled).
+    in property <bool> movable;
+    // "Removed “Song”" for a few seconds after a song is taken out, with Undo beside it.
+    in property <string> undo-text;
     pure callback art(string, int, int) -> image;
     callback jump(int);
     callback clear;
+    // A row's song taken out, by its list index.
+    callback remove(int);
+    // The song at a list index moved to another's.
+    callback move(int, int);
+    callback undo;
     callback set-autoplay(bool);
     callback set-automix(bool);
     VerticalLayout {
@@ -2159,9 +2170,11 @@ component QueueView inherits Rectangle {
             rows := VerticalLayout {
             width: parent.width;
             alignment: start;
-            for s in root.queue: Rectangle {
+            for s[i] in root.queue: qrow := Rectangle {
                 // A row put in opens from nothing; one leaving folds away (app.rs takes it out after).
                 property <bool> opened: !s.fresh;
+                // Its buttons show while the pointer is over the row.
+                property <bool> hot: qt.has-hover || up.hovered || dn.hovered || rm.hovered;
                 height: s.leaving || !self.opened ? 0 : 50px;
                 opacity: s.leaving || !self.opened ? 0 : 1;
                 animate height, opacity { duration: 300ms; easing: cubic-bezier(0.2, 0.9, 0.3, 1); }
@@ -2173,9 +2186,9 @@ component QueueView inherits Rectangle {
                 }
                 border-radius: 6px;
                 background: qt.has-hover ? Theme.hover : transparent;
+                // The row's content inside it, so the row stays hovered over its links and buttons.
                 qt := TouchArea {
                     double-clicked => { root.jump(s.index); }
-                }
                 HorizontalLayout {
                     padding-left: 4px;
                     padding-right: 4px;
@@ -2238,13 +2251,49 @@ component QueueView inherits Rectangle {
                             overflow: elide;
                         }
                     }
-                    Text {
-                        text: "···";
-                        color: Theme.dim;
-                        font-size: 14px;
-                        font-weight: 700;
-                        vertical-alignment: center;
+                    // Up, down and out, while hovered.
+                    Rectangle {
+                        width: root.editable && qrow.hot ? (root.movable ? 78px : 26px) : 0;
+                        clip: true;
+                        animate width { duration: 160ms; easing: ease-out; }
+                        HorizontalLayout {
+                            alignment: end;
+                            up := IconButton {
+                                y: (parent.height - self.height) / 2;
+                                visible: root.movable;
+                                path: Icons.up;
+                                size: 26px;
+                                icon: 14px;
+                                quiet: i == 0;
+                                clicked => {
+                                    if i > 0 {
+                                        root.move(s.index, root.queue[i - 1].index);
+                                    }
+                                }
+                            }
+                            dn := IconButton {
+                                y: (parent.height - self.height) / 2;
+                                visible: root.movable;
+                                path: Icons.down;
+                                size: 26px;
+                                icon: 14px;
+                                quiet: i == root.queue.length - 1;
+                                clicked => {
+                                    if i < root.queue.length - 1 {
+                                        root.move(s.index, root.queue[i + 1].index);
+                                    }
+                                }
+                            }
+                            rm := IconButton {
+                                y: (parent.height - self.height) / 2;
+                                path: Icons.close;
+                                size: 26px;
+                                icon: 13px;
+                                clicked => { root.remove(s.index); }
+                            }
+                        }
                     }
+                }
                 }
                 Rectangle {
                     x: 48px;
@@ -2283,6 +2332,44 @@ component QueueView inherits Rectangle {
             }
         }
 
+    }
+    // The undo of a song taken out, as a pill over the foot of the list.
+    if root.undo-text != "": Rectangle {
+        x: 12px + (parent.width - 24px - self.width) / 2;
+        y: parent.height - self.height - 12px;
+        width: min(parent.width - 24px, ut.preferred-width + ua.preferred-width + 40px);
+        height: 34px;
+        border-radius: 17px;
+        background: #3a383a;
+        border-width: 1px;
+        border-color: #ffffff1a;
+        drop-shadow-blur: 16px;
+        drop-shadow-offset-y: 4px;
+        drop-shadow-color: #00000080;
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            spacing: 12px;
+            ut := Text {
+                horizontal-stretch: 1;
+                text: root.undo-text;
+                color: Theme.text;
+                font-size: 12px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            ua := Text {
+                text: "Undo";
+                color: Theme.accent;
+                font-size: 12px;
+                font-weight: 700;
+                vertical-alignment: center;
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.undo(); }
+                }
+            }
+        }
     }
 }
 
@@ -3372,6 +3459,11 @@ export component AppWindow inherits Window {
     in property <bool> autoplay;
     in property <bool> automix;
     callback clear-queue();
+    // A queue row's song taken out or moved (list indexes), and the last one taken out put back.
+    callback remove-queued(int);
+    callback move-queued(int, int);
+    callback undo-removed();
+    in property <string> queue-undo;
     // Settings tab: 0 General, 1 Playback, 2 Sound, 3 Lyrics, 4 Library, 5 Data, 6 Servers.
     in-out property <int> settings-tab;
     callback settings-tab-chosen(int);
@@ -4425,10 +4517,14 @@ export component AppWindow inherits Window {
                     autoplay: root.autoplay;
                     automix: root.automix;
                     covers-rev: root.covers-rev;
-                    editable: root.playing-on == "";
+                    movable: !root.shuffle;
+                    undo-text: root.queue-undo;
                     art(a, s, r) => { return root.art(a, s, r); }
                     jump(i) => { root.jump(i); }
                     clear => { root.clear-queue(); }
+                    remove(i) => { root.remove-queued(i); }
+                    move(f, t) => { root.move-queued(f, t); }
+                    undo => { root.undo-removed(); }
                     set-autoplay(on) => { root.setting-toggled("autoFill", on); }
                     set-automix(on) => { root.setting-toggled("autoMix", on); }
                 }
@@ -4850,10 +4946,14 @@ export component AppWindow inherits Window {
                 autoplay: root.autoplay;
                 automix: root.automix;
                 covers-rev: root.covers-rev;
-                editable: root.playing-on == "";
+                movable: !root.shuffle;
+                undo-text: root.queue-undo;
                 art(a, s, r) => { return root.art(a, s, r); }
                 jump(i) => { root.jump(i); }
                 clear => { root.clear-queue(); }
+                remove(i) => { root.remove-queued(i); }
+                move(f, t) => { root.move-queued(f, t); }
+                undo => { root.undo-removed(); }
                 set-autoplay(on) => { root.setting-toggled("autoFill", on); }
                 set-automix(on) => { root.setting-toggled("autoMix", on); }
             }

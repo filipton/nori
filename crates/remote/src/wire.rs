@@ -125,6 +125,11 @@ pub enum Op {
     Jump { index: u32, rev: u64 },
     Remove { index: u32, rev: u64 },
     Move { from: u32, to: u32, rev: u64 },
+    /// Removes every song after the current one in play order.
+    Clear,
+    /// Undoes a [`Op::Remove`]: `song` goes back where it was in the device's queue (its turn under
+    /// shuffle too), or at list index `index` if the device no longer has it as taken out.
+    Restore { song: Song, index: u32 },
     /// After the current song (`next`) or at the end.
     Add { songs: Vec<Song>, next: bool },
     /// A new queue, from list index `index` at `position_ms`, playing or paused. Under `shuffle` it plays

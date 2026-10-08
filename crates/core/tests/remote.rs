@@ -803,6 +803,46 @@ fn a_device_playing_elsewhere_is_mirrored_whole() {
 }
 
 #[test]
+fn a_mirrored_queue_is_cleared_and_a_removed_song_put_back_in_its_place() {
+    let relay = Relay::new();
+    let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    phone.playing(&["s1", "s2", "s3", "s4", "s5"], 1);
+    phone.remote.clone().serve(true);
+    let phone_id = phone.remote.id();
+    desk.remote.clone().watch(true);
+    desk.until("the phone", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state));
+    desk.remote.clone().pick(Some(phone_id.clone()));
+    let m = desk.until("the phone mirrored", |r| r.active().filter(|m| m.rows.len() == 5));
+
+    // The third song taken out and put back: it goes back where it was, not after the song playing.
+    desk.remote.send(phone_id.clone(), Op::Remove { index: 2, rev: m.rev });
+    assert_eq!(phone.told(), Op::Remove { index: 2, rev: m.rev });
+    phone.core.session.remove(2, 3);
+    assert!(!desk.remote.put_back(phone_id.clone(), "s4".into()), "only a song taken out from here");
+    assert!(desk.remote.put_back(phone_id.clone(), "s3".into()));
+    match phone.told() {
+        Op::Restore { song, index } => {
+            assert_eq!((song.id.as_str(), song.title.as_str(), index), ("s3", "S3", 2));
+            assert!(phone.core.session.restore(song.id).at.is_some(), "the phone's own undo knows its place");
+        }
+        op => panic!("{op:?}"),
+    }
+    assert_eq!(phone.core.session.playlist(|p| p.ids().to_vec()), ["s1", "s2", "s3", "s4", "s5"]);
+    assert!(!desk.remote.put_back(phone_id.clone(), "s3".into()), "put back once");
+
+    // Clear: the phone's player removes what plays after the current song, from the end.
+    desk.remote.send(phone_id.clone(), Op::Clear);
+    let removed: Vec<u32> = (0..3).map(|_| match phone.told() {
+        Op::Remove { index, .. } => index,
+        op => panic!("{op:?}"),
+    }).collect();
+    assert_eq!(removed, [4, 3, 2]);
+    assert!(phone.ops.recv_timeout(Duration::from_millis(300)).is_err(), "the song playing stays");
+    relay.close();
+}
+
+#[test]
 fn a_transfer_keeps_the_play_order_shuffle_and_repeat() {
     let relay = Relay::new();
     let phone = Device::account(&relay, DeviceKind::Phone, "Phone");

@@ -108,6 +108,7 @@ impl RemotePlayer for HostPlayer {
             }
             Op::Remove { index, .. } => h.remove(index as usize),
             Op::Move { from, to, .. } => h.move_song(from as usize, to as usize),
+            Op::Restore { song, index } => h.put_back(song, index as usize),
             Op::Add { songs, next } => h.enqueue(songs, next),
             Op::Replace { songs, index, position_ms, play, order, shuffle, repeat } => h.replace(songs, index as usize, position_ms, play, order, shuffle, repeat),
             Op::Shuffle { on } => h.shuffle(on),
@@ -116,7 +117,7 @@ impl RemotePlayer for HostPlayer {
             // The devices see it once the core has marked it.
             Op::Star { id, on } => return h.star(id, on),
             // The core keeps transfers, pages, time exchanges and jam ops to itself.
-            Op::Transfer { .. } | Op::Page { .. } | Op::Clock { .. } | Op::Request { .. } | Op::Decide { .. } | Op::Promote { .. } | Op::Kick { .. } => {}
+            Op::Transfer { .. } | Op::Clear | Op::Page { .. } | Op::Clock { .. } | Op::Request { .. } | Op::Decide { .. } | Op::Promote { .. } | Op::Kick { .. } => {}
         }
         h.remotes.played(&h.engine);
     }
@@ -154,6 +155,12 @@ pub enum Press {
     Repeat(u8),
     /// 0 to 1.
     Volume(f32),
+    /// The song at this list index leaves the queue.
+    Remove(u32),
+    /// The song at list index `.0` moves to `.1`.
+    Move(u32, u32),
+    /// Everything after the song playing leaves the queue.
+    Clear,
 }
 
 /// The account's active device while it is another one, as read at one moment: what the player shows
@@ -205,6 +212,9 @@ impl Elsewhere {
             Press::Previous => Op::Previous,
             Press::Seek(ms) => Op::Seek { ms: ms.max(0) },
             Press::Jump(index) => Op::Jump { index, rev: m.rev },
+            Press::Remove(index) => Op::Remove { index, rev: m.rev },
+            Press::Move(from, to) => Op::Move { from, to, rev: m.rev },
+            Press::Clear => Op::Clear,
             Press::Shuffle(on) => Op::Shuffle { on },
             Press::Repeat(mode) => Op::Repeat { mode },
             Press::Volume(v) => {
@@ -229,6 +239,11 @@ impl Elsewhere {
 
     pub(crate) fn play(&self, songs: Vec<Song>, start: usize, shuffle: bool) {
         self.send(self.replace(songs, start, shuffle));
+    }
+
+    /// Puts song `id`, removed here, back where it was in the device's queue; false when it was not.
+    pub(crate) fn put_back(&self, id: &str) -> bool {
+        self.remote.put_back(self.mirror.id.clone(), id.to_string())
     }
 
     pub(crate) fn send(&self, op: Op) {
@@ -449,6 +464,9 @@ mod tests {
             (Press::Seek(-40), Some(Op::Seek { ms: 0 })),
             (Press::Jump(1), Some(Op::Jump { index: 1, rev: 7 })),
             (Press::Repeat(2), Some(Op::Repeat { mode: 2 })),
+            (Press::Remove(2), Some(Op::Remove { index: 2, rev: 7 })),
+            (Press::Move(2, 0), Some(Op::Move { from: 2, to: 0, rev: 7 })),
+            (Press::Clear, Some(Op::Clear)),
             (Press::Volume(0.254), Some(Op::Volume { percent: 25 })),
             (Press::Volume(0.4), None),
         ];

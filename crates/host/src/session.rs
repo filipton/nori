@@ -453,36 +453,42 @@ impl Session {
         self.handle().edited();
     }
 
-    /// Removes the song at list index `index`; if it was playing, the next one takes its place.
+    /// Removes the song at list index `index` on the device playing; if it was playing, the next one
+    /// takes its place.
     pub fn remove(&self, index: usize) {
-        self.handle().remove(index);
+        if !self.there(Press::Remove(index as u32)) {
+            self.handle().remove(index);
+        }
     }
 
-    /// Removes everything after the current song.
+    /// Removes everything after the current song, on the device playing.
     pub fn clear_upcoming(&self) {
-        let mut upcoming: Vec<u32> = self.core.session.playlist(|p| p.upcoming().map(|i| i as u32).collect());
-        upcoming.sort_unstable_by(|a, b| b.cmp(a));
-        for i in upcoming {
-            self.core.session.remove(i, i + 1);
+        if self.there(Press::Clear) {
+            return;
+        }
+        for i in self.core.session.playlist(|p| p.after_current()) {
+            self.core.session.remove(i as u32, i as u32 + 1);
         }
         self.edited();
     }
 
-    /// Undoes the removal of `id`; the playing song is unchanged.
+    /// Undoes the removal of `id` where it was removed (here, or on the device playing); the playing
+    /// song is unchanged.
     pub fn put_back(&self, id: &str) {
-        let was_empty = self.core.session.playlist(|p| p.is_empty());
-        if self.core.session.restore(id.to_string()).at.is_none() {
-            return self.note(Note::NothingToPutBack);
-        }
-        self.edited();
-        if was_empty {
-            self.engine.go_to(0, 0);
+        let back = match self.elsewhere() {
+            Some(e) => e.put_back(id),
+            None => self.handle().restore(id),
+        };
+        if !back {
+            self.note(Note::NothingToPutBack);
         }
     }
 
-    /// Moves the song at list index `from` to `to`.
+    /// Moves the song at list index `from` to `to`, on the device playing.
     pub fn move_song(&self, from: usize, to: usize) {
-        self.handle().move_song(from, to);
+        if !self.there(Press::Move(from as u32, to as u32)) {
+            self.handle().move_song(from, to);
+        }
     }
 
     pub fn shuffle(&self, on: bool) {
@@ -890,6 +896,33 @@ impl Handle {
             } else {
                 self.engine.go_to(at as usize, 0);
             }
+        }
+    }
+
+    /// Puts back `id` where it was taken out; false when it was not the last song removed.
+    fn restore(&self, id: &str) -> bool {
+        let was_empty = self.queue.playlist(|p| p.is_empty());
+        if self.queue.restore(id.to_string()).at.is_none() {
+            return false;
+        }
+        self.edited();
+        if was_empty {
+            self.engine.go_to(0, 0);
+        }
+        true
+    }
+
+    /// Another device's undo: `song` back where it was taken out, else at list index `index`.
+    pub(crate) fn put_back(&self, song: Song, index: usize) {
+        if self.restore(&song.id) {
+            return;
+        }
+        let (len, id) = (self.queue.playlist(|p| p.len()), song.id.clone());
+        self.queue.register(vec![song]);
+        self.queue.take(index.min(len) as u32, vec![id], vec![Hand::No]);
+        self.edited();
+        if len == 0 {
+            self.engine.go_to(0, 0);
         }
     }
 

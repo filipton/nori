@@ -41,6 +41,8 @@ const PENDING_KEPT: usize = 1000;
 const GONE: Duration = Duration::from_millis(1500);
 /// How long a row leaving the queue takes to fold away (app.slint's QueueView).
 const QUEUE_FOLD_MS: u64 = 300;
+/// How long the undo of a song taken out of the queue is offered.
+const UNDO_MS: u64 = 5_000;
 
 // View indices, as app.slint numbers them.
 const HOME: i32 = 0;
@@ -206,6 +208,9 @@ pub struct App {
     queue_rows: Rc<VecModel<SongRow>>,
     queue_next: Option<Vec<SongRow>>,
     queue_timer: Timer,
+    /// The song last taken out of the queue, while its undo is offered.
+    removed: Option<String>,
+    undo_timer: Timer,
     note: Timer,
     search: Timer,
     /// The hosted jam's invite link its QR code was drawn for, and whether a jam is hosted.
@@ -334,6 +339,8 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
             queue_rows: Rc::new(VecModel::default()),
             queue_next: None,
             queue_timer: Timer::default(),
+            removed: None,
+            undo_timer: Timer::default(),
             note: Timer::default(),
             search: Timer::default(),
             jam_link: String::new(),
@@ -507,6 +514,19 @@ fn wire(ui: &AppWindow, h: &AppHandle) {
     });
     on!(ui.on_clear_queue, h, |a| {
         a.on_session(|s| s.clear_upcoming());
+        a.follow();
+    });
+    on!(ui.on_remove_queued, h, |a, i| a.remove_queued(i.max(0) as usize));
+    on!(ui.on_move_queued, h, |a, from, to| {
+        a.on_session(|s| s.move_song(from.max(0) as usize, to.max(0) as usize));
+        a.follow();
+    });
+    on!(ui.on_undo_removed, h, |a| {
+        if let Some(id) = a.removed.take() {
+            a.on_session(|s| s.put_back(&id));
+        }
+        a.undo_timer.stop();
+        a.ui().set_queue_undo("".into());
         a.follow();
     });
     on!(ui.on_settings_tab_chosen, h, |a, t| {
@@ -1351,6 +1371,27 @@ impl App {
                 }
             })
         });
+    }
+
+    /// Takes the song at list index `index` out of the queue shown (here, or on the device playing), and
+    /// offers its undo for a few seconds.
+    fn remove_queued(&mut self, index: usize) {
+        let song = match &self.elsewhere {
+            Some(e) => e.mirror.rows.iter().find(|r| r.index as usize == index).map(|r| r.song.clone()),
+            None => self.queue.as_ref().and_then(|q| q.songs.get(index).cloned()),
+        };
+        let Some(song) = song else { return };
+        self.on_session(|s| s.remove(index));
+        self.ui().set_queue_undo(words::removed(&song.title).into());
+        self.removed = Some(song.id);
+        let weak = self.me.clone();
+        self.undo_timer.start(TimerMode::SingleShot, Duration::from_millis(UNDO_MS), move || {
+            weak.with(|a| {
+                a.removed = None;
+                a.ui().set_queue_undo("".into());
+            })
+        });
+        self.follow();
     }
 
     /// Follows the other devices while their panel is open (remote control), and lists them.

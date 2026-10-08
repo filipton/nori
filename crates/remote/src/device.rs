@@ -29,6 +29,7 @@ pub fn admit(op: &Op, from: Sender, rev: u64, len: u32) -> Result<(), Refusal> {
     match *op {
         Op::Jump { index, rev } | Op::Remove { index, rev } => at(index, rev),
         Op::Move { from, to, rev } => at(from, rev).and(at(to, rev)),
+        Op::Restore { index, .. } if index > len => Err(Refusal::Unknown),
         _ => Ok(()),
     }
 }
@@ -52,6 +53,9 @@ mod tests {
             (jump(3, 7), Sender::Owner, Err(Refusal::Unknown)),
             (Op::Move { from: 0, to: 3, rev: 7 }, Sender::Owner, Err(Refusal::Unknown)),
             (Op::Remove { index: 1, rev: 8 }, Sender::Owner, Err(Refusal::Stale)),
+            (Op::Restore { song: Default::default(), index: 3 }, Sender::Owner, Ok(())),
+            (Op::Restore { song: Default::default(), index: 4 }, Sender::Owner, Err(Refusal::Unknown)),
+            (Op::Clear, Sender::Member(Role::Guest), Err(Refusal::NotAllowed)),
             (Op::Pause, Sender::Member(Role::Admin), Err(Refusal::NotAllowed)),
             (Op::Next, Sender::Member(Role::Guest), Err(Refusal::NotAllowed)),
         ];

@@ -64,7 +64,8 @@ const BURST_GAP_MS: u64 = 250;
 /// What the platform's player does for the remote control.
 #[cfg_attr(feature = "ffi", uniffi::export(with_foreign))]
 pub trait RemotePlayer: Send + Sync {
-    /// Carries out an op the core admitted: never a jam op or a transfer.
+    /// Carries out an op the core admitted: never a jam op, a transfer or [`Op::Clear`] (the core sends
+    /// that as one [`Op::Remove`] a song).
     fn apply(&self, op: Op);
 }
 
@@ -297,11 +298,13 @@ struct Mirrored {
     pages: Vec<Option<Entry>>,
     /// The turn the page asked for and not answered yet starts at.
     asking: Option<u32>,
+    /// Songs this device removed there, and the list index each had, for [`Remote::put_back`].
+    taken: Vec<(Song, u32)>,
 }
 
 impl Mirrored {
     fn new(id: String) -> Mirrored {
-        Mirrored { id, heard: None, shown: None, at: clock::now_us(), device_at: None, clock: ClockSync::default(), pages: Vec::new(), asking: None }
+        Mirrored { id, heard: None, shown: None, at: clock::now_us(), device_at: None, clock: ClockSync::default(), pages: Vec::new(), asking: None, taken: Vec::new() }
     }
 
     /// A state arrived from the device (`at`: when, on this device's clock). False when it is the one
@@ -767,6 +770,11 @@ impl Remote {
         let link = {
             let mut i = self.inner.lock();
             if let Some(m) = i.mirror.as_mut().filter(|m| m.id == device) {
+                if let Op::Remove { index, .. } = op {
+                    if let Some(e) = m.rows().into_iter().find(|e| e.index == index) {
+                        m.taken.push((e.song(), index));
+                    }
+                }
                 m.foresee(&op);
             }
             i.refused.remove(&device);
@@ -780,6 +788,20 @@ impl Remote {
         let id = self.next_id();
         self.out(Out::send(link, Outgoing { to: Some(device), body: Some(Body::Command { id, op: Box::new(op) }), ..Default::default() }));
         self.shown.changed();
+    }
+
+    /// Undoes the removal of song `id` from the mirrored device `device`'s queue: it goes back where it
+    /// was there ([`Op::Restore`]). False when this device did not take it out.
+    pub fn put_back(&self, device: String, id: String) -> bool {
+        let taken = {
+            let mut i = self.inner.lock();
+            let Some(m) = i.mirror.as_mut().filter(|m| m.id == device) else { return false };
+            let Some(at) = m.taken.iter().rposition(|(s, _)| s.id == id) else { return false };
+            m.taken.remove(at)
+        };
+        let (song, index) = taken;
+        self.send(device, Op::Restore { song, index });
+        true
     }
 
     /// Hands this device's queue and position to device `to`, which plays on; this one pauses.
@@ -1438,6 +1460,11 @@ impl Remote {
         admit(&op, sender, rev, len)?;
         match op {
             Op::Transfer { to } => self.transfer(via, from, to),
+            Op::Clear => {
+                for index in self.client.core.session.playlist(|p| p.after_current()) {
+                    self.player.apply(Op::Remove { index: index as u32, rev });
+                }
+            }
             op => {
                 // A queue sent here plays here: this is the active device.
                 if matches!(op, Op::Replace { .. }) {

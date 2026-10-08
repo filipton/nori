@@ -173,6 +173,11 @@ pub fn jam_home_only(address: &str) -> String {
     format!("This invite only works on your home network ({address}). Set a public address in the server settings for guests elsewhere.")
 }
 
+/// The undo pill after a song is taken out of the queue.
+pub fn removed(title: &str) -> String {
+    format!("Removed “{title}”")
+}
+
 pub const LINK_COPIED: &str = "Link copied";
 
 #[cfg(test)]

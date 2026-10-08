@@ -497,6 +497,11 @@ class PlaybackService : MediaLibraryService() {
                 is dev.nori.music.ffi.remote.Op.Jump -> { controls.seekToDefaultPosition(op.index.toInt()); if (controls.playbackState == Player.STATE_IDLE) controls.prepare(); controls.play() }
                 is dev.nori.music.ffi.remote.Op.Remove -> controls.removeMediaItem(op.index.toInt())
                 is dev.nori.music.ffi.remote.Op.Move -> controls.moveMediaItem(op.from.toInt(), op.to.toInt())
+                // Where it was, if the core still has it as taken out (MediaItems.restored), else at its index.
+                is dev.nori.music.ffi.remote.Op.Restore -> {
+                    controls.addMediaItem(op.index.toInt().coerceIn(0, controls.mediaItemCount), items(listOf(op.song)).single().restored())
+                    if (controls.playbackState == Player.STATE_IDLE) controls.prepare()
+                }
                 is dev.nori.music.ffi.remote.Op.Add -> {
                     controls.addMediaItems(items(op.songs).map { it.queued(if (op.next) dev.nori.music.ffi.queue.Hand.NEXT else dev.nori.music.ffi.queue.Hand.LAST) })
                     if (controls.playbackState == Player.STATE_IDLE) controls.prepare()
@@ -508,8 +513,8 @@ class PlaybackService : MediaLibraryService() {
                 is dev.nori.music.ffi.remote.Op.Star -> scope.launch {
                     runCatching { nori.library.star(StarKind.SONG, op.id, op.on) }.onFailure { dev.nori.music.NoriLog.w("star from another device failed: $it") }
                 }
-                // The core keeps transfers, pages, time exchanges and jam ops to itself.
-                is dev.nori.music.ffi.remote.Op.Transfer, is dev.nori.music.ffi.remote.Op.Page, is dev.nori.music.ffi.remote.Op.Clock, is dev.nori.music.ffi.remote.Op.Request,
+                // The core keeps transfers, pages, time exchanges and jam ops to itself, and sends a clear as removes.
+                dev.nori.music.ffi.remote.Op.Clear, is dev.nori.music.ffi.remote.Op.Transfer, is dev.nori.music.ffi.remote.Op.Page, is dev.nori.music.ffi.remote.Op.Clock, is dev.nori.music.ffi.remote.Op.Request,
                 is dev.nori.music.ffi.remote.Op.Decide, is dev.nori.music.ffi.remote.Op.Promote, is dev.nori.music.ffi.remote.Op.Kick -> {}
             }
             remoteState()
