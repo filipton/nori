@@ -117,9 +117,9 @@ class Nori private constructor(private val context: Context) {
     fun motionPlayer(onGone: (String) -> Unit) = dev.nori.music.playback.MotionPlayer(context, http, sources, onGone)
     /** Each output device's own sound; built when the playback service first sees a device. */
     val deviceSound by lazy { dev.nori.music.playback.DeviceSound(settings, { core }, { client }, { http.metered }) }
-    val player = PlayerConnection(context, this)
     /** Remote control and jams; nothing runs unless they are switched on (or this is a jam guest). */
     val remotes = dev.nori.music.remote.Remotes(context, this)
+    val player = PlayerConnection(context, this)
 
     /**
      * Joins the jam an invite [link] names: the guest profile it gives is the one in use from now on, and

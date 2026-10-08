@@ -58,6 +58,7 @@ import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Cast
+import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FastForward
@@ -732,13 +733,16 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
 
                 if (page == Panel.ART && !across) Spacer(Modifier.weight(0.17f))
                 Box(kept("volume")) { VolumeRow(vm) }
+                state.playingOn?.let { device ->
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { PlayingOnStrip(device, live.color(CoverLook.ACCENT)) }
+                }
 
                 Row(kept("icons").fillMaxWidth().padding(top = 2.dp, bottom = 4.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
                     PanelButton(Icons.Filled.Lyrics, say.lyrics, page == Panel.LYRICS, nudge = (-1.5).dp) { choose(Panel.LYRICS) }
                     // Apple's middle glyph is AirPlay, not a sleep timer: on this screen the thing worth
                     // one tap is where the sound is going. The sleep timer moved to the ⋯ on the title row,
                     // which is where a setting for the evening belongs.
-                    OutputButton()
+                    OutputButton(state.playingOn != null)
                     PanelButton(Icons.AutoMirrored.Filled.QueueMusic, say.queue, page == Panel.QUEUE, size = 30.dp, nudge = 0.5.dp) { choose(Panel.QUEUE) }
                 }
                 if (page == Panel.ART && !across) Spacer(Modifier.weight(0.19f))
@@ -827,31 +831,31 @@ private fun playerTitleMeta(song: dev.nori.music.ffi.model.Song?, radio: String?
  * through rather than being left with a button that does nothing.
  */
 @Composable
-private fun OutputButton() {
+private fun OutputButton(otherDevice: Boolean) {
     val settings: SettingsViewModel = viewModel()
     val output by settings.currentOutput.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val look = LocalLook.current
     // Which glyph, and whether the sound has gone elsewhere, are the core's (`output_look`).
     val o = remember(output) { dev.nori.music.ffi.devices.outputLook(output) }
-    val icon = when (o.glyph) {
-        dev.nori.music.ffi.devices.OutputGlyph.HEADPHONES -> Icons.Filled.Headphones
-        dev.nori.music.ffi.devices.OutputGlyph.BLUETOOTH -> Icons.Filled.Bluetooth
-        dev.nori.music.ffi.devices.OutputGlyph.CAST -> Icons.Filled.Cast
+    val icon = when {
+        otherDevice -> Icons.Filled.Speaker
+        o.glyph == dev.nori.music.ffi.devices.OutputGlyph.HEADPHONES -> Icons.Filled.Headphones
+        o.glyph == dev.nori.music.ffi.devices.OutputGlyph.BLUETOOTH -> Icons.Filled.Bluetooth
+        else -> Icons.Filled.Cast
     }
     val description = remember(o) { say.outputDescription(o.port, o.name) }
     // With remote control or jams on, the button opens nori's own devices first (RemoteScreens); this
     // phone's outputs are one row of it.
     val prefs by settings.prefs.collectAsStateWithLifecycle()
     val devices = prefs.remoteControl || prefs.jam
-    var sheet by remember { mutableStateOf(false) }
-    IconButton({ if (devices) sheet = true else openOutputPicker(context, output) }) {
-        LookIcon(icon, description, Modifier.size(27.dp)) { look.color(if (o.elsewhere) CoverLook.ACCENT else CoverLook.ON_VARIANT) }
+    val openDevices = LocalDevices.current
+    IconButton({ if (devices) openDevices() else openOutputPicker(context, output) }) {
+        LookIcon(icon, description, Modifier.size(27.dp)) { look.color(if (o.elsewhere || otherDevice) CoverLook.ACCENT else CoverLook.ON_VARIANT) }
     }
-    if (devices) DevicesSheet(sheet, { sheet = false }, { sheet = false; openOutputPicker(context, output) }, prefs.jam)
 }
 
-private fun openOutputPicker(context: android.content.Context, output: String) {
+internal fun openOutputPicker(context: android.content.Context, output: String) {
     // Android 14 and later have a public call for exactly this, and it is the one that works on a
     // current phone: the same output switcher the media controls open, listing Bluetooth, wired, USB
     // and any Cast target the system knows about.

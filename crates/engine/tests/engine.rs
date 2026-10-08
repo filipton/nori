@@ -1256,6 +1256,21 @@ fn idle_release_and_reopen() {
 }
 
 #[test]
+fn released_at_once_when_the_music_moves_away() {
+    let a = music(12.0, 19);
+    let songs: [(&str, &[i16]); 1] = [("a", &a)];
+    let rig = Rig::build(files(&songs), sim::App::new(), Settings::default(), Extra::default());
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2 * 3));
+    rig.engine.release_now();
+    assert!(rig.wait_for(5, |r| r.shut.load(Ordering::Relaxed) == 1), "let go without the idle time");
+    assert_eq!((rig.engine.status().releases, rig.engine.status().state), (1, State::Paused));
+    rig.engine.play();
+    assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
+    assert_eq!(rig.opened.load(Ordering::Relaxed), 2, "opened again on play");
+}
+
+#[test]
 fn idle_release_after_queue_ends() {
     let a = music(2.0, 19);
     let songs: [(&str, &[i16]); 1] = [("a", &a)];

@@ -47,7 +47,7 @@ fun TestDriver(controller: NavHostController, nav: Nav, sheet: PlayerSheet, sett
             val p = settings.prefs.value
             """{"route":"${if (sheet.isOpen) "player" else controller.currentBackStackEntry?.destination?.route}",""" +
                 """"playing":${st.playing},"title":"${st.current?.title.orEmpty().replace("\"", "'")}","artist":"${st.current?.artist.orEmpty().replace("\"", "'")}",""" +
-                """"positionMs":${player2.positionMs},"durationMs":${st.durationMs},"queue":${st.queue.size},"index":${st.index},""" +
+                """"positionMs":${player2.positionMs},"durationMs":${st.durationMs},"queue":${st.queue.size},"index":${st.index},"playingOn":"${st.playingOn.orEmpty()}",""" +
                 // The next songs in the order they will play, and which of them were added by hand.
                 st.order.drop(st.order.indexOf(st.index) + 1).take(8).let { up ->
                     """"upNext":"${up.joinToString(" ") { st.queue[it].id }}","upNextQueued":"${up.joinToString(" ") { if (it in st.queued) "1" else "0" }}","shuffle":${st.shuffle},"""

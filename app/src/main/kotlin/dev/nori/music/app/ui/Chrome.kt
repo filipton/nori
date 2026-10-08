@@ -448,6 +448,7 @@ fun MiniPlayer(vm: PlayerViewModel, actions: ActionsViewModel, onOpen: () -> Uni
         // The tap has to be a child of the drag detectors, not a sibling behind them: a pointerInput
         // waiting for drag slop swallows a tap offered to a clickable further up the same chain.
         Surface(onClick = onOpen, color = Color.Transparent, contentColor = content) {
+        Column {
         Row(Modifier.fillMaxWidth().padding(end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             // What is playing slides aside for the next (or last) song, which comes in from the other
             // edge already showing; the buttons stay where they are. Radio has no neighbours.
@@ -501,6 +502,9 @@ fun MiniPlayer(vm: PlayerViewModel, actions: ActionsViewModel, onOpen: () -> Uni
             }
             IconButton(vm::toggle) { PlayPauseGlyph(state.playing, state.buffering, 26.dp, 20.dp) }
             IconButton(vm::next) { Icon(Icons.Filled.FastForward, say.next, Modifier.size(25.dp)) }
+        }
+        // Another device plays: said under the song, a tap away from moving it.
+        PlayingOnStrip(state.playingOn, look.color(CoverLook.ACCENT), Modifier.padding(start = 4.dp, bottom = 2.dp))
         }
         }
     }

@@ -131,6 +131,10 @@ class PlaybackService : MediaLibraryService() {
     private lateinit var session: MediaLibrarySession
     /** The player as the session sees it; every change to the queue goes through here, to the core first. */
     private lateinit var controls: Controls
+    /** The session's player while another device plays (Remotes.mirror): this phone controls that one. */
+    private lateinit var elsewhere: dev.nori.music.remote.RemoteDevicePlayer
+    /** What the session shows: [controls], or [elsewhere] while another device plays. */
+    private val shown: Player get() = session.player
     private lateinit var scrobbler: Scrobbler
     @Suppress("DEPRECATION")
     private val wifiLock by lazy { applicationContext.getSystemService(WifiManager::class.java).createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "nori:loading").apply { setReferenceCounted(false) } }
@@ -263,13 +267,35 @@ class PlaybackService : MediaLibraryService() {
         // Controllable from the account's other devices while this runs and remote control is on (Remotes).
         nori.remotes.service = remotePlayer
         scope.launch { nori.settings.prefs.map { it.remoteControl }.distinctUntilChanged().collect { nori.remotes.serve(true) } }
+        elsewhere = dev.nori.music.remote.RemoteDevicePlayer(this, nori)
+        scope.launch { nori.remotes.mirror.collect(::mirrored) }
         restoreQueue()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo) = session
 
     override fun onTaskRemoved(rootIntent: android.content.Intent?) {
-        if (!player.playWhenReady || player.mediaItemCount == 0) stopSelf()
+        if (!shown.playWhenReady || shown.mediaItemCount == 0) stopSelf()
+    }
+
+    /**
+     * Another device plays (or this phone again, null). While it does, the session shows and controls it
+     * and this phone's own player is stopped, its output let go: nothing plays or holds the audio here. The
+     * service stays in the foreground while that device plays, as for music here.
+     */
+    private fun mirrored(m: dev.nori.music.ffi.Mirror?) {
+        if (m != null) {
+            elsewhere.show(m)
+            if (session.player !== elsewhere) {
+                dev.nori.music.NoriLog.i("playing on ${m.name}: this phone's player stops")
+                player.letGo()
+                session.player = elsewhere
+            }
+        } else if (session.player === elsewhere) {
+            dev.nori.music.NoriLog.i("playing on this phone again")
+            session.player = controls
+        }
+        refreshButtons()
     }
 
     override fun onDestroy() {
@@ -417,11 +443,11 @@ class PlaybackService : MediaLibraryService() {
      */
     private fun refreshButtons() {
         if (!::session.isInitialized) return
-        val item = player.currentMediaItem
-        val b = nori.core.sessionButtonsNow(item != null && currentStarred(item), player.shuffleModeEnabled)
-        if (b == buttonsShown && player.repeatMode == repeatShown) return
+        val item = shown.currentMediaItem
+        val b = nori.core.sessionButtonsNow(item != null && currentStarred(item), shown.shuffleModeEnabled)
+        if (b == buttonsShown && shown.repeatMode == repeatShown) return
         buttonsShown = b
-        repeatShown = player.repeatMode
+        repeatShown = shown.repeatMode
         val buttons = ArrayList<CommandButton>(4)
         if (b.heart) {
             buttons += CommandButton.Builder(if (b.starred) CommandButton.ICON_HEART_FILLED else CommandButton.ICON_HEART_UNFILLED)
@@ -435,7 +461,7 @@ class PlaybackService : MediaLibraryService() {
             .setSlots(CommandButton.SLOT_FORWARD_SECONDARY, CommandButton.SLOT_OVERFLOW).build()
         // Then repeat and a radio from a song of the library, in the overflow: a car's now playing lists them
         // after the heart and shuffle; the phone's media controls, which show two, keep those.
-        val (icon, said) = when (player.repeatMode) {
+        val (icon, said) = when (shown.repeatMode) {
             Player.REPEAT_MODE_ALL -> CommandButton.ICON_REPEAT_ALL to R.string.car_repeat_all
             Player.REPEAT_MODE_ONE -> CommandButton.ICON_REPEAT_ONE to R.string.car_repeat_one
             else -> CommandButton.ICON_REPEAT_OFF to R.string.car_repeat_off
@@ -453,7 +479,9 @@ class PlaybackService : MediaLibraryService() {
     }
 
     /** Tells the remote control (if it is on) the player changed; a null check otherwise. */
-    private fun remoteState() = nori.remotes.played(player.playWhenReady, player.currentPosition, player.currentMediaItemIndex)
+    private fun remoteState() = nori.remotes.played(
+        player.playWhenReady, player.playbackState == Player.STATE_BUFFERING && player.playWhenReady, player.currentPosition, player.currentMediaItemIndex,
+    )
 
     /** What another device asks of this one through the remote control, done to the player as the session's controllers would. */
     private val remotePlayer = object : dev.nori.music.ffi.RemotePlayer {
@@ -471,18 +499,16 @@ class PlaybackService : MediaLibraryService() {
                     controls.addMediaItems(items(op.songs).map { it.queued(if (op.next) dev.nori.music.ffi.queue.Hand.NEXT else dev.nori.music.ffi.queue.Hand.LAST) })
                     if (controls.playbackState == Player.STATE_IDLE) controls.prepare()
                 }
-                is dev.nori.music.ffi.remote.Op.Replace -> {
-                    controls.shuffleModeEnabled = false
-                    controls.setMediaItems(items(op.songs), op.index.toInt(), op.positionMs)
-                    controls.prepare()
-                    controls.playWhenReady = op.play
-                }
+                is dev.nori.music.ffi.remote.Op.Replace -> controls.handed(op)
                 is dev.nori.music.ffi.remote.Op.Volume -> dev.nori.music.remote.Remotes.setVolume(this@PlaybackService, op.percent.toInt())
                 is dev.nori.music.ffi.remote.Op.Shuffle -> controls.shuffleModeEnabled = op.on
                 is dev.nori.music.ffi.remote.Op.Repeat -> controls.repeatMode = op.mode.toInt()
-                // The core keeps transfers and jam ops to itself.
-                is dev.nori.music.ffi.remote.Op.Transfer, is dev.nori.music.ffi.remote.Op.Request, is dev.nori.music.ffi.remote.Op.Decide,
-                is dev.nori.music.ffi.remote.Op.Promote, is dev.nori.music.ffi.remote.Op.Kick -> {}
+                is dev.nori.music.ffi.remote.Op.Star -> scope.launch {
+                    runCatching { nori.library.star(StarKind.SONG, op.id, op.on) }.onFailure { dev.nori.music.NoriLog.w("star from another device failed: $it") }
+                }
+                // The core keeps transfers, pages and jam ops to itself.
+                is dev.nori.music.ffi.remote.Op.Transfer, is dev.nori.music.ffi.remote.Op.Page, is dev.nori.music.ffi.remote.Op.Request,
+                is dev.nori.music.ffi.remote.Op.Decide, is dev.nori.music.ffi.remote.Op.Promote, is dev.nori.music.ffi.remote.Op.Kick -> {}
             }
             remoteState()
         }
@@ -574,6 +600,23 @@ class PlaybackService : MediaLibraryService() {
             super.setMediaItems(mediaItems, c.at?.toInt() ?: 0, if (startIndex == C.INDEX_UNSET) C.TIME_UNSET else startPositionMs)
             onQueueSet?.invoke()
         }
+        /**
+         * A queue handed over from another device: its songs, place, play order, shuffle and repeat, as
+         * they were there (nori-queue `playlist_handed`), playing or paused as it was.
+         */
+        fun handed(op: dev.nori.music.ffi.remote.Op.Replace) {
+            if (op.songs.isEmpty()) return
+            offlineBridge?.abandon()
+            val made = items(op.songs)
+            val c = nori.session.playlistHanded(ids(made), op.index, op.order, op.shuffle, op.repeat)
+            super.setRepeatMode(op.repeat.toInt())
+            super.setShuffleModeEnabled(op.shuffle)
+            super.setMediaItems(made, c.at?.toInt() ?: 0, op.positionMs)
+            onQueueSet?.invoke()
+            prepare()
+            playWhenReady = op.play
+        }
+
         override fun clearMediaItems() {
             offlineBridge?.abandon()
             nori.session.playlistSet(emptyList(), null, false, null)
@@ -749,24 +792,25 @@ class PlaybackService : MediaLibraryService() {
             }
             if (command.customAction == CMD_FAVOURITE) {
                 // Only while the heart shows (a song of the library is playing; the core's call).
-                val item = player.currentMediaItem?.takeIf { buttonsShown?.heart == true }
+                val item = shown.currentMediaItem?.takeIf { buttonsShown?.heart == true }
                 if (item != null) {
                     val on = !currentStarred(item)
                     // The same path as the app's heart: the mark goes up at once (and redraws both hearts),
                     // the request runs on an IO thread inside Library, and a failure puts the mark back.
                     scope.launch { runCatching { nori.library.star(StarKind.SONG, item.mediaId, on) }.onFailure { dev.nori.music.NoriLog.w("star from the notification failed: $it") } }
+                    nori.remotes.starred(item.mediaId, on)
                 }
             }
-            if (command.customAction == CMD_SHUFFLE) controls.shuffleModeEnabled = !player.shuffleModeEnabled
+            if (command.customAction == CMD_SHUFFLE) shown.shuffleModeEnabled = !shown.shuffleModeEnabled
             if (command.customAction == CMD_FILL_NEXT) fillThenNext()
             if (command.customAction == CMD_IN_SIGHT) inSight(controller, args.getBoolean(ARG_ON))
-            if (command.customAction == CMD_REPEAT) controls.repeatMode = when (player.repeatMode) {
+            if (command.customAction == CMD_REPEAT) shown.repeatMode = when (shown.repeatMode) {
                 Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
                 Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
                 else -> Player.REPEAT_MODE_OFF
             }
             // Likewise only beside the heart: a station's id has no similar songs.
-            if (command.customAction == CMD_RADIO && buttonsShown?.heart == true) player.currentMediaItem?.mediaId?.let(::radioFrom)
+            if (command.customAction == CMD_RADIO && buttonsShown?.heart == true) shown.currentMediaItem?.mediaId?.let(::radioFrom)
             args.getString(androidx.media3.session.MediaConstants.EXTRA_KEY_MEDIA_ID)?.let { id -> carItemCommand(command.customAction, id) }
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
         }

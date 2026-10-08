@@ -153,6 +153,9 @@ val LocalSongMenu = staticCompositionLocalOf<(Song) -> Unit> { {} }
 /** The player's own ⋯: the same song menu, with the playback-wide entries the player needs. */
 val LocalPlayerMenu = staticCompositionLocalOf<(Song) -> Unit> { {} }
 
+/** Opens the devices sheet (RemoteScreens.DevicesHost): where the music plays. */
+val LocalDevices = staticCompositionLocalOf<() -> Unit> { {} }
+
 private val tabs = listOf(
     Tab("home", say.home, Icons.Filled.Home),
     Tab("search", say.search, Icons.Filled.Search),
@@ -215,6 +218,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
         val snackbar = remember { SnackbarHostState() }
         var menuSong by remember { mutableStateOf<Song?>(null) }
         var menuFromPlayer by remember { mutableStateOf(false) }
+        var devicesOpen by remember { mutableStateOf(false) }
         LaunchedEffect(Unit) {
             // Latest, not in turn: showing a message suspends until it goes away, so a plain collect
             // could not even see the next one until the last had sat out its four seconds - a quick
@@ -284,6 +288,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             LocalDownloadMarks provides rememberDownloadMarks(actions),
             LocalSongMenu provides { menuSong = it; menuFromPlayer = false },
             LocalPlayerMenu provides { menuSong = it; menuFromPlayer = true },
+            LocalDevices provides { devicesOpen = true },
         ) {
             val route = controller.currentBackStackEntryAsState().value?.destination?.route
             // The tab the page on screen belongs to, which is the one that stays lit, as Apple's does: a
@@ -471,6 +476,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             SelectionBack(actions, sheet, controller)
             }
             SongMenu(menuSong, actions, onDismiss = { menuSong = null }, player = player.takeIf { menuFromPlayer })
+            DevicesHost(devicesOpen) { devicesOpen = false }
         }
         }
     }

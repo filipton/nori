@@ -22,14 +22,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Computer
-import androidx.compose.material.icons.filled.FastForward
-import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -40,7 +40,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -103,8 +102,9 @@ private fun DeviceState.current(): Entry? = entries.firstOrNull { it.index == in
 private fun DeviceState.upNext(): List<Entry> = entries.dropWhile { it.index != index }.drop(1)
 
 /**
- * Where the music plays: this phone (its audio output, Android's own picker) and the account's other
- * devices with nori, each controllable from here, and the jam. Up only while remote control or jams are on.
+ * Where the music plays: this phone, or one of the account's other devices with nori (one tap moves the
+ * playback there, and this phone then shows and controls it), the phone's own audio output (Android's
+ * picker), and the jam. Up only while remote control or jams are on.
  */
 @Composable
 fun DevicesSheet(open: Boolean, onDismiss: () -> Unit, onOutput: () -> Unit, jams: Boolean) {
@@ -115,26 +115,34 @@ fun DevicesSheet(open: Boolean, onDismiss: () -> Unit, onOutput: () -> Unit, jam
         val devices by vm.devices.collectAsStateWithLifecycle()
         val jam by vm.jam.collectAsStateWithLifecycle()
         val relay by vm.relay.collectAsStateWithLifecycle()
+        val mirror by vm.mirror.collectAsStateWithLifecycle()
         val unsupported = relay == dev.nori.music.ffi.RelaySupport.UNSUPPORTED
-        var picked by remember { mutableStateOf<String?>(null) }
+        val pick = { device: String? -> vm.pick(device); onDismiss() }
         Column(Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding()) {
             SectionHeader(words(R.string.devices_title))
-            NavRow(words(R.string.devices_this), onOutput, subtitle = words(R.string.devices_output), leading = { Icon(Icons.Filled.PhoneAndroid, null) })
+            DeviceRow(words(R.string.devices_this), Icons.Filled.PhoneAndroid, null, mirror == null) { pick(null) }
+            devices.forEach { d ->
+                val now = d.state?.current()
+                DeviceRow(
+                    d.name, kindIcon(d.kind),
+                    now?.let { "${it.title} · ${it.artist}" } ?: words(R.string.devices_idle),
+                    mirror?.id == d.id, if (d.nearby) words(R.string.devices_nearby) else null,
+                ) { pick(d.id) }
+            }
+            mirror?.refused?.let { Text(refusal(it), Modifier.padding(horizontal = Space.gutter, vertical = 6.dp), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
             if (devices.isEmpty() || unsupported) Text(
                 words(if (unsupported) R.string.devices_nearby_only else R.string.devices_none), Modifier.padding(horizontal = Space.gutter, vertical = 12.dp),
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            devices.forEach { d ->
-                val now = d.state?.current()
-                NavRow(
-                    d.name, { picked = if (picked == d.id) null else d.id },
-                    subtitle = now?.let { "${it.title} · ${it.artist}" } ?: words(R.string.devices_idle),
-                    trailing = if (d.nearby) words(R.string.devices_nearby) else null,
-                    leading = { Icon(kindIcon(d.kind), null) },
-                    divider = picked != d.id,
-                )
-                if (picked == d.id) DeviceControls(d, vm)
+            // The phone's own speaker, headphones or Bluetooth: Android's picker, a quiet row of its own.
+            Row(
+                Modifier.fillMaxWidth().clickable(onClick = onOutput).padding(horizontal = Space.gutter, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Filled.Speaker, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(words(R.string.devices_output), Modifier.padding(start = 12.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            Hairline(startIndent = Space.gutter)
             if (jams && unsupported) Text(
                 words(R.string.jam_unsupported), Modifier.padding(horizontal = Space.gutter, vertical = 12.dp),
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -144,45 +152,44 @@ fun DevicesSheet(open: Boolean, onDismiss: () -> Unit, onOutput: () -> Unit, jam
     }
 }
 
+/** The devices sheet, opened from the player's output button and the "Playing on" strips ([LocalDevices]). */
 @Composable
-private fun DeviceControls(d: RemoteDevice, vm: RemoteViewModel) {
-    val st = d.state ?: return
-    Column(Modifier.fillMaxWidth().padding(horizontal = Space.gutter, vertical = 4.dp)) {
-        d.refused?.let { Text(refusal(it), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
-        Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(24.dp, Alignment.CenterHorizontally), Alignment.CenterVertically) {
-            IconButton({ vm.send(d.id, Op.Previous) }) { Icon(Icons.Filled.FastRewind, say.previous, Modifier.size(34.dp)) }
-            IconButton({ vm.send(d.id, if (st.playing) Op.Pause else Op.Play) }, Modifier.size(56.dp)) {
-                PlayPauseGlyph(st.playing, false, 44.dp, 18.dp)
-            }
-            IconButton({ vm.send(d.id, Op.Next) }) { Icon(Icons.Filled.FastForward, say.next, Modifier.size(34.dp)) }
-        }
-        st.volume?.let { v ->
-            var shown by remember(d.id) { mutableFloatStateOf(v.toFloat()) }
-            var moved by remember(d.id) { mutableStateOf(false) }
-            // Sent once the finger rests, not for every step of the drag.
-            LaunchedEffect(shown, moved) {
-                if (!moved) return@LaunchedEffect
-                delay(250)
-                vm.send(d.id, Op.Volume(shown.toInt().toUByte()))
-            }
-            NoriSlider(shown, 0f..100f, { shown = it; moved = true })
-        }
-        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), Arrangement.spacedBy(10.dp)) {
-            PillButton(words(R.string.devices_play_here), null, { vm.playHere(d.id) }, Modifier.weight(1f), prominent = true)
-            PillButton(words(R.string.devices_play_there), null, { vm.playThere(d.id) }, Modifier.weight(1f))
-        }
-        val next = st.upNext().take(8)
-        if (next.isNotEmpty()) Caption(words(R.string.devices_up_next), Modifier.padding(top = 6.dp, bottom = 2.dp))
-        next.forEach { e ->
-            Row(Modifier.fillMaxWidth().clickable { vm.send(d.id, Op.Jump(e.index, st.rev)) }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(e.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(e.artist, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                }
-                IconButton({ vm.send(d.id, Op.Remove(e.index, st.rev)) }) { Icon(Icons.Filled.Close, say.remove, Modifier.size(18.dp)) }
-            }
-        }
-        Hairline(startIndent = 0.dp)
+fun DevicesHost(open: Boolean, onDismiss: () -> Unit) {
+    val settings: dev.nori.music.app.vm.SettingsViewModel = viewModel()
+    val prefs by settings.prefs.collectAsStateWithLifecycle()
+    val output by settings.currentOutput.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    if (prefs.remoteControl || prefs.jam) DevicesSheet(open, onDismiss, { onDismiss(); openOutputPicker(context, output) }, prefs.jam)
+}
+
+/** A place the music can play, ticked while it plays there. */
+@Composable
+private fun DeviceRow(name: String, icon: ImageVector, subtitle: String?, active: Boolean, trailing: String? = null, onClick: () -> Unit) {
+    val accent = MaterialTheme.colorScheme.primary
+    NavRow(
+        name, onClick, subtitle = subtitle, trailing = trailing,
+        leading = { Icon(icon, null, tint = if (active) accent else MaterialTheme.colorScheme.onSurface) },
+        action = if (active) ({ Icon(Icons.Filled.Check, words(R.string.devices_playing_here), Modifier.padding(start = 8.dp).size(20.dp), tint = accent) }) else null,
+    )
+}
+
+/**
+ * "Playing on" another device, under the now playing bar and in the player: a tap opens the devices.
+ * Nothing while this phone plays.
+ */
+@Composable
+fun PlayingOnStrip(device: String?, color: Color, modifier: Modifier = Modifier) {
+    device ?: return
+    val open = LocalDevices.current
+    Row(
+        modifier.clickable(onClick = open).padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Filled.Speaker, null, Modifier.size(15.dp), tint = color)
+        Text(
+            words(R.string.devices_playing_on, device), Modifier.padding(start = 6.dp),
+            style = MaterialTheme.typography.labelMedium, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

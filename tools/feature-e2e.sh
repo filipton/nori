@@ -8,7 +8,7 @@
 #   tools/feature-e2e.sh [--only <section>,...] [--list]     NORI_E2E_SERVER=local for tools/dev-server.sh
 #   (the real server's credentials come from ~/.music.pass: url, blank, user, password)
 source "$(dirname "$0")/e2e-lib.sh"
-SECTIONS="lyrics motion notification album-page bridge download-notification downloads foryou dac device-sound"
+SECTIONS="lyrics motion notification album-page bridge download-notification downloads foryou dac device-sound remote"
 OPT_IN="lyrics-services"
 list_sections
 json() { python3 -c "import sys,json;d=json.load(sys.stdin)['subsonic-response'];print(eval('d$1',{'d':d}))" 2>/dev/null; }
@@ -345,6 +345,64 @@ if want device-sound; then section "a sound per output device"
   "$app" do "dac off" >/dev/null
   check "and the sound from before comes back without it" wait_for eq False 10
   clean   # nothing of the check stays in the device list or the profiles
+fi
+
+if want remote; then section "playing on another device: the terminal client on this Mac"
+  # Who plays, the queue, the place, the volume and a transfer's order are the core's (crates/core
+  # tests/remote.rs). Here: the media session handed to the other device (a remote volume the keys move),
+  # this phone's own output let go while it plays there, and the music coming back.
+  if [ "$NORI_E2E_SERVER" != local ]; then
+    echo "  NOTE  needs the local server: the terminal client signs in to it as the other device"
+  else
+    peer=nori-e2e-peer; data="$here/../build/e2e-peer"; cli="$here/../target/release/nori-cli"
+    [ -x "$cli" ] || cargo build -j2 --release -p nori-cli >/dev/null 2>&1
+    tmux kill-session -t "$peer" 2>/dev/null; mkdir -p "$data"
+    tmux new-session -d -s "$peer" -x 160 -y 45 "$cli --data $data --url http://localhost:4533 --user admin --password admin --no-images --no-mpris"
+    screen() { tmux capture-pane -p -t "$peer"; }
+    keys() { tmux send-keys -t "$peer" -- "$@"; }
+    wait_until 15 bash -c "tmux capture-pane -p -t $peer | grep -q 'Nothing playing'"
+    for _ in $(seq 16); do keys -; done   # quiet on the Mac's speakers
+    # Settings, down to "Remote control" (the row drawn on the selection's background), on; it stays on in
+    # this data directory.
+    keys 7
+    on_row() { tmux capture-pane -p -e -t "$peer" | grep "Remote control" | grep -q $'\e\[[0-9;]*48;2'; }
+    for _ in $(seq 80); do on_row && break; keys j; sleep 0.05; done
+    if ! screen | grep "Remote control" | grep -q "━━●"; then keys Enter; fi
+    keys 2; sleep 1.5; keys Enter; sleep 1.5; keys x
+    name=$(hostname -s)
+    wait_until 15 bash -c "tmux capture-pane -p -t $peer | grep -q '⏸'"
+    # Its door as mDNS has it; the emulator hears no multicast from here, so the app is handed it.
+    door=""
+    for inst in $( (dns-sd -B _nori._tcp local. & p=$!; sleep 3; kill $p) 2>/dev/null | awk '$2 == "Add" {print $NF}' | sort -u); do
+      txt=$( (dns-sd -L "$inst" _nori._tcp local. & p=$!; sleep 2; kill $p) 2>/dev/null | tr -d '\r')
+      port=$(echo "$txt" | grep -oE 'local\.:[0-9]+' | head -1 | cut -d: -f2)
+      line=$(echo "$txt" | grep -E "kind=terminal" | grep -E "name=$name( |$)" | head -1)
+      [ -n "$line" ] && [ -n "$port" ] && door="10.0.2.2|$port|$(echo "$line" | xargs | tr ' ' ';')"
+    done
+    echo "     the Mac's door: ${door:-none}"
+    "$app" set remoteControl true >/dev/null
+    "$app" play "$PLAIN" >/dev/null; sounds 20
+    "$app" open player >/dev/null; "$app" remote watch on >/dev/null; sleep 3
+    "$app" remote found "$door" >/dev/null
+    check "the Mac is listed" wait_until 15 bash -c "'$app' remote devices | grep -q '$name'"
+    "$app" remote watch off >/dev/null
+    "$app" remote pick "$name" >/dev/null
+    check "the player shows the Mac playing" wait_for playingOn "$name" 15
+    remote_session() { adb shell dumpsys media_session | grep -q "volumeType=REMOTE"; }
+    check "the media session is the Mac's (a remote volume)" wait_until 10 remote_session
+    check "this phone's output is let go" silent 10
+    peer_volume() { screen | grep -oE '[0-9]+%' | tail -1 | tr -d '%'; }
+    before=$(peer_volume)
+    adb shell input keyevent KEYCODE_VOLUME_UP; sleep 0.5; adb shell input keyevent KEYCODE_VOLUME_UP
+    louder() { [ "$(peer_volume)" -gt "$before" ]; }
+    check "the volume keys turn the Mac up ($before%)" wait_until 10 louder
+    "$app" remote pick here >/dev/null
+    check "\"This phone\" brings it back" wait_for playingOn "" 15
+    check "and it sounds here" sounds 15
+    check "the Mac paused" wait_until 10 bash -c "tmux capture-pane -p -t $peer | grep -q '▶'"
+    "$app" set remoteControl false >/dev/null
+    tmux kill-session -t "$peer"
+  fi
 fi
 
 restore_settings

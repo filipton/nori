@@ -238,6 +238,7 @@ enum Command {
     Positions(Option<Duration>),
     Look,
     Device(Device),
+    Release,
     Stop,
 }
 
@@ -406,6 +407,12 @@ impl Engine {
     /// Pauses at once whatever the fade setting (headphones pulled out), cutting a fade short.
     pub fn pause_now(&self) {
         self.send(Command::Pause(Some(0)));
+    }
+
+    /// Pauses at once and lets the output and the song's bytes go now, not after the idle time: the
+    /// music moved to another device. Play opens it again where it was.
+    pub fn release_now(&self) {
+        self.send(Command::Release);
     }
 
     pub fn toggle(&self) {
@@ -1226,6 +1233,10 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                 self.told.next_position = now;
             }
             Command::Device(d) => self.device(d),
+            Command::Release => {
+                self.pause(now, 0);
+                self.release();
+            }
             Command::Look | Command::Stop => {}
         }
     }

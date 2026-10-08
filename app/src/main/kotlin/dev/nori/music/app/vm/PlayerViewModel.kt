@@ -41,8 +41,10 @@ class PlayerViewModel(app: Application) : NoriViewModel(app) {
     /** Whether previous restarts the song at [positionMs] (the player's own rule, `queue_previous_restarts`). */
     fun previousRestarts(positionMs: Long, hasPrevious: Boolean): Boolean = nori.session.queuePreviousRestarts(positionMs, hasPrevious)
 
-    /** The queue's rows as the core orders them (`Core::queue_rows`). */
-    fun queueRows(len: Int, shuffle: Boolean, shown: Int): dev.nori.music.ffi.QueueRows = nori.core.queueRows(len.toUInt(), shuffle, shown)
+    /** The queue's rows as the core orders them (`Core::queue_rows`); a mirrored device's are in play order already. */
+    fun queueRows(len: Int, shuffle: Boolean, shown: Int): dev.nori.music.ffi.QueueRows =
+        if (state.value.playingOn != null) dev.nori.music.ffi.mirroredQueueRows(len.toUInt(), shuffle, shown)
+        else nori.core.queueRows(len.toUInt(), shuffle, shown)
 
     /** Just the play/pause flag, for the same reason: the marked row's bars move only while it sounds. */
     val sounding: StateFlow<Boolean> = state.map { it.playing }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
@@ -234,7 +236,7 @@ class PlayerViewModel(app: Application) : NoriViewModel(app) {
      * one ExoPlayer's own volume tracking listens to - and this listens only while the screen collects
      * it: nothing registered, and nothing running, once the player is closed.
      */
-    val volume: StateFlow<Float> = kotlinx.coroutines.flow.callbackFlow {
+    private val systemVolume = kotlinx.coroutines.flow.callbackFlow {
         val context = getApplication<Application>()
         trySend(volumeFraction())
         val receiver = object : android.content.BroadcastReceiver() {
@@ -258,13 +260,36 @@ class PlayerViewModel(app: Application) : NoriViewModel(app) {
             context.unregisterReceiver(receiver)
             context.contentResolver.unregisterContentObserver(observer)
         }
+    }
+
+    /** The slider's volume: this phone's music stream, or the volume of the device playing elsewhere. */
+    val volume: StateFlow<Float> = kotlinx.coroutines.flow.combine(systemVolume, nori.remotes.mirror.map { m -> m?.volume }) { system, remote ->
+        remote?.let { it.toFloat() / 100f } ?: system
     }.distinctUntilChanged().stateIn(viewModelScope, SharingStarted.WhileSubscribed(1_000), volumeFraction())
 
     fun volumeFraction(): Float {
+        nori.remotes.mirror.value?.volume?.let { return it.toFloat() / 100f }
         val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).takeIf { it > 0 } ?: return 0f
         return audio.getStreamVolume(AudioManager.STREAM_MUSIC) / max.toFloat()
     }
+
+    /** A drag's volumes for the device playing elsewhere: the newest sent at most every [REMOTE_VOLUME_MS]. */
+    private val remoteVolume = kotlinx.coroutines.channels.Channel<Float>(kotlinx.coroutines.channels.Channel.CONFLATED)
+
+    init {
+        viewModelScope.launch {
+            for (f in remoteVolume) {
+                nori.remotes.command(dev.nori.music.ffi.remote.Op.Volume(kotlin.math.round(f.coerceIn(0f, 1f) * 100).toInt().toUByte()))
+                kotlinx.coroutines.delay(REMOTE_VOLUME_MS)
+            }
+        }
+    }
+
     fun setVolumeFraction(f: Float) {
+        if (nori.remotes.mirror.value != null) {
+            remoteVolume.trySend(f)
+            return
+        }
         val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).takeIf { it > 0 } ?: return
         // Nearest step, not the one below: truncating made the bar jump back a notch every time it was let go.
         audio.setStreamVolume(AudioManager.STREAM_MUSIC, kotlin.math.round(f.coerceIn(0f, 1f) * max).toInt().coerceIn(0, max), 0)
@@ -273,6 +298,9 @@ class PlayerViewModel(app: Application) : NoriViewModel(app) {
 
 /** Where Sing stands: [now] for the song playing (null while Sing is off) and the voice [model]. */
 data class SingStatus(val now: dev.nori.music.ffi.settings.SingNow?, val model: dev.nori.music.ffi.settings.SingModel)
+
+/** How often a dragged volume goes to the device playing elsewhere: each one is a request. */
+private const val REMOTE_VOLUME_MS = 200L
 
 /** How often Sing's state is asked while the song's vocals are not down yet, and while the model downloads. */
 private const val SING_LOOK_MS = 1_000L

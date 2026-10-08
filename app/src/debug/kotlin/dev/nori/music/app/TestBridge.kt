@@ -123,6 +123,22 @@ private fun remoteCheck(nori: dev.nori.music.Nori, arg: String, value: String): 
             r()?.jamAct(dev.nori.music.ffi.remote.Op.Request(s)); "asked for ${s.title}"
         } ?: "nothing found"
         "join" -> { kotlinx.coroutines.runBlocking { nori.joinJam(value) }; "joined" }
+        // "found <host>|<port>|<k=v;k=v>": a door as mDNS would find it (the emulator sees no multicast
+        // from the host); the TXT as `dns-sd -L` prints it.
+        "found" -> {
+            val (host, port, txt) = value.split("|", limit = 3)
+            val params = txt.split(";").filter { "=" in it }.map { dev.nori.music.ffi.Param(it.substringBefore("="), it.substringAfter("=")) }
+            r()?.lanFound("test-${params.firstOrNull { it.key == "id" }?.value}", host, port.toUShort(), params); "found"
+        }
+        // "pick <device name>|here": the devices sheet's tap.
+        "pick" -> {
+            val id = if (value == "here") null else r()?.devices()?.firstOrNull { it.name == value }?.id ?: return "no device $value"
+            nori.remotes.pick(id); "picked ${id ?: "here"}"
+        }
+        // What the player mirrors: the device, its song, place and volume.
+        "mirror" -> r()?.active()?.let { m ->
+            "${m.name}: ${if (m.playing) "playing" else "paused"} ${m.at?.let { m.rows[it.toInt()].song.title }} at ${m.positionMs} volume=${m.volume} rows=${m.rows.size}/${m.len} shuffle=${m.shuffle} repeat=${m.repeat}"
+        } ?: "none"
         else -> "unknown remote check $arg"
     }
 }

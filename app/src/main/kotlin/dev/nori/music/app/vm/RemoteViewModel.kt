@@ -31,6 +31,9 @@ class RemoteViewModel(app: Application) : NoriViewModel(app) {
     /** The jam this phone hosts or is a guest in. */
     val jam: StateFlow<JamView?> = _jam.asStateFlow()
 
+    /** The device playing while it is not this phone (Remotes.mirror). */
+    val mirror: StateFlow<dev.nori.music.ffi.Mirror?> = remotes.mirror
+
     private val _relay = MutableStateFlow(dev.nori.music.ffi.RelaySupport.UNKNOWN)
     /** Whether the server relays: jams and devices elsewhere only then. */
     val relay: StateFlow<dev.nori.music.ffi.RelaySupport> = _relay.asStateFlow()
@@ -67,13 +70,8 @@ class RemoteViewModel(app: Application) : NoriViewModel(app) {
         if (watchers > 0) remotes.watch(false)
     }
 
-    fun send(device: String, op: Op) = remotes.ask({ it.send(device, op) })
-
-    /** What [device] plays, played on here from where it is. */
-    fun playHere(device: String) = remotes.ask({ it.send(device, Op.Transfer(it.id())) })
-
-    /** What plays here, played on [device] from where it is. */
-    fun playThere(device: String) = remotes.ask({ it.handOver(device) })
+    /** Moves the playback to [device], or to this phone (null). */
+    fun pick(device: String?) = remotes.pick(device)
 
     fun jamStart() = viewModelScope.launch {
         if (runCatching { remotes.jamOpen() }.isFailure) _failures.tryEmit(Failure.JAM_START)

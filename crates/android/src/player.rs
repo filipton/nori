@@ -43,6 +43,7 @@ pub(crate) static CLASS: Class = Class {
         native!(c"play", c"(J)V", play),
         native!(c"pause", c"(J)V", pause),
         native!(c"pauseNow", c"(J)V", pause_now),
+        native!(c"releaseNow", c"(J)V", release_now),
         native!(c"queueChanged", c"(J)V", queue_changed),
         native!(c"setRepeat", c"(JI)V", set_repeat),
         native!(c"replan", c"(J)V", replan),
@@ -1455,6 +1456,13 @@ extern "system" fn pause_now(h: jlong) {
     if let Some(p) = player(h) {
         log("headphones gone: pause at once");
         p.engine.pause_now();
+    }
+}
+
+/// The music moved to another device: the output goes now.
+extern "system" fn release_now(h: jlong) {
+    if let Some(p) = player(h) {
+        p.engine.release_now();
     }
 }
 

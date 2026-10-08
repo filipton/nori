@@ -51,6 +51,8 @@ internal object RustPlayerJni {
     @JvmStatic @CriticalNative external fun pause(h: Long)
     /** Pause at once, no fade (headphones pulled out). */
     @JvmStatic @CriticalNative external fun pauseNow(h: Long)
+    /** Pause at once and let the output go now (the music moved to another device). */
+    @JvmStatic @CriticalNative external fun releaseNow(h: Long)
     /** The core's queue was edited (or reordered): the engine follows it. */
     @JvmStatic @CriticalNative external fun queueChanged(h: Long)
     @JvmStatic @CriticalNative external fun setRepeat(h: Long, mode: Int)
@@ -468,6 +470,17 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
         if (audible() && focus()) start()
         follow()
         return done()
+    }
+
+    /** The music moved to another device: paused at once, the output and the audio focus let go, the place kept. */
+    fun letGo() {
+        dev.nori.music.NoriLog.i("rust player: the music plays elsewhere, output let go")
+        RustPlayerJni.releaseNow(h)
+        playWhenReady = false
+        prepared = false
+        unfocus()
+        follow()
+        invalidateState()
     }
 
     /** Stopped: the engine pauses and keeps its place, to start from after the next prepare. */

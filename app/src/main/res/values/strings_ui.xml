@@ -605,10 +605,9 @@
     <string name="devices_none">No other devices yet. Turn on “Control from other devices” in nori on them.</string>
     <string name="devices_nearby">On this network</string>
     <string name="devices_idle">Not playing</string>
-    <string name="devices_play_here">Play here</string>
-    <string name="devices_play_there">Play there</string>
+    <string name="devices_playing_on">Playing on %1$s</string>
+    <string name="devices_playing_here">Playing here</string>
     <string name="devices_up_next">Up next</string>
-    <string name="devices_volume">Volume</string>
     <string name="devices_stale">The queue changed there. Try again.</string>
     <string name="devices_not_allowed">That device said no.</string>
     <string name="devices_unknown">That is no longer there.</string>

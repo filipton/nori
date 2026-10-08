@@ -1,12 +1,16 @@
 package dev.nori.music.remote
 
 import android.content.Context
+import android.database.ContentObserver
 import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.SettableFuture
 import dev.nori.music.Nori
 import dev.nori.music.ffi.Client
+import dev.nori.music.ffi.Mirror
 import dev.nori.music.ffi.Playing
 import dev.nori.music.ffi.Remote
 import dev.nori.music.ffi.RemoteMe
@@ -33,7 +37,15 @@ class Remotes(private val context: Context, private val nori: Nori) {
     /** Bumped whenever the devices, their states or the jam changed; screens read them again. */
     val changes: StateFlow<Long> = _changes.asStateFlow()
 
-    /** The playback service's player while it runs; ops go to it, or else through the app's controller. */
+    private val _mirror = MutableStateFlow<Mirror?>(null)
+
+    /**
+     * The account's active device while it is another one (the core's `Remote::active`): the player, the
+     * session and the notification show and control it instead of this phone. Null while this phone plays.
+     */
+    val mirror: StateFlow<Mirror?> = _mirror.asStateFlow()
+
+    /** The playback service's player while it runs; ops go to it, starting the service when it is not. */
     @Volatile var service: RemotePlayer? = null
 
     private val main = Handler(Looper.getMainLooper())
@@ -47,27 +59,36 @@ class Remotes(private val context: Context, private val nori: Nori) {
 
     private val player = object : RemotePlayer {
         override fun apply(op: Op) {
-            main.post { (service ?: connection).apply(op) }
+            main.post { service?.apply(op) ?: nori.player.connected { service?.apply(op) } }
         }
     }
 
     private val shown = object : RemoteShown {
-        override fun changed() = _changes.update { it + 1 }
-    }
-
-    /** When the service is not running (a transfer here): through the app's controller, which starts it. */
-    private val connection = object : RemotePlayer {
-        override fun apply(op: Op) {
-            val p = nori.player
-            when (op) {
-                is Op.Replace -> p.playAt(op.songs, op.index.toInt(), op.positionMs, op.play)
-                is Op.Add -> if (op.next) p.playNext(op.songs) else p.enqueue(op.songs)
-                is Op.Volume -> setVolume(context, op.percent.toInt())
-                // Only a controllable device is sent the rest, and it is one only while its service runs.
-                else -> {}
-            }
+        override fun changed() {
+            _changes.update { it + 1 }
+            work { mirrorNow() }
         }
     }
+
+    /** Reads the mirrored device again (on the worker) and shows it; [then] once it is shown. */
+    private fun mirrorNow(then: () -> Unit = {}) {
+        val m = remote?.active()
+        main.post { _mirror.value = m; then() }
+    }
+
+    /**
+     * The volume keys while this phone is controllable: another device sees them move. Listened to only
+     * while serving, through the system settings the volume steps are kept in.
+     */
+    private val volumeKeys = object : ContentObserver(main) {
+        override fun onChange(selfChange: Boolean) {
+            val r = remote ?: return
+            val now = volumePercent(context)?.toUByte()
+            // The core passes on only a volume that moved.
+            work { r.volumeChanged(now) }
+        }
+    }
+    private var keysWatched = false
 
     private fun work(f: () -> Unit) = worker.execute { runCatching(f).onFailure { dev.nori.music.NoriLog.w("remote: ${it.message}") } }
 
@@ -102,6 +123,7 @@ class Remotes(private val context: Context, private val nori: Nori) {
         remote?.let { r -> r.serve(false); r.watch(false); r.jamClose() }
         remote = null
         client = null
+        main.post { _mirror.value = null }
     }
 
     /** Whether the playback service is up: the device is controllable then, while remote control is on. */
@@ -110,8 +132,17 @@ class Remotes(private val context: Context, private val nori: Nori) {
         if (remote == null && !wanted()) return synchronized(this) { serving = on }
         work {
             serving = on
-            current()?.serve(on && nori.settings.value.remoteControl)
+            val serves = on && nori.settings.value.remoteControl
+            current()?.serve(serves)
+            main.post { watchKeys(serves) }
         }
+    }
+
+    private fun watchKeys(on: Boolean) {
+        if (on == keysWatched) return
+        keysWatched = on
+        if (on) context.contentResolver.registerContentObserver(android.provider.Settings.System.CONTENT_URI, true, volumeKeys)
+        else context.contentResolver.unregisterContentObserver(volumeKeys)
     }
 
     /** A device picker or jam screen is open: other devices are followed while it is. */
@@ -121,9 +152,34 @@ class Remotes(private val context: Context, private val nori: Nori) {
     }
 
     /** The player's state changed; nothing happens unless a remote exists. */
-    fun played(playing: Boolean, positionMs: Long, index: Int) {
+    fun played(playing: Boolean, buffering: Boolean, positionMs: Long, index: Int) {
         val r = remote ?: return
-        work { r.played(Playing(playing, positionMs, index.takeIf { it >= 0 }?.toUInt(), volumePercent(context)?.toUByte())) }
+        work { r.played(Playing(playing, buffering, positionMs, index.takeIf { it >= 0 }?.toUInt(), volumePercent(context)?.toUByte())) }
+    }
+
+    /** Moves the playback to [device], or to this phone (null). */
+    fun pick(device: String?) = work { current()?.pick(device) }
+
+    /**
+     * [op] for the device this phone mirrors. The answer is shown at once, as it is expected to come out
+     * (the core's foresight), and the future completes once it is; the device's next state corrects it.
+     */
+    fun command(op: Op): ListenableFuture<*> {
+        val done = SettableFuture.create<Unit>()
+        worker.execute {
+            runCatching {
+                val r = remote
+                val id = _mirror.value?.id
+                if (r != null && id != null) r.send(id, op)
+                mirrorNow { done.set(Unit) }
+            }.onFailure { done.set(Unit) }
+        }
+        return done
+    }
+
+    /** A song's heart changed here: the mirrored device marks it too. */
+    fun starred(id: String, on: Boolean) {
+        if (_mirror.value != null) command(Op.Star(id, on))
     }
 
     /** Everything else a screen asks, on the worker; [then] gets the answer back on the main thread. */
