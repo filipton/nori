@@ -253,6 +253,9 @@ fn player(ui: &AppWindow, art: impl Fn(SharedString, i32) -> Image + 'static) ->
     }));
     bar.on_seek(to_main_with(ui, |m, v| m.invoke_seek(v)));
     bar.on_set_volume(to_main_with(ui, |m, v| m.invoke_set_volume(v)));
+    let go = bar.global::<crate::Go>();
+    go.on_artist(to_main_with(ui, |m, id| m.global::<crate::Go>().invoke_artist(id)));
+    go.on_album(to_main_with(ui, |m, id| m.global::<crate::Go>().invoke_album(id)));
     bar.on_set_inspector(to_main_with(ui, |m, i| {
         m.set_inspector(i);
         m.invoke_player_changed();
@@ -459,6 +462,9 @@ fn wire(ui: &AppWindow, h: &AppHandle) {
         a.devices_watched();
     });
     on!(ui.on_pick_device, h, |a, id| a.pick_device(id.to_string()));
+    let go = ui.global::<crate::Go>();
+    on!(go.on_artist, h, |a, id| a.go_to(Req::Artist(id.into())));
+    on!(go.on_album, h, |a, id| a.go_to(Req::Album(id.into())));
     on!(ui.on_jam_play, h, |a, kind, id| {
         let what = if kind == 0 { Fetch::Album(id.into()) } else { Fetch::Playlist(id.into()) };
         a.on_session(|s| {
@@ -717,6 +723,7 @@ impl App {
         ui.set_page_mix(matches!(req, Req::Mix(_)));
         ui.set_page_title("".into());
         ui.set_page_sub("".into());
+        ui.set_page_sub_artist("".into());
         ui.set_page_caption("".into());
         ui.set_page_art("".into());
         ui.set_page_songs(ModelRc::default());
@@ -726,6 +733,12 @@ impl App {
         ui.set_failed("".into());
         self.mirror();
         self.load(req);
+    }
+
+    /// Opens a page from a name that links to it, leaving Now Playing for it.
+    fn go_to(&mut self, req: Req) {
+        self.ui().set_full_player(false);
+        self.open_page(req);
     }
 
     /// Page colours from its cover, or the defaults.
@@ -831,6 +844,7 @@ impl App {
                         title: p.name.as_str().into(),
                         sub: words::songs(p.song_count as usize).into(),
                         art: p.cover_art.clone().unwrap_or_default().into(),
+                        sub_artist: SharedString::default(),
                     })
                     .collect();
                 ui.set_side_playlists(cards(self.lists.playlists.iter().cloned()));
@@ -845,6 +859,7 @@ impl App {
             Data::Album(d) if shown => {
                 ui.set_page_title(d.album.name.as_str().into());
                 ui.set_page_sub(d.album.artist.as_str().into());
+                ui.set_page_sub_artist(d.album.artist_id.clone().unwrap_or_default().into());
                 let mut caption = Vec::new();
                 if d.album.year > 0 {
                     caption.push(d.album.year.to_string());
@@ -863,7 +878,7 @@ impl App {
                 ui.set_page_sub("".into());
                 ui.set_page_caption(words::albums(d.albums.len() as u32).into());
                 self.set_page_art(d.artist.cover_art.clone().or_else(|| d.albums.first().and_then(|a| a.cover_art.clone())));
-                ui.set_page_albums(cards(d.albums.iter().map(|a| Card { sub: if a.year > 0 { a.year.to_string().into() } else { "".into() }, ..album_card(a) })));
+                ui.set_page_albums(cards(d.albums.iter().map(|a| Card { sub: if a.year > 0 { a.year.to_string().into() } else { "".into() }, sub_artist: SharedString::default(), ..album_card(a) })));
             }
             Data::Playlist(d) if shown => {
                 ui.set_page_title(d.playlist.name.as_str().into());
@@ -1211,6 +1226,8 @@ impl App {
             p.set_now_title(ui.get_now_title());
             p.set_now_artist(ui.get_now_artist());
             p.set_now_album(ui.get_now_album());
+            p.set_now_artist_id(ui.get_now_artist_id());
+            p.set_now_album_id(ui.get_now_album_id());
             p.set_now_art(ui.get_now_art());
             p.set_playing(ui.get_playing());
             p.set_position_ms(ui.get_position_ms());
@@ -1545,6 +1562,8 @@ impl App {
         ui.set_now_title(song.title.as_str().into());
         ui.set_now_artist(song.artist.as_str().into());
         ui.set_now_album(song.album.as_str().into());
+        ui.set_now_artist_id(song.artist_id.clone().unwrap_or_default().into());
+        ui.set_now_album_id(song.album_id.clone().unwrap_or_default().into());
         ui.set_duration_ms((song.duration as i64 * 1000) as i32);
         let art = song.cover_art.clone().unwrap_or_default();
         ui.set_now_art(art.as_str().into());
@@ -1639,11 +1658,12 @@ fn cards(it: impl Iterator<Item = Card>) -> ModelRc<Card> {
 }
 
 fn album_card(a: &nori_core::Album) -> Card {
-    Card { id: a.id.as_str().into(), title: a.name.as_str().into(), sub: a.artist.as_str().into(), art: a.cover_art.clone().unwrap_or_default().into() }
+    let sub_artist = a.artist_id.clone().unwrap_or_default().into();
+    Card { id: a.id.as_str().into(), title: a.name.as_str().into(), sub: a.artist.as_str().into(), art: a.cover_art.clone().unwrap_or_default().into(), sub_artist }
 }
 
 fn artist_card(a: &nori_core::Artist) -> Card {
-    Card { id: a.id.as_str().into(), title: a.name.as_str().into(), sub: words::albums(a.album_count).into(), art: a.cover_art.clone().unwrap_or_default().into() }
+    Card { id: a.id.as_str().into(), title: a.name.as_str().into(), sub: words::albums(a.album_count).into(), art: a.cover_art.clone().unwrap_or_default().into(), sub_artist: SharedString::default() }
 }
 
 fn row(s: &Song, index: usize, playing: bool) -> SongRow {
@@ -1651,6 +1671,8 @@ fn row(s: &Song, index: usize, playing: bool) -> SongRow {
         title: s.title.as_str().into(),
         artist: s.artist.as_str().into(),
         album: s.album.as_str().into(),
+        artist_id: s.artist_id.clone().unwrap_or_default().into(),
+        album_id: s.album_id.clone().unwrap_or_default().into(),
         time: words::duration(s.duration as i64).into(),
         art: s.cover_art.clone().unwrap_or_default().into(),
         index: index as i32,

@@ -10,6 +10,8 @@ export struct Card {
     title: string,
     sub: string,
     art: string,
+    // The artist the subtitle names, whose page a click on it opens (an album's); empty for none.
+    sub-artist: string,
 }
 
 // A piece of the line being sung (sung.rs): a word, a syllable or what lies between, where it was laid
@@ -68,6 +70,9 @@ export struct SongRow {
     title: string,
     artist: string,
     album: string,
+    // The pages a click on the artist and the album opens; empty for none.
+    artist-id: string,
+    album-id: string,
     time: string,
     art: string,
     // The list index a click plays or jumps to.
@@ -208,6 +213,37 @@ export global Icons {
     out property <string> computer: "M3.5 5.5 Q3.5 4.5 4.5 4.5 L19.5 4.5 Q20.5 4.5 20.5 5.5 L20.5 15 Q20.5 16 19.5 16 L4.5 16 Q3.5 16 3.5 15 Z M8.5 19.5 L15.5 19.5 M12 16 L12 19.5";
     out property <string> phone: "M8.5 3 L15.5 3 Q17 3 17 4.5 L17 19.5 Q17 21 15.5 21 L8.5 21 Q7 21 7 19.5 L7 4.5 Q7 3 8.5 3 Z M11 18 L13 18";
     out property <string> terminal: "M4 5.5 Q4 4.5 5 4.5 L19 4.5 Q20 4.5 20 5.5 L20 18.5 Q20 19.5 19 19.5 L5 19.5 Q4 19.5 4 18.5 Z M7.5 9 L10.5 12 L7.5 15 M12.5 15 L16.5 15";
+}
+
+// Opens an artist's or an album's page, from wherever its name shows (app.rs answers).
+export global Go {
+    callback artist(string);
+    callback album(string);
+}
+
+// An artist's or album's name that opens its page: a pointer and an underline under it while hovered.
+component Link inherits Text {
+    in property <string> artist;
+    in property <string> album;
+    property <length> size: root.font-size > 0 ? root.font-size : 13px;
+    lt := TouchArea {
+        enabled: root.artist != "" || root.album != "";
+        mouse-cursor: self.enabled ? pointer : default;
+        clicked => {
+            if root.artist != "" {
+                Go.artist(root.artist);
+            } else {
+                Go.album(root.album);
+            }
+        }
+    }
+    if lt.has-hover && lt.enabled: Rectangle {
+        x: root.horizontal-alignment == TextHorizontalAlignment.center ? (root.width - self.width) / 2 : 0;
+        y: root.height / 2 + root.size * 0.55;
+        width: min(root.width, root.preferred-width);
+        height: 1px;
+        background: root.color;
+    }
 }
 
 component Icon inherits Path {
@@ -479,17 +515,18 @@ component CardView inherits Rectangle {
         overflow: elide;
         horizontal-alignment: root.round ? center : left;
     }
-    Text {
+    touch := TouchArea {
+        clicked => { root.open(); }
+    }
+    Link {
         y: root.side + 25px;
         width: root.side;
         text: root.card.sub;
+        artist: root.card.sub-artist;
         color: Theme.dim;
         font-size: 13px;
         overflow: elide;
         horizontal-alignment: root.round ? center : left;
-    }
-    touch := TouchArea {
-        clicked => { root.open(); }
     }
     // Over the TouchArea, which would take the right press too: the menu area answers only that.
     ContextMenuArea {
@@ -859,17 +896,19 @@ component SongLine inherits Rectangle {
                     font-size: 13px;
                     overflow: elide;
                 }
-                if (root.thumb || root.show-album) && !root.table: Text {
+                if (root.thumb || root.show-album) && !root.table: Link {
                     text: root.song.artist;
+                    artist: root.song.artist-id;
                     color: root.song.playing ? #ffffffcc : Theme.dim;
                     font-size: 13px;
                     overflow: elide;
                 }
             }
-            if root.show-album && !root.table: Text {
+            if root.show-album && !root.table: Link {
                 horizontal-stretch: 1;
                 preferred-width: 0;
                 text: root.song.album;
+                album: root.song.album-id;
                 color: root.song.playing ? #ffffffcc : Theme.dim;
                 font-size: 13px;
                 vertical-alignment: center;
@@ -890,19 +929,21 @@ component SongLine inherits Rectangle {
                 width: 44px;
             }
         }
-        if root.table: Text {
+        if root.table: Link {
             x: 8px + 44px + 12px + root.cols * 0.5 + 12px;
             width: root.cols * 0.25;
             text: root.song.artist;
+            artist: root.song.artist-id;
             color: root.song.playing ? #ffffffcc : Theme.dim;
             font-size: 13px;
             vertical-alignment: center;
             overflow: elide;
         }
-        if root.table: Text {
+        if root.table: Link {
             x: 8px + 44px + 12px + root.cols * 0.75 + 24px;
             width: root.cols * 0.25;
             text: root.song.album;
+            album: root.song.album-id;
             color: root.song.playing ? #ffffffcc : Theme.dim;
             font-size: 13px;
             vertical-alignment: center;
@@ -1068,6 +1109,8 @@ component PlayerControls inherits Rectangle {
     in property <string> now-title;
     in property <string> now-artist;
     in property <string> now-album;
+    in property <string> now-artist-id;
+    in property <string> now-album-id;
     in property <string> now-art;
     in property <bool> playing;
     in property <int> position-ms;
@@ -1189,11 +1232,32 @@ component PlayerControls inherits Rectangle {
                         spacing: 8px;
                         // While another device plays, its strip takes the artist's place (the line is short).
                         property <bool> elsewhere: root.playing-on != "" && !seek.hot;
-                        if !line.elsewhere: Text {
+                        if seek.hot: Text {
                             horizontal-stretch: 1;
-                            text: seek.hot ? root.clock(song-box.dragged >= 0 ? song-box.dragged : root.position-ms) + "  /  " + root.clock(root.duration-ms) : root.now-artist + (root.now-album != "" ? " — " + root.now-album : "");
+                            text: root.clock(song-box.dragged >= 0 ? song-box.dragged : root.position-ms) + "  /  " + root.clock(root.duration-ms);
                             color: Theme.dim;
                             overflow: elide;
+                        }
+                        if !line.elsewhere && !seek.hot: HorizontalLayout {
+                            horizontal-stretch: 1;
+                            Link {
+                                max-width: self.preferred-width;
+                                text: root.now-artist;
+                                artist: root.now-artist-id;
+                                color: Theme.dim;
+                                overflow: elide;
+                            }
+                            if root.now-album != "": Text {
+                                text: " — ";
+                                color: Theme.dim;
+                            }
+                            if root.now-album != "": Link {
+                                horizontal-stretch: 1;
+                                text: root.now-album;
+                                album: root.now-album-id;
+                                color: Theme.dim;
+                                overflow: elide;
+                            }
                         }
                         // Where the music plays, as Android's "Playing on" strip: a click opens the devices. Else
                         // the jam, which a click opens in the queue panel.
@@ -1964,6 +2028,9 @@ component QueueView inherits Rectangle {
                 }
                 border-radius: 6px;
                 background: qt.has-hover ? Theme.hover : transparent;
+                qt := TouchArea {
+                    double-clicked => { root.jump(s.index); }
+                }
                 HorizontalLayout {
                     padding-left: 4px;
                     padding-right: 4px;
@@ -1984,11 +2051,28 @@ component QueueView inherits Rectangle {
                             font-size: 13px;
                             overflow: elide;
                         }
-                        Text {
-                            text: s.artist + (s.album != "" ? " — " + s.album : "");
-                            color: Theme.dim;
-                            font-size: 11px;
-                            overflow: elide;
+                        HorizontalLayout {
+                            Link {
+                                max-width: self.preferred-width;
+                                text: s.artist;
+                                artist: s.artist-id;
+                                color: Theme.dim;
+                                font-size: 11px;
+                                overflow: elide;
+                            }
+                            if s.album != "": Text {
+                                text: " — ";
+                                color: Theme.dim;
+                                font-size: 11px;
+                            }
+                            if s.album != "": Link {
+                                horizontal-stretch: 1;
+                                text: s.album;
+                                album: s.album-id;
+                                color: Theme.dim;
+                                font-size: 11px;
+                                overflow: elide;
+                            }
                         }
                     }
                     // Who asked for it in the jam.
@@ -2021,9 +2105,6 @@ component QueueView inherits Rectangle {
                     width: parent.width - 52px;
                     height: 1px;
                     background: Theme.hairline;
-                }
-                qt := TouchArea {
-                    double-clicked => { root.jump(s.index); }
                 }
             }
                 if root.autoplay: HorizontalLayout {
@@ -3002,6 +3083,8 @@ export component AppWindow inherits Window {
     in property <string> page-id;
     in property <string> page-title;
     in property <string> page-sub;
+    // The artist the page's subtitle names (an album's), whose page a click on it opens.
+    in property <string> page-sub-artist;
     in property <string> page-caption;
     in property <string> page-art;
     in property <[SongRow]> page-songs;
@@ -3017,6 +3100,8 @@ export component AppWindow inherits Window {
     in property <string> now-title;
     in property <string> now-artist;
     in property <string> now-album;
+    in property <string> now-artist-id;
+    in property <string> now-album-id;
     in property <string> now-art;
     in property <bool> playing;
     in property <bool> buffering;
@@ -3752,8 +3837,9 @@ export component AppWindow inherits Window {
                                             font-weight: 700;
                                             wrap: word-wrap;
                                         }
-                                        if root.page-sub != "": Text {
+                                        if root.page-sub != "": Link {
                                             text: root.page-sub;
+                                            artist: root.page-sub-artist;
                                             color: root.page-accent;
                                             font-size: 26px;
                                             wrap: word-wrap;
@@ -4030,6 +4116,8 @@ export component AppWindow inherits Window {
                         now-title: root.now-title;
                         now-artist: root.now-artist;
                         now-album: root.now-album;
+                        now-artist-id: root.now-artist-id;
+                        now-album-id: root.now-album-id;
                         now-art: root.now-art;
                         playing: root.playing;
                         position-ms: root.position-ms;
@@ -4355,11 +4443,28 @@ export component AppWindow inherits Window {
                             font-weight: 600;
                             overflow: elide;
                         }
-                        Text {
-                            text: root.now-artist + (root.now-album != "" ? " — " + root.now-album : "");
-                            color: #ffffffa6;
-                            font-size: 14px;
-                            overflow: elide;
+                        HorizontalLayout {
+                            Link {
+                                max-width: self.preferred-width;
+                                text: root.now-artist;
+                                artist: root.now-artist-id;
+                                color: #ffffffa6;
+                                font-size: 14px;
+                                overflow: elide;
+                            }
+                            if root.now-album != "": Text {
+                                text: " — ";
+                                color: #ffffffa6;
+                                font-size: 14px;
+                            }
+                            if root.now-album != "": Link {
+                                horizontal-stretch: 1;
+                                text: root.now-album;
+                                album: root.now-album-id;
+                                color: #ffffffa6;
+                                font-size: 14px;
+                                overflow: elide;
+                            }
                         }
                         if root.playing-on != "": HorizontalLayout {
                             padding-top: 6px;
@@ -4631,6 +4736,8 @@ export component PlayerBar inherits Window {
     in property <string> now-title;
     in property <string> now-artist;
     in property <string> now-album;
+    in property <string> now-artist-id;
+    in property <string> now-album-id;
     in property <string> now-art;
     in property <bool> playing;
     in property <int> position-ms;
@@ -4666,6 +4773,8 @@ export component PlayerBar inherits Window {
         now-title: root.now-title;
         now-artist: root.now-artist;
         now-album: root.now-album;
+        now-artist-id: root.now-artist-id;
+        now-album-id: root.now-album-id;
         now-art: root.now-art;
         playing: root.playing;
         position-ms: root.position-ms;
