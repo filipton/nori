@@ -4,14 +4,14 @@
 //! account's own devices hold. Discovery (mDNS `_nori._tcp`) is the platform's; the TXT record carries
 //! [`account_tag`] so a device lists only its account's doors.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use parking_lot::{Condvar, Mutex};
+use parking_lot::{Mutex, MutexGuard};
 use sha2::{Digest, Sha256};
 
 use crate::wire::{Answer, Body, DeviceState, Event, Member, Outgoing, Room, HOLD_MS};
@@ -91,13 +91,24 @@ struct Inside {
     me: Member,
     /// Replies by sequence, each to one controller.
     events: VecDeque<(u64, String, Body)>,
+    /// The bells of the polls held now, by hold number; the next change rings and drops them.
+    holds: HashMap<u64, Bell>,
+    holds_opened: u64,
+}
+
+impl Inside {
+    /// Wakes every held poll.
+    fn ring(&mut self) {
+        for (_, bell) in self.holds.drain() {
+            ring(&bell);
+        }
+    }
 }
 
 struct Shared {
     secret: String,
     closed: AtomicBool,
     inside: Mutex<Inside>,
-    changed: Condvar,
     handler: Handler,
 }
 
@@ -113,7 +124,7 @@ impl Door {
     pub fn open(me: Member, secret: String, handler: Handler) -> std::io::Result<Door> {
         let listener = TcpListener::bind(("0.0.0.0", 0))?;
         let port = listener.local_addr()?.port();
-        let shared = Arc::new(Shared { secret, closed: AtomicBool::new(false), inside: Mutex::new(Inside { seq: 1, me, events: VecDeque::new() }), changed: Condvar::new(), handler });
+        let shared = Arc::new(Shared { secret, closed: AtomicBool::new(false), inside: Mutex::new(Inside { seq: 1, me, events: VecDeque::new(), holds: HashMap::new(), holds_opened: 0 }), handler });
         let s = shared.clone();
         std::thread::Builder::new().name("nori-door".into()).spawn(move || {
             for conn in listener.incoming() {
@@ -136,7 +147,7 @@ impl Door {
         let mut i = self.shared.inside.lock();
         i.seq += 1;
         f(&mut i);
-        self.shared.changed.notify_all();
+        i.ring();
     }
 
     /// This device's state, as polls answer it from now on.
@@ -159,7 +170,7 @@ impl Door {
 impl Drop for Door {
     fn drop(&mut self) {
         self.shared.closed.store(true, Ordering::Release);
-        self.shared.changed.notify_all();
+        self.shared.inside.lock().ring();
         // Wakes the accepting thread so it sees the door closed.
         let _ = TcpStream::connect(("127.0.0.1", self.port));
     }
@@ -173,7 +184,8 @@ fn serve(s: &Shared, conn: TcpStream) {
     while !s.closed.load(Ordering::Acquire) {
         let Some((method, target, body)) = read_request(&mut reader) else { break };
         let received_us = crate::clock::now_us();
-        let (status, json) = answer(s, &method, &target, &body, received_us);
+        // None: the controller hung up during a held poll.
+        let Some((status, json)) = answer(s, &out, &method, &target, &body, received_us) else { break };
         let head = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", json.len());
         if out.write_all(head.as_bytes()).and_then(|_| out.write_all(json.as_bytes())).is_err() {
             break;
@@ -211,12 +223,13 @@ fn read_request(r: &mut impl BufRead) -> Option<(String, String, Vec<u8>)> {
     Some((method, target, body))
 }
 
-/// The answer to a request read at `received_us` (the device's clock).
-fn answer(s: &Shared, method: &str, target: &str, body: &[u8], received_us: i64) -> (&'static str, String) {
+/// The answer to a request read at `received_us` (the device's clock) from `conn`; None when the
+/// controller hung up while its poll was held.
+fn answer(s: &Shared, conn: &TcpStream, method: &str, target: &str, body: &[u8], received_us: i64) -> Option<(&'static str, String)> {
     if !verified(&s.secret, method, target, body, now_ms()) {
-        return ("401 Unauthorized", "{}".into());
+        return Some(("401 Unauthorized", "{}".into()));
     }
-    let Some(dev) = query(target, "dev").map(str::to_string) else { return ("400 Bad Request", "{}".into()) };
+    let Some(dev) = query(target, "dev").map(str::to_string) else { return Some(("400 Bad Request", "{}".into())) };
     let path = target.split('?').next().unwrap_or_default();
     match path {
         "/rest/noriRemote.poll" => {
@@ -224,12 +237,7 @@ fn answer(s: &Shared, method: &str, target: &str, body: &[u8], received_us: i64)
             let hold = query(target, "hold") == Some("1");
             let mut i = s.inside.lock();
             if let (Some(since), true) = (since, hold) {
-                let until = std::time::Instant::now() + Duration::from_millis(HOLD_MS as u64);
-                while i.seq <= since && !s.closed.load(Ordering::Acquire) {
-                    if s.changed.wait_until(&mut i, until).timed_out() {
-                        break;
-                    }
-                }
+                hold_poll(s, &mut i, conn, since)?;
             }
             let events = i
                 .events
@@ -238,23 +246,117 @@ fn answer(s: &Shared, method: &str, target: &str, body: &[u8], received_us: i64)
                 .map(|(seq, _, body)| Event { seq: *seq, room: ROOM.into(), from: i.me.id.clone(), body: body.clone() })
                 .collect();
             let a = Answer { seq: i.seq, you: dev.clone(), rooms: vec![Room { room: ROOM.into(), jam: false, members: vec![i.me.clone()] }], events };
-            ("200 OK", serde_json::to_string(&a).unwrap_or_default())
+            Some(("200 OK", serde_json::to_string(&a).unwrap_or_default()))
         }
         // A time exchange (`crate::clock`), answered at once, stamped as near the socket as this gets.
         "/rest/noriRemote.time" => {
-            let Some(t1) = query(target, "t1").and_then(|v| v.parse().ok()) else { return ("400 Bad Request", "{}".into()) };
+            let Some(t1) = query(target, "t1").and_then(|v| v.parse().ok()) else { return Some(("400 Bad Request", "{}".into())) };
             let times = Body::Clock { t1, t2: received_us, t3: crate::clock::now_us() };
-            ("200 OK", serde_json::to_string(&times).unwrap_or_default())
+            Some(("200 OK", serde_json::to_string(&times).unwrap_or_default()))
         }
         "/rest/noriRemote.send" if method == "POST" => {
-            let Ok(out) = serde_json::from_slice::<Outgoing>(body) else { return ("400 Bad Request", "{}".into()) };
+            let Ok(out) = serde_json::from_slice::<Outgoing>(body) else { return Some(("400 Bad Request", "{}".into())) };
             if let Some(b) = out.body {
                 (s.handler)(&dev, b);
             }
             let seq = s.inside.lock().seq;
-            ("200 OK", format!(r#"{{"seq":{seq}}}"#))
+            Some(("200 OK", format!(r#"{{"seq":{seq}}}"#)))
         }
-        _ => ("404 Not Found", "{}".into()),
+        _ => Some(("404 Not Found", "{}".into())),
+    }
+}
+
+/// Holds a poll until the door changes past `since`, closes, [`HOLD_MS`] pass or the controller speaks
+/// again; None when it hung up.
+fn hold_poll(s: &Shared, i: &mut MutexGuard<Inside>, conn: &TcpStream, since: u64) -> Option<()> {
+    let until = Instant::now() + Duration::from_millis(HOLD_MS as u64);
+    let Ok((bell, ear)) = alarm() else { return Some(()) };
+    let hold = i.holds_opened;
+    i.holds_opened += 1;
+    i.holds.insert(hold, bell);
+    let mut woke = Woke::Rung;
+    while woke == Woke::Rung && i.seq <= since && !s.closed.load(Ordering::Acquire) {
+        woke = MutexGuard::unlocked(i, || wait(conn, &ear, until));
+    }
+    i.holds.remove(&hold);
+    (woke != Woke::HungUp).then_some(())
+}
+
+/// Why a held poll woke.
+#[derive(PartialEq)]
+enum Woke {
+    /// The door changed or closed.
+    Rung,
+    TimedOut,
+    /// The controller sent more: answered now.
+    Spoke,
+    HungUp,
+}
+
+/// Rings a held poll's ear: the near end of a socket pair, written without blocking (a full buffer has
+/// already rung).
+#[cfg(unix)]
+type Bell = std::os::unix::net::UnixStream;
+#[cfg(unix)]
+type Ear = std::os::unix::net::UnixStream;
+
+#[cfg(unix)]
+fn alarm() -> std::io::Result<(Bell, Ear)> {
+    let (bell, ear) = std::os::unix::net::UnixStream::pair()?;
+    bell.set_nonblocking(true)?;
+    ear.set_nonblocking(true)?;
+    Ok((bell, ear))
+}
+
+#[cfg(unix)]
+fn ring(mut bell: &Bell) {
+    let _ = bell.write(&[1]);
+}
+
+/// Waits for the ear to ring or `conn` to become readable (more sent, or hung up), until `until`.
+#[cfg(unix)]
+fn wait(conn: &TcpStream, mut ear: &Ear, until: Instant) -> Woke {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    let mut fds = [conn.as_raw_fd(), ear.as_raw_fd()].map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 });
+    let ms = until.saturating_duration_since(Instant::now()).as_millis().min(i32::MAX as u128) as libc::c_int;
+    // SAFETY: `fds` is a valid array of two pollfds for the call's length.
+    match unsafe { libc::poll(fds.as_mut_ptr(), 2, ms) } {
+        0 => Woke::TimedOut,
+        // Interrupted: looked at again.
+        n if n < 0 => Woke::Rung,
+        _ if fds[0].revents != 0 => match conn.peek(&mut [0]) {
+            Ok(n) if n > 0 => Woke::Spoke,
+            _ => Woke::HungUp,
+        },
+        _ => {
+            while ear.read(&mut [0; 16]).is_ok_and(|n| n > 0) {}
+            Woke::Rung
+        }
+    }
+}
+
+/// Elsewhere a hold hears only the door: a controller hanging up is noticed when the hold ends.
+#[cfg(not(unix))]
+type Bell = std::sync::mpsc::Sender<()>;
+#[cfg(not(unix))]
+type Ear = std::sync::mpsc::Receiver<()>;
+
+#[cfg(not(unix))]
+fn alarm() -> std::io::Result<(Bell, Ear)> {
+    Ok(std::sync::mpsc::channel())
+}
+
+#[cfg(not(unix))]
+fn ring(bell: &Bell) {
+    let _ = bell.send(());
+}
+
+#[cfg(not(unix))]
+fn wait(_: &TcpStream, ear: &Ear, until: Instant) -> Woke {
+    match ear.recv_timeout(until.saturating_duration_since(Instant::now())) {
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Woke::TimedOut,
+        _ => Woke::Rung,
     }
 }
 
@@ -335,6 +437,15 @@ mod tests {
         let a: Answer = serde_json::from_str(&held.join().unwrap()).unwrap();
         let bodies: Vec<&Body> = a.events.iter().map(|e| &e.body).collect();
         assert_eq!(bodies, [&Body::Ack { id: 1, refusal: None }], "only its own replies");
+
+        // A controller hanging up ends its held poll at once: the door closes its end without answering.
+        let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let target = signed("pw", "GET", &format!("/rest/noriRemote.poll?dev=phone&since={}&hold=1", a.seq), b"", now_ms());
+        write!(c, "GET {target} HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        c.shutdown(Shutdown::Write).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut rest = Vec::new();
+        assert_eq!(c.read_to_end(&mut rest).map_err(|e| e.kind()), Ok(0), "closed unanswered, before the hold's end");
 
         // A time exchange is stamped on this machine's clock, between the request and its answer.
         let t1 = crate::clock::now_us();
