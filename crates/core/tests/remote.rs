@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
+use std::task::{Poll, Waker};
 use std::time::{Duration, Instant};
 
 use nori_core::client::{Client, NetProfile, Starrable};
@@ -15,7 +16,7 @@ use nori_core::transport::{block_on, Exchange, FailureKind, Transport, Transport
 use nori_core::{Core, ServerConfig, Song};
 use nori_remote::clock;
 use nori_remote::wire::{Answer, Body, DeviceKind, Event, Member, Op, Outgoing, Refusal, Role, Room};
-use parking_lot::{Condvar, Mutex};
+use parking_lot::Mutex;
 
 const SERVER: &str = "http://octo:5274";
 
@@ -53,7 +54,8 @@ struct Hub {
 /// The relay in front of a server whose library is a few songs.
 struct Relay {
     hub: Mutex<Hub>,
-    changed: Condvar,
+    /// Held polls waiting for news; dropping one gives it up, as a cancelled request.
+    waiting: Mutex<Vec<Waker>>,
     next: AtomicU64,
     /// A plain Navidrome: no `noriRemote.*` at all.
     absent: bool,
@@ -95,7 +97,7 @@ const GUEST_ENDPOINTS: &[&str] = &["ping", "search3", "getCoverArt", "getSong", 
 
 impl Relay {
     fn new() -> Arc<Relay> {
-        Arc::new(Relay { hub: Mutex::default(), changed: Condvar::new(), next: AtomicU64::new(1), absent: false, lagging: Mutex::new(None), lagged: AtomicU64::new(0), door_late: Default::default() })
+        Arc::new(Relay { hub: Mutex::default(), waiting: Mutex::default(), next: AtomicU64::new(1), absent: false, lagging: Mutex::new(None), lagged: AtomicU64::new(0), door_late: Default::default() })
     }
 
     fn absent() -> Arc<Relay> {
@@ -134,8 +136,48 @@ impl Relay {
     }
 
     fn close(&self) {
-        self.hub.lock().closed = true;
-        self.changed.notify_all();
+        let mut hub = self.hub.lock();
+        hub.closed = true;
+        self.wake();
+    }
+
+    /// Wakes the held polls; called with the hub locked.
+    fn wake(&self) {
+        self.waiting.lock().drain(..).for_each(Waker::wake);
+    }
+
+    /// An account device's poll says whether it serves: it joins or leaves the account's room as the poll
+    /// arrives, before any hold.
+    fn arrived(&self, p: &HashMap<String, String>) {
+        let (Some(user), Some(dev), false) = (p.get("u"), p.get("dev"), self.absent) else { return };
+        let mut hub = self.hub.lock();
+        let room = hub.rooms.entry(format!("u:{user}")).or_default();
+        let listed = room.members.iter().position(|m| m.id == *dev);
+        match (listed, p.get("serve").map(String::as_str) == Some("1")) {
+            (None, true) => {
+                let kind = serde_json::from_value(serde_json::Value::String(p["kind"].clone())).unwrap_or_default();
+                room.members.push(Member { id: dev.clone(), name: p["name"].clone(), kind, state: None });
+            }
+            (Some(at), false) => {
+                room.members.remove(at);
+            }
+            _ => return,
+        }
+        hub.seq += 1;
+        self.wake();
+    }
+
+    /// A held poll's wait: until there is news after `since`, or the relay closed.
+    async fn news(&self, since: u64) {
+        std::future::poll_fn(|cx| {
+            let hub = self.hub.lock();
+            if hub.seq > since || hub.closed {
+                return Poll::Ready(());
+            }
+            self.waiting.lock().push(cx.waker().clone());
+            Poll::Pending
+        })
+        .await
     }
 
     fn caller(&self, endpoint: &str, p: &HashMap<String, String>) -> Result<Caller, Vec<u8>> {
@@ -163,32 +205,13 @@ impl Relay {
         let mut hub = self.hub.lock();
         let bump = |hub: &mut Hub| {
             hub.seq += 1;
-            self.changed.notify_all();
+            self.wake();
         };
         match (endpoint, &caller) {
             ("noriRemote.poll", _) => {
                 let (me, rooms) = match &caller {
                     Caller::Account(user) => {
                         let account = format!("u:{user}");
-                        let room = hub.rooms.entry(account.clone()).or_default();
-                        let listed = room.members.iter().position(|m| m.id == dev);
-                        let serve = p.get("serve").map(String::as_str) == Some("1");
-                        let mut changed = false;
-                        match (listed, serve) {
-                            (None, true) => {
-                                let kind = serde_json::from_value(serde_json::Value::String(p["kind"].clone())).unwrap_or_default();
-                                room.members.push(Member { id: dev.clone(), name: p["name"].clone(), kind, state: None });
-                                changed = true;
-                            }
-                            (Some(at), false) => {
-                                room.members.remove(at);
-                                changed = true;
-                            }
-                            _ => {}
-                        }
-                        if changed {
-                            bump(&mut hub);
-                        }
                         let hosted = hub.rooms.iter().filter(|(_, r)| r.host.as_ref() == Some(&(user.clone(), dev.clone()))).map(|(id, _)| id.clone());
                         (dev.clone(), std::iter::once(account).chain(hosted).collect::<Vec<_>>())
                     }
@@ -205,10 +228,6 @@ impl Relay {
                         .map(|(r, (seq, from, _, body))| Event { seq: *seq, room: r.clone(), from: from.clone(), body: body.clone() })
                         .collect()
                 };
-                if let (Some(since), Some("1")) = (since, p.get("hold").map(String::as_str)) {
-                    let until = Instant::now() + Duration::from_secs(50);
-                    while hub.seq <= since && !hub.closed && !self.changed.wait_until(&mut hub, until).timed_out() {}
-                }
                 let answer = Answer {
                     seq: hub.seq,
                     you: me.clone(),
@@ -280,17 +299,27 @@ impl Transport for Relay {
     async fn send(&self, request: Exchange) -> Result<TransportResponse, TransportError> {
         if request.url.starts_with("http://127.0.0.1:") {
             self.hub.lock().asked.push(format!("lan {}", request.url));
-            let answer = lan_exchange(&request);
-            if self.door_late.load(Ordering::Relaxed) && request.url.contains("noriRemote.poll") {
-                std::thread::sleep(Duration::from_millis(250));
-            }
-            return answer;
+            let late = self.door_late.load(Ordering::Relaxed) && request.url.contains("noriRemote.poll");
+            return off_thread(move || {
+                let answer = lan_exchange(&request);
+                if late {
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                answer
+            })
+            .await;
         }
         let Some(rest) = request.url.strip_prefix(&format!("{SERVER}/rest/")) else {
             return Err(TransportError::Failed { kind: FailureKind::Connect, detail: Some("unreachable".into()) });
         };
         let (endpoint, query) = rest.split_once('?').unwrap_or((rest, ""));
         let params: HashMap<String, String> = query.split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), decode(v))).collect();
+        if endpoint == "noriRemote.poll" {
+            self.arrived(&params);
+            if let (Some(since), Some("1")) = (params.get("since").and_then(|s| s.parse().ok()), params.get("hold").map(String::as_str)) {
+                self.news(since).await;
+            }
+        }
         let json = match endpoint {
             "noriRemote.send" => self.lagged(params.get("dev").map_or("", String::as_str), request.json),
             _ => request.json,
@@ -303,6 +332,31 @@ impl Transport for Relay {
     fn network(&self) -> nori_core::transport::Network {
         nori_core::transport::Network::Unmetered
     }
+}
+
+/// `f` on a thread of its own, awaited as a request is: dropping the future gives it up.
+async fn off_thread<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let slot = Arc::new(Mutex::new((None, None::<Waker>)));
+    let done = slot.clone();
+    std::thread::spawn(move || {
+        let v = f();
+        let mut d = done.lock();
+        d.0 = Some(v);
+        if let Some(w) = d.1.take() {
+            w.wake();
+        }
+    });
+    std::future::poll_fn(|cx| {
+        let mut s = slot.lock();
+        match s.0.take() {
+            Some(v) => Poll::Ready(v),
+            None => {
+                s.1 = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+    })
+    .await
 }
 
 /// One HTTP/1.1 exchange with a door on this machine; refused where no door listens.
@@ -797,5 +851,51 @@ fn a_mirrored_playhead_is_where_the_device_is_heard() {
     let now = clock::now_us();
     let off = m.position_at(now) - heard_at(30_000, said, now);
     assert!(off.abs() <= 10, "the desk shows the phone {off} ms off what is heard there");
+    relay.close();
+}
+
+#[test]
+fn a_stopped_remote_lets_go_of_everything() {
+    let relay = Relay::new();
+    let announced = Arc::new(Announced::default());
+    let ann = ServerConfig { url: SERVER.into(), user: "ann".into(), password: "pw".into(), ..Default::default() };
+    let phone = Device::found(&relay, ann, DeviceKind::Phone, "Phone", Some(announced.clone()));
+    phone.playing(&["s1", "s2"], 0);
+    phone.remote.clone().serve(true);
+    let door = announced.0.lock().clone().expect("the door announced");
+    let phone_id = phone.remote.id();
+
+    // The desk mirrors the phone through the relay and its door, learning its clock there.
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    desk.remote.clone().watch(true);
+    desk.until("the phone", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state));
+    desk.remote.clone().lan_found(door.name.clone(), "127.0.0.1".into(), door.port, door.txt.clone());
+    desk.until("the phone nearby", |r| r.devices().into_iter().find(|d| d.id == phone_id && d.nearby));
+    desk.remote.clone().watch(false);
+    desk.remote.clone().pick(Some(phone_id.clone()));
+    desk.until("the phone mirrored", |r| r.active());
+    let desk_id = desk.remote.id();
+    let asked = || relay.asked().into_iter().filter(|a| (a.starts_with("noriRemote.poll") && a.ends_with(&desk_id)) || (a.starts_with("lan ") && a.contains(&format!("dev={desk_id}")) && !a.contains("noriRemote.send"))).collect::<Vec<_>>();
+    desk.until("a time exchange through the door", |_| asked().iter().any(|a| a.contains("noriRemote.time")).then_some(()));
+    desk.until("a held poll at the door", |_| asked().iter().any(|a| a.contains("since=")).then_some(()));
+
+    // Its held polls are given up at once, not waited out.
+    let (done_to, done) = channel();
+    let remote = desk.remote.clone();
+    std::thread::spawn(move || {
+        remote.stop();
+        let _ = done_to.send(());
+    });
+    assert!(done.recv_timeout(Duration::from_secs(10)).is_ok(), "stopped without waiting out a held poll");
+    assert!(desk.remote.active().is_none(), "the player plays here again");
+    assert_eq!(Arc::strong_count(&desk.remote), 1, "no thread of the remote runs");
+
+    // News from the phone reaches another device, and nothing more is asked for the desk.
+    let before = asked();
+    let tablet = Device::account(&relay, DeviceKind::Phone, "Tablet");
+    tablet.remote.clone().watch(true);
+    phone.remote.clone().played(Playing { playing: false, position_ms: 20_000, index: None, volume: None, ..Default::default() });
+    tablet.until("the phone's news", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state).filter(|s| s.position_ms == 20_000));
+    assert_eq!(asked(), before, "no poll or time exchange after the stop");
     relay.close();
 }

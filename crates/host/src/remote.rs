@@ -59,9 +59,7 @@ impl Remotes {
         // Out of the slot first: going, it tells [`Shown`], which reads the slot.
         let old = std::mem::replace(&mut *self.slot.lock(), remote);
         if let Some(old) = old {
-            old.clone().serve(false);
-            old.clone().watch(false);
-            old.jam_close();
+            old.stop();
         }
     }
 

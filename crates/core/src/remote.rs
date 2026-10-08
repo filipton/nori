@@ -11,9 +11,12 @@
 //! of time exchanges, then one every quarter minute, so the playhead shown is the one heard there.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::ops::Range;
 use std::sync::mpsc;
 use std::sync::{Arc, Weak};
+use std::task::{Poll, Waker};
+use std::thread::{JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
 use nori_remote::clock::{self, ClockSync};
@@ -478,6 +481,10 @@ struct Inner {
     next_id: u64,
     refused: HashMap<String, Refusal>,
     door: Option<Door>,
+    /// [`Remote::stop`] ran: nothing starts again.
+    stopped: bool,
+    /// The threads waiting for a request's answer, woken to give it up when the remote stops.
+    waiting: HashMap<ThreadId, Waker>,
 }
 
 impl Peer {
@@ -561,7 +568,10 @@ pub struct Remote {
     retry: Condvar,
     /// Wakes the time keeper when the device mirrored changes.
     timing: Condvar,
-    out: mpsc::Sender<Out>,
+    /// None once stopped: the sender ends with what was queued.
+    out: Mutex<Option<mpsc::Sender<Out>>>,
+    /// The pollers, the time keeper and the probe, joined when the remote stops.
+    threads: Mutex<Vec<JoinHandle<()>>>,
 }
 
 /// The app's key for this device's id.
@@ -578,9 +588,9 @@ impl Remote {
             id
         });
         let (out, rx) = mpsc::channel();
-        let remote = Arc::new(Remote { client, id, me, player, shown, discovery, inner: Mutex::default(), retry: Condvar::new(), timing: Condvar::new(), out });
+        let remote = Arc::new(Remote { client, id, me, player, shown, discovery, inner: Mutex::default(), retry: Condvar::new(), timing: Condvar::new(), out: Mutex::new(Some(out)), threads: Mutex::default() });
         let (client, who) = (remote.client.clone(), remote.who());
-        // Sends one at a time, in order; it ends with the remote.
+        // Sends one at a time, in order; it ends once the remote stops or goes.
         let _ = std::thread::Builder::new().name("nori-remote-out".into()).spawn(move || {
             for o in rx {
                 deliver(&client, &who, o);
@@ -588,8 +598,8 @@ impl Remote {
         });
         // Whether the server relays, asked once: one poll that is not held.
         let me = remote.clone();
-        let _ = std::thread::Builder::new().name("nori-remote-probe".into()).spawn(move || {
-            let got = block_on(transport::get(&*me.client.transport, me.poll_url(None, false), 0));
+        remote.spawn("nori-remote-probe", move || {
+            let Some(got) = me.get(me.poll_url(None, false), 0) else { return };
             let serving = {
                 let mut i = me.inner.lock();
                 if let Some(found) = support(&got) {
@@ -897,6 +907,35 @@ impl Remote {
         })
     }
 
+    /// Ends remote control here for good: leaves the relay, withdraws the door, ends a hosted jam, stops
+    /// mirroring, and ends every thread this remote started, a held poll at once. Queued sends still go.
+    pub fn stop(self: Arc<Self>) {
+        self.clone().serve(false);
+        self.clone().watch(false);
+        self.clone().jam_close();
+        let waiting = {
+            let mut i = self.inner.lock();
+            i.stopped = true;
+            i.mirror = None;
+            i.generation += 1;
+            i.relay_polling = false;
+            i.lan_generation += 1;
+            i.timing += 1;
+            std::mem::take(&mut i.waiting)
+        };
+        self.retry.notify_all();
+        self.timing.notify_all();
+        waiting.into_values().for_each(Waker::wake);
+        self.out.lock().take();
+        let here = std::thread::current().id();
+        for t in std::mem::take(&mut *self.threads.lock()) {
+            if t.thread().id() != here {
+                let _ = t.join();
+            }
+        }
+        self.shown.changed();
+    }
+
     /// Leaves the jam this guest profile is in; the app then drops the profile.
     pub async fn jam_leave(&self) -> Result<(), NetError> {
         transport::get(&*self.client.transport, self.relay_url("noriRemote.leave", &[]), 0).await.map(|_| ())
@@ -957,7 +996,40 @@ impl Remote {
     }
 
     fn out(&self, o: Out) {
-        let _ = self.out.send(o);
+        if let Some(out) = &*self.out.lock() {
+            let _ = out.send(o);
+        }
+    }
+
+    /// Starts a thread [`Remote::stop`] joins; none once stopped.
+    fn spawn(&self, name: &str, run: impl FnOnce() + Send + 'static) {
+        let mut threads = self.threads.lock();
+        if self.inner.lock().stopped {
+            return;
+        }
+        threads.retain(|t| !t.is_finished());
+        if let Ok(t) = std::thread::Builder::new().name(name.into()).spawn(run) {
+            threads.push(t);
+        }
+    }
+
+    /// A GET through the client, on this thread; None when the remote stopped meanwhile (the request is
+    /// cancelled).
+    fn get(&self, url: String, timeout_ms: u32) -> Option<Result<Vec<u8>, NetError>> {
+        let me = std::thread::current().id();
+        let mut got = std::pin::pin!(transport::get(&*self.client.transport, url, timeout_ms));
+        let out = block_on(std::future::poll_fn(|cx| {
+            {
+                let mut i = self.inner.lock();
+                if i.stopped {
+                    return Poll::Ready(None);
+                }
+                i.waiting.insert(me, cx.waker().clone());
+            }
+            got.as_mut().poll(cx).map(Some)
+        }));
+        self.inner.lock().waiting.remove(&me);
+        out
     }
 
     fn next_id(&self) -> u64 {
@@ -1039,11 +1111,11 @@ impl Remote {
         self.retry.notify_all();
         if let Some(generation) = start_relay {
             let me = self.clone();
-            let _ = std::thread::Builder::new().name("nori-remote".into()).spawn(move || me.poll_relay(generation));
+            self.spawn("nori-remote", move || me.poll_relay(generation));
         }
         for (service, generation) in start_peers {
             let me = self.clone();
-            let _ = std::thread::Builder::new().name("nori-remote-lan".into()).spawn(move || me.poll_peer(service, generation));
+            self.spawn("nori-remote-lan", move || me.poll_peer(service, generation));
         }
         self.shown.changed();
     }
@@ -1057,7 +1129,7 @@ impl Remote {
                 }
                 self.poll_url(i.since, i.serving)
             };
-            let got = block_on(transport::get(&*self.client.transport, url, POLL_TIMEOUT_MS));
+            let Some(got) = self.get(url, POLL_TIMEOUT_MS) else { return };
             let received = clock::now_us();
             match (support(&got), got) {
                 (Some(RelaySupport::Supported), Ok(body)) => {
@@ -1105,7 +1177,8 @@ impl Remote {
                 None => format!("/rest/noriRemote.poll?dev={}", self.id),
             };
             let url = format!("{base}{}", lan::signed(&secret, "GET", &query, b"", db::now_ms()));
-            let got = block_on(transport::get(&*self.client.transport, url, POLL_TIMEOUT_MS)).ok().and_then(|b| serde_json::from_slice::<Answer>(&b).ok());
+            let Some(got) = self.get(url, POLL_TIMEOUT_MS) else { return };
+            let got = got.ok().and_then(|b| serde_json::from_slice::<Answer>(&b).ok());
             let received = clock::now_us();
             let Some(a) = got else {
                 // Not there at this address: the next one it was seen at, until none answers.
@@ -1213,7 +1286,7 @@ impl Remote {
         self.timing.notify_all();
         if let Some(generation) = keeper {
             let me = self.clone();
-            let _ = std::thread::Builder::new().name("nori-remote-clock".into()).spawn(move || me.keep_time(generation));
+            self.spawn("nori-remote-clock", move || me.keep_time(generation));
         }
         self.follow_active();
         self.keep_polling();
@@ -1246,7 +1319,7 @@ impl Remote {
                     let Some((_, secret)) = self.client.core.account.read().clone() else { return };
                     let t1 = clock::now_us();
                     let url = format!("{base}{}", lan::signed(&secret, "GET", &format!("/rest/noriRemote.time?dev={}&t1={t1}", self.id), b"", db::now_ms()));
-                    let got = block_on(transport::get(&*self.client.transport, url, 5_000));
+                    let Some(got) = self.get(url, 5_000) else { return };
                     let t4 = clock::now_us();
                     if let Some(Body::Clock { t1, t2, t3 }) = got.ok().and_then(|b| serde_json::from_slice(&b).ok()) {
                         timed(&mut self.inner.lock(), &id, clock::Exchange { t1, t2, t3, t4 });

@@ -121,7 +121,7 @@ class Remotes(private val context: Context, private val nori: Nori) {
     }
 
     private fun drop() {
-        remote?.let { r -> r.serve(false); r.watch(false); r.jamClose() }
+        remote?.stop()
         remote = null
         client = null
         main.post { _mirror.value = null }
