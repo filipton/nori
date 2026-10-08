@@ -61,6 +61,8 @@ pub enum Msg {
     Jam(Result<(), String>),
     /// Another device set the volume (0 to 1).
     Volume(f32),
+    /// A heart changed, here or on another device.
+    Starred,
     /// A message from the session with this id; dropped once another session is open.
     From(u64, Box<Msg>),
 }
@@ -346,6 +348,7 @@ fn worded(s: Said) -> Msg {
         Said::Reachable(r) => Msg::Reachable(r.map_err(|e| net_error(&e))),
         Said::Remote => Msg::Remote,
         Said::Volume(v) => Msg::Volume(v),
+        Said::Starred => Msg::Starred,
         Said::Note(n) => match n {
             Note::Queued { next, songs: n } => note(format!("{}: {}", if next { "Playing next" } else { "Added to the queue" }, songs(n)), false),
             Note::NothingToPlay => note("Nothing to play".into(), false),

@@ -321,7 +321,7 @@ impl Session {
 fn worded(s: Said) -> Option<Msg> {
     let note = |text: String, error: bool| Msg::Note { text, error };
     Some(match s {
-        Said::Remote => return None,
+        Said::Remote | Said::Starred => return None,
         Said::Volume(v) => Msg::Volume(v),
         Said::Engine(e) => Msg::Engine(e),
         Said::Lyrics { song, pick } => Msg::Lyrics { song, pick },

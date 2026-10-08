@@ -61,6 +61,11 @@ impl StarMarks {
         self.clone()
     }
 
+    /// Whether the item shows starred: this session's mark, else what its record says (`listed`).
+    pub fn starred(&self, kind: Starrable, id: &str, listed: bool) -> bool {
+        self.of(kind).get(id).copied().unwrap_or(listed)
+    }
+
     /// False only when this session unstarred the item; an item without a mark keeps whatever the list says.
     pub fn kept(&self, kind: Starrable, id: &str) -> bool {
         self.of(kind).get(id) != Some(&false)
@@ -118,6 +123,9 @@ mod tests {
         assert_eq!((m2.songs.get("1"), m2.albums.get("1"), m2.artists.get("1")), (Some(&true), None, None));
         m.mark(Starrable::Album, "2".into(), false);
         assert!(m.overlay_albums(vec![Album { id: "2".into(), ..Default::default() }]).is_empty());
+        // A heart shows the mark over the record, either way.
+        let shown = (m.starred(Starrable::Song, "1", false), m.starred(Starrable::Album, "2", true), m.starred(Starrable::Song, "7", true));
+        assert_eq!(shown, (true, false, true));
     }
 
 }

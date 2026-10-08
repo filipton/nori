@@ -216,7 +216,7 @@ fn pack(said: &Said) -> Packed {
             p.text = c(&e.to_string());
         }
         // The iPod lists no other devices, and the system keeps its volume.
-        Said::Remote | Said::Volume(_) => {}
+        Said::Remote | Said::Volume(_) | Said::Starred => {}
     }
     p
 }

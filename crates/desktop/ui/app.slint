@@ -66,9 +66,18 @@ export struct JamAsk {
     art: string,
 }
 
+// A line of a song's menu beyond playing it: 0 its heart, 1 its album, 2 one of its artists (`id` the page).
+export struct SongGo {
+    title: string,
+    kind: int,
+    id: string,
+}
+
 export struct SongRow {
     title: string,
     artist: string,
+    // The heart, the album and the artists, in its menu.
+    menu: [SongGo],
     album: string,
     // The pages a click on the artist and the album opens; empty for none.
     artist-id: string,
@@ -208,6 +217,7 @@ export global Icons {
     out property <string> person: "M15.5 8 A3.5 3.5 0 1 1 8.5 8 A3.5 3.5 0 1 1 15.5 8 M5 20 Q5 14 12 14 Q19 14 19 20";
     out property <string> people: "M9.5 7.5 A3 3 0 1 1 9.5 13.5 A3 3 0 1 1 9.5 7.5 M3.5 19.5 Q3.5 15.5 9.5 15.5 Q15.5 15.5 15.5 19.5 M15 5.2 A2.7 2.7 0 1 1 16.5 10.6 M18 14.2 Q20.8 15 20.8 18.5";
     out property <string> check: "M5 12.5 L10 17.5 L19.5 6.5";
+    out property <string> heart: "M12 20 C10.5 18.9 3.5 14.3 3.5 9 C3.5 6.4 5.5 4.5 8 4.5 C9.7 4.5 11.2 5.5 12 7 C12.8 5.5 14.3 4.5 16 4.5 C18.5 4.5 20.5 6.4 20.5 9 C20.5 14.3 13.5 18.9 12 20 Z";
     out property <string> copy: "M10 8.5 L18.5 8.5 Q19.5 8.5 19.5 9.5 L19.5 18.5 Q19.5 19.5 18.5 19.5 L10 19.5 Q9 19.5 9 18.5 L9 9.5 Q9 8.5 10 8.5 Z M5.5 15.5 Q4.5 15.5 4.5 14.5 L4.5 5.5 Q4.5 4.5 5.5 4.5 L14 4.5 Q15 4.5 15 5.5";
     out property <string> devices: "M3 15 L3 6 Q3 5 4 5 L15 5 Q16 5 16 6 L16 8 M1.5 18 L13 18 M18 9 L21 9 Q22 9 22 10 L22 18 Q22 19 21 19 L18 19 Q17 19 17 18 L17 10 Q17 9 18 9 Z";
     out property <string> computer: "M3.5 5.5 Q3.5 4.5 4.5 4.5 L19.5 4.5 Q20.5 4.5 20.5 5.5 L20.5 15 Q20.5 16 19.5 16 L4.5 16 Q3.5 16 3.5 15 Z M8.5 19.5 L15.5 19.5 M12 16 L12 19.5";
@@ -824,6 +834,7 @@ component SongLine inherits Rectangle {
     callback next;
     callback later;
     callback jam;
+    callback star;
     height: root.thumb ? 56px : 44px;
     border-radius: 7px;
     background: root.song.playing ? root.ink : (touch.has-hover ? Theme.hover : transparent);
@@ -856,6 +867,19 @@ component SongLine inherits Rectangle {
             if Jam.on && !Jam.hosting: MenuItem {
                 title: "Start a Jam";
                 activated => { root.jam(); }
+            }
+            MenuSeparator {}
+            for m in root.song.menu: MenuItem {
+                title: m.title;
+                activated => {
+                    if m.kind == 0 {
+                        root.star();
+                    } else if m.kind == 1 {
+                        Go.album(m.id);
+                    } else {
+                        Go.artist(m.id);
+                    }
+                }
             }
         }
         HorizontalLayout {
@@ -1111,6 +1135,7 @@ component PlayerControls inherits Rectangle {
     in property <string> now-album;
     in property <string> now-artist-id;
     in property <string> now-album-id;
+    in property <bool> now-starred;
     in property <string> now-art;
     in property <bool> playing;
     in property <int> position-ms;
@@ -1126,6 +1151,8 @@ component PlayerControls inherits Rectangle {
     // "Playing on <device>" while another device plays and this player controls it; empty while it plays here.
     in property <string> playing-on;
     pure callback art(string, int, int) -> image;
+    // The heart pressed.
+    callback star();
     callback toggle();
     callback next();
     callback previous();
@@ -1299,6 +1326,16 @@ component PlayerControls inherits Rectangle {
                         root.seek(v);
                     }
                 }
+            }
+            if root.has-song: IconButton {
+                y: (parent.height - self.height) / 2;
+                path: Icons.heart;
+                solid: root.now-starred;
+                lit: root.now-starred;
+                quiet: true;
+                size: 30px;
+                icon: 18px;
+                clicked => { root.star(); }
             }
         }
         Rectangle {
@@ -3101,6 +3138,7 @@ export component AppWindow inherits Window {
     in property <string> now-artist;
     in property <string> now-album;
     in property <string> now-artist-id;
+    in property <bool> now-starred;
     in property <string> now-album-id;
     in property <string> now-art;
     in property <bool> playing;
@@ -3241,7 +3279,7 @@ export component AppWindow inherits Window {
     callback play-album(string);
     callback play-playlist(string);
     // A song of a list: 0 the page, 1 the songs, 2 search. `how`: 0 play, 1 next, 2 at the end, 3 play and
-    // start a jam.
+    // start a jam, 4 its heart.
     callback song(int, int, int);
     callback play-page(bool);
     // Plays an album (0) or playlist (1) and starts a jam.
@@ -3251,6 +3289,8 @@ export component AppWindow inherits Window {
     callback more();
     callback search-edited(string);
     callback toggle();
+    // The heart of the song playing pressed.
+    callback star();
     callback next();
     callback previous();
     callback seek(float);
@@ -3536,6 +3576,7 @@ export component AppWindow inherits Window {
                                         picture: root.art(s.art, 0, root.covers-rev);
                                         play => { root.song(2, i, 0); }
                                         jam => { root.song(2, i, 3); }
+                                        star => { root.song(2, i, 4); }
                                         next => { root.song(2, i, 1); }
                                         later => { root.song(2, i, 2); }
                                     }
@@ -3720,6 +3761,7 @@ export component AppWindow inherits Window {
                                     picture: root.art(s.art, 0, root.covers-rev);
                                     play => { root.song(1, i, 0); }
                                     jam => { root.song(1, i, 3); }
+                                    star => { root.song(1, i, 4); }
                                     next => { root.song(1, i, 1); }
                                     later => { root.song(1, i, 2); }
                                 }
@@ -3928,6 +3970,7 @@ export component AppWindow inherits Window {
                                             picture: root.page-kind == 2 ? root.art(s.art, 0, root.covers-rev) : root.art("", 0, 0);
                                             play => { root.song(0, s.index, 0); }
                                             jam => { root.song(0, s.index, 3); }
+                                            star => { root.song(0, s.index, 4); }
                                             next => { root.song(0, s.index, 1); }
                                             later => { root.song(0, s.index, 2); }
                                         }
@@ -4117,6 +4160,7 @@ export component AppWindow inherits Window {
                         now-artist: root.now-artist;
                         now-album: root.now-album;
                         now-artist-id: root.now-artist-id;
+                        now-starred: root.now-starred;
                         now-album-id: root.now-album-id;
                         now-art: root.now-art;
                         playing: root.playing;
@@ -4132,6 +4176,7 @@ export component AppWindow inherits Window {
                         playing-on: root.playing-on;
                         art(a, s, r) => { return root.art(a, s, r); }
                         toggle => { root.toggle(); }
+                        star => { root.star(); }
                         next => { root.next(); }
                         previous => { root.previous(); }
                         seek(v) => { root.seek(v); }
@@ -4494,6 +4539,15 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    IconButton {
+                        y: 2px;
+                        path: Icons.heart;
+                        solid: root.now-starred;
+                        ink: #ffffffcc;
+                        size: 34px;
+                        icon: 20px;
+                        clicked => { root.star(); }
+                    }
                 }
                 Rectangle {
                     height: 20px;
@@ -4737,6 +4791,7 @@ export component PlayerBar inherits Window {
     in property <string> now-artist;
     in property <string> now-album;
     in property <string> now-artist-id;
+    in property <bool> now-starred;
     in property <string> now-album-id;
     in property <string> now-art;
     in property <bool> playing;
@@ -4752,6 +4807,7 @@ export component PlayerBar inherits Window {
     in property <string> playing-on;
     pure callback art(string, int, int) -> image;
     callback toggle();
+    callback star();
     callback next();
     callback previous();
     callback seek(float);
@@ -4774,6 +4830,7 @@ export component PlayerBar inherits Window {
         now-artist: root.now-artist;
         now-album: root.now-album;
         now-artist-id: root.now-artist-id;
+        now-starred: root.now-starred;
         now-album-id: root.now-album-id;
         now-art: root.now-art;
         playing: root.playing;
@@ -4789,6 +4846,7 @@ export component PlayerBar inherits Window {
         playing-on: root.playing-on;
         art(a, s, r) => { return root.art(a, s, r); }
         toggle => { root.toggle(); }
+        star => { root.star(); }
         next => { root.next(); }
         previous => { root.previous(); }
         seek(v) => { root.seek(v); }

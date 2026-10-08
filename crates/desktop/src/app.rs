@@ -25,7 +25,7 @@ use crate::compositor::{Compositor, Focus};
 use crate::session::{self, CoverKey, CoverSize, Data, Fetch, Msg, Req, Session, Tx};
 use crate::settings::{Act, Target};
 use crate::words;
-use crate::{AppWindow, Card, LyricPiece, Pick, PlayerBar, Shelf, SidebarWindow, SongRow};
+use crate::{AppWindow, Card, LyricPiece, Pick, PlayerBar, Shelf, SidebarWindow, SongGo, SongRow};
 
 /// Cover fetch sizes, px square.
 const SMALL_PX: u32 = 256;
@@ -241,6 +241,7 @@ fn player(ui: &AppWindow, art: impl Fn(SharedString, i32) -> Image + 'static) ->
     bar.set_font(ui.get_font());
     bar.on_art(move |id, size, _rev| art(id, size));
     bar.on_toggle(to_main(ui, |m| m.invoke_toggle()));
+    bar.on_star(to_main(ui, |m| m.invoke_star()));
     bar.on_next(to_main(ui, |m| m.invoke_next()));
     bar.on_previous(to_main(ui, |m| m.invoke_previous()));
     bar.on_toggle_shuffle(to_main(ui, |m| m.invoke_toggle_shuffle()));
@@ -420,6 +421,11 @@ fn wire(ui: &AppWindow, h: &AppHandle) {
     on!(ui.on_more, h, |a| a.more_songs());
     on!(ui.on_search_edited, h, |a, t| a.search_edited(&t));
     on!(ui.on_toggle, h, |a| a.on_session(|s| s.toggle()));
+    on!(ui.on_star, h, |a| {
+        if let Some(song) = a.song.clone() {
+            a.star(&song);
+        }
+    });
     on!(ui.on_next, h, |a| a.on_session(|s| s.next()));
     on!(ui.on_previous, h, |a| a.on_session(|s| s.previous()));
     on!(ui.on_seek, h, |a, f| a.seek(f));
@@ -914,7 +920,7 @@ impl App {
         let heard = self.heard.as_deref();
         let find = self.find.to_lowercase();
         let hit = |s: &Song| find.is_empty() || [&s.title, &s.artist, &s.album].iter().any(|t| t.to_lowercase().contains(&find));
-        ModelRc::new(VecModel::from(songs.iter().enumerate().filter(|(_, s)| hit(s)).map(|(i, s)| row(s, i, heard == Some(s.id.as_str()))).collect::<Vec<_>>()))
+        ModelRc::new(VecModel::from(songs.iter().enumerate().filter(|(_, s)| hit(s)).map(|(i, s)| row(s, i, heard == Some(s.id.as_str()), self.starred(s))).collect::<Vec<_>>()))
     }
 
     /// Re-applies the find filter to every list.
@@ -1006,6 +1012,9 @@ impl App {
             _ => (&self.search_songs, None),
         };
         let Some(one) = songs.get(i).cloned() else { return };
+        if how == 4 {
+            return self.star(&one);
+        }
         self.on_session(|s| match how {
             0 => s.play(songs.clone(), i, false, origin),
             3 => {
@@ -1041,6 +1050,17 @@ impl App {
         }
         self.on_session(|s| s.seek(ms));
         self.lyrics_step(true);
+    }
+
+    /// Whether `s` shows starred: as the device playing shows it, while that is another one.
+    fn starred(&self, s: &Song) -> bool {
+        self.session.as_ref().is_some_and(|x| x.starred(s, self.elsewhere.as_ref()))
+    }
+
+    /// Flips `s`'s heart, once: through the device playing while it has the song, else here.
+    fn star(&self, s: &Song) {
+        let on = !self.starred(s);
+        self.on_session(|x| x.star_song(s.id.clone(), on, self.elsewhere.as_ref()));
     }
 
     /// Where the song playing is now, here or on the device playing.
@@ -1114,6 +1134,10 @@ impl App {
                 self.jam_shown();
             }
             Msg::Jam(Err(e)) => self.say(&format!("{} ({e})", words::JAM_FAILED), true),
+            Msg::Starred => {
+                self.follow();
+                self.mark_playing();
+            }
             Msg::Volume(v) if self.elsewhere.is_none() => self.ui().set_volume(v),
             Msg::Volume(_) => {}
             Msg::LoggedIn(r) => {
@@ -1228,6 +1252,7 @@ impl App {
             p.set_now_album(ui.get_now_album());
             p.set_now_artist_id(ui.get_now_artist_id());
             p.set_now_album_id(ui.get_now_album_id());
+            p.set_now_starred(ui.get_now_starred());
             p.set_now_art(ui.get_now_art());
             p.set_playing(ui.get_playing());
             p.set_position_ms(ui.get_position_ms());
@@ -1597,6 +1622,7 @@ impl App {
         if id != self.heard {
             self.song_shown(id);
         }
+        ui.set_now_starred(self.song.as_ref().is_some_and(|s| self.starred(s)));
         if let Some(e) = &self.elsewhere {
             let m = &e.mirror;
             ui.set_shuffle(m.shuffle);
@@ -1605,7 +1631,7 @@ impl App {
             if let Some(v) = e.volume() {
                 ui.set_volume(v);
             }
-            let rows = e.upcoming().iter().map(|r| row(&r.song, r.index as usize, false)).collect();
+            let rows = e.upcoming().iter().map(|r| row(&r.song, r.index as usize, false, self.starred(&r.song))).collect();
             ui.set_queue_from(queue_from(e.upcoming().iter().map(|r| &r.song)).into());
             self.queue_shown(rows);
         }
@@ -1622,7 +1648,8 @@ impl App {
             ui.set_shuffle(v.shuffle);
             ui.set_repeat(v.repeat as i32);
             let jam = self.session.as_ref().and_then(|s| s.remote()).filter(|_| self.jam_hosting);
-            self.queue_shown(queue_rows(&v, |id| jam.as_ref().and_then(|r| r.jam_added_by(id))));
+            let rows = queue_rows(&v, |id| jam.as_ref().and_then(|r| r.jam_added_by(id)), |s| self.starred(s));
+            self.queue_shown(rows);
             ui.set_queue_from(queue_from(upcoming(&v).map(|(_, s)| s)).into());
             self.queue = Some(v);
         }
@@ -1666,10 +1693,11 @@ fn artist_card(a: &nori_core::Artist) -> Card {
     Card { id: a.id.as_str().into(), title: a.name.as_str().into(), sub: words::albums(a.album_count).into(), art: a.cover_art.clone().unwrap_or_default().into(), sub_artist: SharedString::default() }
 }
 
-fn row(s: &Song, index: usize, playing: bool) -> SongRow {
+fn row(s: &Song, index: usize, playing: bool, starred: bool) -> SongRow {
     SongRow {
         title: s.title.as_str().into(),
         artist: s.artist.as_str().into(),
+        menu: song_menu(s, starred),
         album: s.album.as_str().into(),
         artist_id: s.artist_id.clone().unwrap_or_default().into(),
         album_id: s.album_id.clone().unwrap_or_default().into(),
@@ -1683,9 +1711,22 @@ fn row(s: &Song, index: usize, playing: bool) -> SongRow {
     }
 }
 
+/// The heart of `s`'s menu (menus.rs's `song_menu`), `starred` as its heart shows.
+fn song_menu(s: &Song, starred: bool) -> ModelRc<SongGo> {
+    use nori_core::menus::{song_menu, SongAction, SongDownload};
+    let lines: Vec<SongGo> = song_menu(s.clone(), starred, SongDownload::None, false, false)
+        .into_iter()
+        .filter_map(|item| {
+            let title = words::song_action(&item.action)?.into();
+            matches!(item.action, SongAction::Favourite { .. }).then(|| SongGo { title, kind: 0, id: SharedString::default() })
+        })
+        .collect();
+    ModelRc::new(VecModel::from(lines))
+}
+
 /// Upcoming songs in play order; each row carries its list index, and who asked for it in the jam (`by`).
-fn queue_rows(v: &PlaylistView, by: impl Fn(&str) -> Option<String>) -> Vec<SongRow> {
-    upcoming(v).map(|(i, s)| SongRow { by: by(&s.id).unwrap_or_default().into(), ..row(s, i as usize, false) }).collect()
+fn queue_rows(v: &PlaylistView, by: impl Fn(&str) -> Option<String>, starred: impl Fn(&Song) -> bool) -> Vec<SongRow> {
+    upcoming(v).map(|(i, s)| SongRow { by: by(&s.id).unwrap_or_default().into(), ..row(s, i as usize, false, starred(s)) }).collect()
 }
 
 /// The songs after the current one in play order, with their list indexes.

@@ -115,7 +115,8 @@ impl RemotePlayer for HostPlayer {
             Op::Shuffle { on } => h.shuffle(on),
             Op::Repeat { mode } => h.repeat(mode),
             Op::Volume { percent } => return h.volume_from_afar(percent as f32 / 100.0),
-            Op::Star { id, on } => h.star(id, on),
+            // The devices see it once the core has marked it.
+            Op::Star { id, on } => return h.star(id, on),
             // The core keeps transfers, pages, time exchanges and jam ops to itself.
             Op::Transfer { .. } | Op::Page { .. } | Op::Clock { .. } | Op::Request { .. } | Op::Decide { .. } | Op::Promote { .. } | Op::Kick { .. } => {}
         }
@@ -169,6 +170,11 @@ impl Elsewhere {
     /// The song playing there.
     pub fn song(&self) -> Option<&Song> {
         self.row().map(|r| &r.song)
+    }
+
+    /// Whether the song `id` is starred as the device shows it; None when it is not in its queue.
+    pub(crate) fn starred(&self, id: &str) -> Option<bool> {
+        self.mirror.rows.iter().find(|r| r.song.id == id).map(|r| r.song.starred)
     }
 
     fn row(&self) -> Option<&MirrorRow> {
@@ -433,6 +439,8 @@ mod tests {
         e.mirror.at = None;
         assert_eq!(e.upcoming().len(), 3, "nothing playing: the whole queue is to come");
         assert_eq!(e.volume(), Some(0.4));
+        e.mirror.rows[2].song.starred = true;
+        assert_eq!((e.starred("c"), e.starred("a"), e.starred("x")), (Some(true), Some(false), None), "hearts of its queue only");
     }
 
     #[test]

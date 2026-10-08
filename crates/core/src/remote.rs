@@ -1405,11 +1405,15 @@ impl Remote {
         });
         let i = self.inner.lock();
         let jam = i.hosted.as_ref().map(|h| &h.jam);
+        // Hearts as this device shows them: pressed here or by another device since the song was read.
+        let stars = self.client.core.stars.lock();
         let entries = picked
             .into_iter()
             .map(|(index, turn, id)| {
                 let by = jam.and_then(|j| j.added_by(&id));
-                Entry::of(index, turn, &session.song(&id).unwrap_or_else(|| Song::only_id(id)), by)
+                let mut song = session.song(&id).unwrap_or_else(|| Song::only_id(id));
+                song.starred = stars.starred(crate::client::Starrable::Song, &song.id, song.starred);
+                Entry::of(index, turn, &song, by)
             })
             .collect();
         QueueRead { entries, index, rev, len, shuffle, repeat }

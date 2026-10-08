@@ -45,6 +45,8 @@ pub enum Said {
     Remote,
     /// Another device set the volume (0 to 1).
     Volume(f32),
+    /// A heart changed (pressed here, or by another device): hearts are read again ([`Session::starred`]).
+    Starred,
 }
 
 /// Something done or failed, for the status line.
@@ -149,11 +151,18 @@ impl LyricsShown for Shown {
     }
 }
 
-/// The clients read star marks from the core when drawing.
-struct NoMarks;
+/// The core's star marks moved: the client reads its hearts again, and other devices see the queue's.
+struct Hearts {
+    out: Out,
+    remotes: Arc<crate::remote::Remotes>,
+    engine: Arc<Engine>,
+}
 
-impl StarsShown for NoMarks {
-    fn marks(&self, _: nori_core::stars::StarMarks) {}
+impl StarsShown for Hearts {
+    fn marks(&self, _: nori_core::stars::StarMarks) {
+        self.remotes.played(&self.engine);
+        (self.out)(Said::Starred);
+    }
 }
 
 pub struct Open<'a> {
@@ -625,15 +634,30 @@ impl Session {
     /// Stars or unstars on the server (queued when offline); says so if "Confirm favorites" is on, and
     /// always when it fails.
     pub fn star(&self, kind: Starrable, id: String, on: bool) {
-        let (client, out, notice) = (self.client.clone(), self.out.clone(), self.core.favourite_notice());
+        let (client, out, notice, hearts) = (self.client.clone(), self.out.clone(), self.core.favourite_notice(), self.handle().hearts());
         spawn("nori-star", move || {
-            let said = match block_on(client.star(kind, id, on, Arc::new(NoMarks))) {
+            let said = match block_on(client.star(kind, id, on, hearts)) {
                 Ok(()) if !notice => return,
                 Ok(()) => Note::Starred(on),
                 Err(e) => Note::StarFailed(e),
             };
             out(Said::Note(said));
         });
+    }
+
+    /// Whether `song` shows starred: as `there` (the device playing, while it is another one) shows it
+    /// when the song is in its queue, else this session's mark over the song's record.
+    pub fn starred(&self, song: &Song, there: Option<&crate::remote::Elsewhere>) -> bool {
+        there.and_then(|e| e.starred(&song.id)).unwrap_or_else(|| self.core.starred(Starrable::Song, &song.id, song.starred))
+    }
+
+    /// Stars or unstars a song once: through `there` while the song is in its queue (that device tells
+    /// the server and shows it), else from here.
+    pub fn star_song(&self, id: String, on: bool, there: Option<&crate::remote::Elsewhere>) {
+        match there.filter(|e| e.starred(&id).is_some()) {
+            Some(e) => e.send(Op::Star { id, on }),
+            None => self.star(Starrable::Song, id, on),
+        }
     }
 
     /// Runs a settings page's maintenance button.
@@ -831,11 +855,17 @@ impl Handle {
         }
     }
 
-    /// Another device favourited a song (or not): the server is told, and the core's marks follow.
+    /// The marks moving, as this session shows them.
+    fn hearts(&self) -> Arc<Hearts> {
+        Arc::new(Hearts { out: self.out.clone(), remotes: self.remotes.clone(), engine: self.engine.clone() })
+    }
+
+    /// Another device favourited a song (or not): the server is told, and the core's marks follow; the
+    /// devices see it once marked.
     pub(crate) fn star(&self, id: String, on: bool) {
-        let client = self.client.clone();
+        let (client, hearts) = (self.client.clone(), self.hearts());
         spawn("nori-star", move || {
-            if let Err(e) = block_on(client.star(Starrable::Song, id, on, Arc::new(NoMarks))) {
+            if let Err(e) = block_on(client.star(Starrable::Song, id, on, hearts)) {
                 nori_core::alog::info(&format!("remote: star not kept: {e}"));
             }
         });

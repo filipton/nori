@@ -413,6 +413,11 @@ impl Core {
     pub fn transfers_arc(&self) -> Arc<transfers::Downloads> {
         self.downloads.clone()
     }
+
+    /// Whether an item shows starred: this session's mark over its record's flag (`listed`).
+    pub fn starred(&self, kind: client::Starrable, id: &str, listed: bool) -> bool {
+        self.stars.lock().starred(kind, id, listed)
+    }
 }
 
 /// Deletes the vocals model and masks that Sing, now removed, kept in `sing/` beside the database at `db_path`.

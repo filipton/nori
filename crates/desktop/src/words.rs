@@ -66,6 +66,16 @@ pub fn net_error(e: &NetError) -> String {
     said.to_string()
 }
 
+/// A line of a song's menu, for the actions the desktop's menu offers beyond playing.
+pub fn song_action(a: &nori_core::menus::SongAction) -> Option<String> {
+    use nori_core::menus::SongAction as A;
+    Some(match a {
+        A::Favourite { on: true } => "Add to Favorites".into(),
+        A::Favourite { on: false } => "Remove from Favorites".into(),
+        _ => return None,
+    })
+}
+
 /// A mix's name, as its tile and page say it.
 pub fn mix_name(n: nori_core::mixes::board::MixName) -> &'static str {
     use nori_core::mixes::board::MixName as M;

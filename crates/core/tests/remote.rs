@@ -8,7 +8,8 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nori_core::client::{Client, NetProfile};
+use nori_core::client::{Client, NetProfile, Starrable};
+use nori_core::library::StarsShown;
 use nori_core::remote::{jam_join, Discovery, Playing, RelaySupport, Remote, RemoteMe, RemotePlayer, RemoteShown};
 use nori_core::transport::{block_on, Exchange, FailureKind, Transport, TransportError, TransportResponse};
 use nori_core::{Core, ServerConfig, Song};
@@ -264,7 +265,7 @@ impl Relay {
                 bump(&mut hub);
                 json(serde_json::json!({}))
             }
-            ("ping", _) => br#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.to_vec(),
+            ("ping" | "star" | "unstar", _) => br#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.to_vec(),
             _ => subsonic_error("not here"),
         }
     }
@@ -345,6 +346,12 @@ impl Discovery for Announced {
     fn browse(&self, _: bool) {}
 }
 
+struct NoMarks;
+
+impl StarsShown for NoMarks {
+    fn marks(&self, _: nori_core::stars::StarMarks) {}
+}
+
 /// The ops a device's player was told to carry out.
 struct Player(Mutex<Sender<Op>>);
 
@@ -365,6 +372,7 @@ impl RemoteShown for Shown {
 
 struct Device {
     core: Arc<Core>,
+    client: Arc<Client>,
     remote: Arc<Remote>,
     ops: Receiver<Op>,
     news: Receiver<()>,
@@ -382,8 +390,8 @@ impl Device {
         client.set_profile(NetProfile { url: SERVER.into(), ..Default::default() });
         let (ops_to, ops) = channel();
         let (news_to, news) = channel();
-        let remote = Remote::new(client, RemoteMe { name: name.into(), kind }, Arc::new(Player(Mutex::new(ops_to))), Arc::new(Shown(Mutex::new(news_to))), discovery);
-        Device { core, remote, ops, news }
+        let remote = Remote::new(client.clone(), RemoteMe { name: name.into(), kind }, Arc::new(Player(Mutex::new(ops_to))), Arc::new(Shown(Mutex::new(news_to))), discovery);
+        Device { core, client, remote, ops, news }
     }
 
     fn account(relay: &Arc<Relay>, kind: DeviceKind, name: &str) -> Device {
@@ -662,10 +670,14 @@ fn a_device_playing_elsewhere_is_mirrored_whole() {
     assert_eq!(m.volume, Some(15));
     assert!(m.rows[m.at.unwrap() as usize].song.starred);
     assert_eq!((phone.told(), phone.told()), (Op::Volume { percent: 15 }, Op::Star { id: "s60".into(), on: true }));
+    // The phone's player stars it, as its own heart would: once, on the server.
+    block_on(phone.client.star(Starrable::Song, "s60".into(), true, Arc::new(NoMarks))).unwrap();
+    assert_eq!(relay.asked().iter().filter(|a| a.starts_with("star ")).count(), 1);
 
-    // The phone's next word corrects what was foreseen.
+    // The phone's next word corrects what was foreseen, and keeps the heart its record does not have yet.
     phone.remote.clone().played(Playing { playing: false, position_ms: 7_000, index: None, volume: Some(30), ..Default::default() });
-    desk.until("the phone's volume", |r| r.active().filter(|m| m.volume == Some(30) && m.position_ms == 7_000));
+    let m = desk.until("the phone's volume", |r| r.active().filter(|m| m.volume == Some(30) && m.position_ms == 7_000));
+    assert!(m.rows[m.at.unwrap() as usize].song.starred);
     // Its own keys move it too.
     phone.remote.clone().volume_changed(Some(22));
     desk.until("the phone's keys", |r| r.active().filter(|m| m.volume == Some(22) && m.position_ms == 7_000));
