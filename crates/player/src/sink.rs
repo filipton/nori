@@ -7,12 +7,11 @@
 use std::collections::VecDeque;
 use std::ops::Range;
 
-use crate::chain::{Kept, Piece, Processors};
+use crate::chain::{Kept, Processors};
 use crate::dsp::{Band, Effects, Equalizer};
 use crate::engine::Downstream;
 use crate::pcm::{Encoding, Format};
 use crate::silence::SilenceSkipper;
-use crate::sing::{Masker, Placed};
 use crate::sound::sound_on;
 use crate::speed::{speed_active, SpeedPitch};
 
@@ -27,11 +26,6 @@ const REPLAY_FRAMES: u64 = 256;
 /// Kept input reaches this far behind what has played, so a track that replaces from a little before
 /// its play head (one that drops what its device holds) finds a kept state there.
 const KEPT_BEHIND_US: i64 = 500_000;
-
-/// Sing: input whose vocal mask rows have not come waits while the output holds this much ahead of the ear; below
-/// it the input goes on as it is, [`SING_STEP_US`] at a time.
-pub const SING_LEAD_US: i64 = 750_000;
-const SING_STEP_US: i64 = 250_000;
 
 /// How long a splice blends what the track held into what replaces it, µs.
 pub const BLEND_US: i64 = 5_000;
@@ -107,13 +101,11 @@ pub struct ChainSettings {
     pub skip_silence: bool,
     /// The equalizer is in the chain even while flat (all but bit-perfect output).
     pub keep_eq: bool,
-    /// Sing: the vocals' level (0 to 1) where a song has a mask; `None` is off.
-    pub sing: Option<f32>,
 }
 
 impl Default for ChainSettings {
     fn default() -> Self {
-        ChainSettings { sound: Sound::default(), speed: 1.0, pitch: 1.0, skip_silence: false, keep_eq: false, sing: None }
+        ChainSettings { sound: Sound::default(), speed: 1.0, pitch: 1.0, skip_silence: false, keep_eq: false }
     }
 }
 
@@ -173,8 +165,6 @@ pub trait Track {
 #[derive(Default)]
 struct Runner {
     chain: Processors,
-    /// The songs' vocal masks where they are on the timeline, for Sing's masker.
-    masks: Vec<Placed>,
     /// The last run's output.
     out: Vec<u8>,
     scratch: Vec<u8>,
@@ -185,30 +175,20 @@ struct Runner {
 impl Runner {
     /// Whether input at `gain` changes on its way.
     fn processing(&self, gain: f32) -> bool {
-        self.chain.sing.is_some() || self.chain.eq.as_ref().is_some_and(|e| gain != 1.0 || !e.is_identity()) || self.chain.silence.is_some() || self.chain.speed.is_some()
+        self.chain.eq.as_ref().is_some_and(|e| gain != 1.0 || !e.is_identity()) || self.chain.silence.is_some() || self.chain.speed.is_some()
     }
 
-    /// Runs `input` through Sing's masker, equalizer, silence skipping and speed (media3's order) into
-    /// `self.out`, each stage reading the last one's output (or `input`) and writing its own. `at`: the
-    /// input's timeline position and pace, for the masker; `None` skips it (what it held is already out).
-    /// The first of them scales the input by `gain` (there is an equalizer whenever it is not 1), so what
-    /// the masker holds leaves at its own song's gain.
-    fn run(&mut self, input: &[u8], float: bool, at: Option<(i64, f64)>, mut gain: f32) {
+    /// Runs `input` through equalizer, silence skipping and speed (media3's order) into `self.out`, each
+    /// stage reading the last one's output (or `input`) and writing its own. The equalizer scales the
+    /// input by `gain` (there is one whenever it is not 1).
+    fn run(&mut self, input: &[u8], float: bool, gain: f32) {
         let (mut out, mut spare) = (std::mem::take(&mut self.out), std::mem::take(&mut self.scratch));
         let mut made = false;
         self.meter_db = 0.0;
-        if let (Some(m), Some((pts, pace))) = (self.chain.sing.as_mut(), at) {
-            out.clear();
-            m.process(input, pts, pace, gain, &self.masks, &mut out);
-            gain = 1.0;
-            made = true;
-        }
         if let Some(eq) = self.chain.eq.as_mut().filter(|e| gain != 1.0 || !e.is_identity()) {
-            let from = if made { &out[..] } else { input };
             // Every byte is written over: only a longer input grows it.
-            spare.resize(from.len(), 0);
-            eq.process_bytes(from, &mut spare, float, gain);
-            std::mem::swap(&mut out, &mut spare);
+            out.resize(input.len(), 0);
+            eq.process_bytes(input, &mut out, float, gain);
             self.meter_db = eq.gain_reduction_db();
             made = true;
         }
@@ -327,10 +307,6 @@ pub struct Sink<T: Track> {
     carry: f64,
     /// The source ended: running dry is the end, not a gap.
     pub source_ended: bool,
-    /// Sing: kept input waits for its vocal mask's rows.
-    holds: bool,
-    /// Sing: the timeline position of the first input that went on before its mask's rows came.
-    unmasked: Option<i64>,
     /// Largest limiter reduction seen, dB.
     pub gain_reduction_db: f32,
     pub track: T,
@@ -363,8 +339,6 @@ impl<T: Track> Sink<T> {
             pending_media: 0.0,
             carry: 0.0,
             source_ended: false,
-            holds: false,
-            unmasked: None,
             gain_reduction_db: 0.0,
             track,
         }
@@ -421,7 +395,6 @@ impl<T: Track> Sink<T> {
         let Some(f) = self.format else { return };
         let s = &self.settings;
         self.runner.chain = Processors {
-            sing: s.sing.map(|level| Masker::new(f.rate, f.channels, f.encoding, level)),
             eq: s.eq_in().then(|| {
                 let mut eq = Equalizer::new(f.rate, f.channels);
                 s.sound.apply(&mut eq);
@@ -482,19 +455,6 @@ impl<T: Track> Sink<T> {
         at
     }
 
-    /// The songs' vocal masks where they are on the timeline changed: heard from the first frame the track
-    /// can still replace if one comes where input has already been run.
-    pub fn set_masks(&mut self, masks: &[Placed]) -> Option<(u64, u64)> {
-        let same = |a: &Placed, b: &Placed| a.at.start == b.at.start && std::sync::Arc::ptr_eq(&a.mask, &b.mask);
-        let reached = self.kept.last_pts().unwrap_or(i64::MIN);
-        let late = masks.iter().any(|m| m.at.start <= reached && !self.runner.masks.iter().any(|o| same(o, m)));
-        let gone = self.runner.masks.iter().any(|o| o.at.start <= reached && !masks.iter().any(|m| same(o, m)));
-        let at = (self.runner.chain.sing.is_some() && (late || gone)).then(|| self.splice()).flatten();
-        self.runner.masks.clear();
-        self.runner.masks.extend_from_slice(masks);
-        at
-    }
-
     /// The chain goes on with `to` from where it is.
     fn apply(&mut self, to: ChainSettings) {
         let Some(f) = self.format else {
@@ -503,12 +463,6 @@ impl<T: Track> Sink<T> {
         };
         let live = self.made > 0;
         let chain = &mut self.runner.chain;
-        match (chain.sing.as_mut(), to.sing) {
-            // Off, it plays what it holds at full level, then leaves.
-            (Some(m), level) => m.set_level(level.unwrap_or(1.0)),
-            (None, Some(level)) => chain.sing = Some(Masker::new(f.rate, f.channels, f.encoding, level)),
-            (None, None) => {}
-        }
         match chain.eq.as_mut() {
             // A flat equalizer stays until the next flush. The same sound again changes nothing.
             Some(eq) => {
@@ -538,11 +492,6 @@ impl<T: Track> Sink<T> {
             }
             None => {}
         }
-        if to.sing.is_none() && self.runner.chain.sing.is_some() {
-            self.drain_sing();
-            self.runner.chain.sing = None;
-        }
-        let chain = &mut self.runner.chain;
         match (to.skip_silence, chain.silence.is_some()) {
             (true, false) => chain.silence = Some(SilenceSkipper::new(f.rate, f.channels, f.encoding == Encoding::Float)),
             (false, true) => {
@@ -631,7 +580,7 @@ impl<T: Track> Sink<T> {
         while frame < until && out < reach {
             let Some((piece, end)) = self.kept.piece(frame) else { break };
             let to = end.min(until).min(frame + REPLAY_FRAMES);
-            self.runner.run(self.kept.frames(frame, to), float, Some(piece.at(frame, f.rate)), piece.gain);
+            self.runner.run(self.kept.frames(frame, to), float, piece.gain);
             out += (self.runner.out.len() / fb) as u64;
             media += (to - frame) as f64 * piece.pace;
             frame = to;
@@ -670,9 +619,6 @@ impl<T: Track> Sink<T> {
     pub fn fill(&mut self) -> bool {
         let Some(f) = self.format else { return true };
         let float = f.encoding == Encoding::Float;
-        // Output frame up to which input goes on without its vocal mask's rows, once asked.
-        let mut release = None;
-        self.holds = false;
         loop {
             if !self.write_pending() {
                 return false;
@@ -685,82 +631,14 @@ impl<T: Track> Sink<T> {
                 }
                 return true;
             };
-            let mut to = self.masked_to(piece, end, f.rate);
-            if to < end {
-                let release = *release.get_or_insert_with(|| self.release_to(f.rate));
-                if self.made < release {
-                    self.unmasked = self.unmasked.or(Some(piece.at(to, f.rate).0));
-                    to = end;
-                } else if to == self.run {
-                    self.holds = true;
-                    return true;
-                }
-            }
             self.mark();
-            let media = (to - self.run) as f64 * piece.pace;
+            let media = (end - self.run) as f64 * piece.pace;
             self.carry += media;
-            self.runner.run(self.kept.frames(self.run, to), float, Some(piece.at(self.run, f.rate)), piece.gain);
+            self.runner.run(self.kept.frames(self.run, end), float, piece.gain);
             self.run_media += media;
-            self.run = to;
+            self.run = end;
             self.made_output(0.0);
         }
-    }
-
-    /// The input frame (of `piece`, from the one run next, up to `end`) the masker has its vocal mask's rows for.
-    fn masked_to(&self, piece: Piece, end: u64, rate: u32) -> u64 {
-        if self.runner.chain.sing.as_ref().is_none_or(|m| m.level() >= 1.0) {
-            return end;
-        }
-        let (pts, pace) = piece.at(self.run, rate);
-        let Some(p) = self.runner.masks.iter().find(|p| p.at.contains(&pts)) else { return end };
-        let until = p.ready_until(pts);
-        if until == i64::MAX {
-            return end;
-        }
-        let frames = ((until - pts).max(0) as f64 * rate as f64 / (1e6 * pace)) as u64;
-        if self.run + frames < end {
-            p.mask.await_rows();
-        }
-        (self.run + frames).min(end)
-    }
-
-    /// Output frames made ahead of the ear, µs.
-    fn lead_us(&mut self, rate: u32) -> i64 {
-        (self.made.saturating_sub(self.track.played()) as i128 * 1_000_000 / rate as i128) as i64
-    }
-
-    /// The output frame input goes on to without its rows: a step past the lead if the output holds less, else none.
-    fn release_to(&mut self, rate: u32) -> u64 {
-        if self.lead_us(rate) >= SING_LEAD_US {
-            return 0;
-        }
-        self.track.played() + ((SING_LEAD_US + SING_STEP_US) * rate as i64 / 1_000_000) as u64
-    }
-
-    /// Sing: how long until input waiting for its vocal mask's rows goes on without them, µs; `None` when none waits.
-    pub fn sing_wait_us(&mut self) -> Option<i64> {
-        let rate = self.format?.rate;
-        self.holds.then(|| (self.lead_us(rate) - SING_LEAD_US).max(0))
-    }
-
-    /// Sing: input waits for rows that are being made.
-    pub fn rows_coming(&self) -> bool {
-        self.holds && self.runner.masks.iter().any(|p| p.mask.rows_coming())
-    }
-
-    /// Sing: the rows came for input that went on without them: it is made again from the first frame the track
-    /// can still replace.
-    pub fn remask(&mut self) -> Option<(u64, u64)> {
-        let pts = self.unmasked?;
-        let Some(p) = self.runner.masks.iter().find(|p| p.at.contains(&pts) && !p.mask.given_up()) else {
-            self.unmasked = None;
-            return None;
-        };
-        if p.ready_until(pts) <= pts {
-            return None;
-        }
-        self.unmasked = None;
-        self.splice()
     }
 
     /// Keeps the chain's state before the next input, now and then, and lets go of what has played.
@@ -867,12 +745,9 @@ impl<T: Track> Sink<T> {
         // Processors that stayed in after being turned off go now.
         let s = &self.settings;
         let chain = &mut self.runner.chain;
-        if (chain.sing.is_some(), chain.eq.is_some(), chain.silence.is_some(), chain.speed.is_some()) != (s.sing.is_some(), s.eq_in(), s.skip_silence, speed_active(s.speed, s.pitch)) {
+        if (chain.eq.is_some(), chain.silence.is_some(), chain.speed.is_some()) != (s.eq_in(), s.skip_silence, speed_active(s.speed, s.pitch)) {
             self.build_chain();
             return;
-        }
-        if let Some(m) = chain.sing.as_mut() {
-            m.reset();
         }
         if let Some(eq) = chain.eq.as_mut() {
             eq.reset();
@@ -898,8 +773,6 @@ impl<T: Track> Sink<T> {
         self.run_media = 0.0;
         self.made = 0;
         self.end = End::Open;
-        self.holds = false;
-        self.unmasked = None;
     }
 
     /// End of the queue: drains the chain once the kept input has all been run.
@@ -908,27 +781,15 @@ impl<T: Track> Sink<T> {
         self.fill();
     }
 
-    /// What Sing's masker holds, through the rest of the chain; the limiter's look-ahead pushed out with
-    /// silence; then what silence skipping and speed hold.
+    /// The limiter's look-ahead pushed out with silence, then what silence skipping and speed hold.
     fn drain(&mut self) {
         let Some(f) = self.format else { return };
-        let float = f.encoding == Encoding::Float;
-        self.drain_sing();
         let held = self.runner.chain.eq.as_ref().filter(|e| !e.is_identity()).map_or(0, Equalizer::delay_frames);
         if held > 0 {
-            self.runner.run(&vec![0u8; held * f.frame_bytes()], float, None, 1.0);
+            self.runner.run(&vec![0u8; held * f.frame_bytes()], f.encoding == Encoding::Float, 1.0);
             self.made_output(0.0);
         }
         self.runner.drain_stages(true);
-        self.made_output(0.0);
-    }
-
-    /// What Sing's masker holds, through the rest of the chain.
-    fn drain_sing(&mut self) {
-        let (Some(f), Some(m)) = (self.format, self.runner.chain.sing.as_mut()) else { return };
-        let mut tail = Vec::new();
-        m.end(&self.runner.masks, &mut tail);
-        self.runner.run(&tail, f.encoding == Encoding::Float, None, 1.0);
         self.made_output(0.0);
     }
 
@@ -1019,12 +880,6 @@ impl<T: Track> Downstream for Sink<T> {
         // Timeline position of the input's first frame.
         let pts = pts_us + ((from / fb) as f64 * self.pace * 1_000_000.0 / f.rate as f64) as i64;
         if self.runner.processing(self.gain) {
-            // Input waiting for its vocal mask fills the buffer with what the track holds: no more yet.
-            let waiting = f.us((self.kept.end() - self.run) as usize * fb);
-            if waiting > 0 && waiting + self.queued_us() >= self.capacity_us {
-                self.owed = Some(key);
-                return (false, 0);
-            }
             self.note_pace();
             self.submitted_frames += (input.len() / fb) as f64 * self.pace;
             self.kept.keep(input, self.pace, pts, self.gain);

@@ -183,20 +183,18 @@ impl SettingsStore {
     }
 }
 
-/// The live settings of one app, empty (the defaults) until opened, and the beat and vocals models' files.
-/// The beat model follows its switch; Sing is a quick toggle, so its model and masks stay when it goes off.
-/// The platform holds one for the app and hands it to the queue's session.
+/// The live settings of one app, empty (the defaults) until opened, and the beat model's file, which
+/// follows its switch. The platform holds one for the app and hands it to the queue's session.
 #[cfg_attr(feature = "ffi", derive(uniffi::Object))]
 pub struct Settings {
     kept: RwLock<Option<SettingsStore>>,
     pub model: nori_automix::beat_model::ModelFile,
-    pub sing_model: nori_automix::beat_model::ModelFile,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        use nori_automix::beat_model::{ModelFile, BEAT_THIS, UMX};
-        Settings { kept: RwLock::default(), model: ModelFile::new(&BEAT_THIS), sing_model: ModelFile::new(&UMX) }
+        use nori_automix::beat_model::{ModelFile, BEAT_THIS};
+        Settings { kept: RwLock::default(), model: ModelFile::new(&BEAT_THIS) }
     }
 }
 
@@ -500,29 +498,5 @@ mod tests {
         assert!(matches!(s.sound_tool(SoundTool::Import { text: "nothing here".into() }), Err(SoundError::NoFilters)));
         assert_eq!(s.prefs.eq_bands.len(), n - 1, "a failed import changes nothing");
         assert_eq!(s.sound_tool(SoundTool::RemoveBand { index: 999 }).unwrap(), None);
-    }
-
-    #[test]
-    fn sing_keeps_its_model_and_masks_when_switched_off() {
-        let dir = nori_testdir::TempDir::new("settings-models");
-        let settings = Settings::default();
-        let db = dir.join("nori.db").display().to_string();
-        settings.open(&db).unwrap();
-        let sing = dir.join("sing");
-        std::fs::create_dir_all(sing.join("masks")).unwrap();
-        std::fs::write(sing.join(settings.sing_model.model.file_name), b"weights").unwrap();
-        std::fs::write(sing.join("masks").join("73.mask"), b"mask").unwrap();
-        std::fs::create_dir_all(dir.join("models")).unwrap();
-        std::fs::write(dir.join("models").join(settings.model.model.file_name), b"weights").unwrap();
-        settings.model.set_home(&db);
-        settings.sing_model.set_home(&db);
-        let prefs = settings.current().unwrap();
-        settings.put(StoredPrefs { sing: true, auto_mix_better_beats: true, ..prefs.clone() });
-        settings.put(StoredPrefs { sing: false, auto_mix_better_beats: false, ..prefs.clone() });
-        settings.put(StoredPrefs { sing: true, ..prefs });
-        nori_db::background::flush();
-        assert!(settings.sing_model.ready().is_some(), "on again: no second download");
-        assert!(sing.join("masks").join("73.mask").is_file(), "the masks stay");
-        assert!(!dir.join("models").exists(), "the beat model goes with its switch");
     }
 }

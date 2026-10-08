@@ -60,8 +60,6 @@ pub struct CoreApp {
     /// The clock the engine's last call was made at.
     now_ms: i64,
     measurer: Option<Arc<Measurer>>,
-    /// Where Sing's masks are kept, and how many had come when the engine last asked.
-    masks: Option<(Arc<Analyses>, u64)>,
     /// Per-device sound: the core holding the profiles, the outputs seen, and the current one.
     devices: Option<Arc<Core>>,
     known: Vec<String>,
@@ -80,7 +78,6 @@ impl CoreApp {
             session,
             now_ms: 0,
             measurer: None,
-            masks: None,
             devices: None,
             known: Vec::new(),
             output: None,
@@ -112,15 +109,7 @@ impl CoreApp {
 
     /// With AutoMix on, upcoming songs on disk are measured by `measurer`.
     pub fn measuring(mut self, measurer: Arc<Measurer>) -> CoreApp {
-        self = self.singing(measurer.analyses.clone());
         self.measurer = Some(measurer);
-        self
-    }
-
-    /// Sing's masks are those of `analyses`, made by a measurer the platform drives (Android) or this
-    /// app's own ([`CoreApp::measuring`]).
-    pub fn singing(mut self, analyses: Arc<Analyses>) -> CoreApp {
-        self.masks = Some((analyses, 0));
         self
     }
 }
@@ -194,26 +183,6 @@ impl App for CoreApp {
 
     fn measured(&mut self) -> bool {
         self.measurer.as_ref().is_some_and(|m| m.measured.swap(false, Ordering::AcqRel))
-    }
-
-    fn vocal_mask(&mut self, song_id: &str) -> Option<Arc<nori_player::sing::VocalMask>> {
-        self.masks.as_ref()?.0.vocal_mask(song_id)
-    }
-
-    fn masks_made(&mut self) -> bool {
-        let Some((analyses, seen)) = self.masks.as_mut() else { return false };
-        analyses.masks.engine_is_here();
-        let made = analyses.masks.made();
-        made != std::mem::replace(seen, made)
-    }
-
-    fn sings(&mut self) -> bool {
-        let Some((analyses, _)) = self.masks.as_ref() else { return false };
-        analyses.client().is_some_and(|c| c.session().settings.prefs(|p| p.sing) && analyses.vocals().ready(&c))
-    }
-
-    fn sing_feed(&mut self, song_id: &str, from: u64, rate: u32, duration_us: i64) -> Option<nori_player::sing::Feeding> {
-        crate::sing::feed(&self.masks.as_ref()?.0, song_id, from, rate, duration_us)
     }
 
     /// The core keeps the window itself.
@@ -561,8 +530,7 @@ impl Shelf for StoreShelf {
 ///
 /// With "Better beat detection" (the `neural-beats` feature), the same decode keeps the ends of the
 /// current and next song for Beat This!'s intro and outro grids; the model loads when needed and is
-/// dropped with the thread. With Sing on, it fetches the vocals model and lets go of the masks of songs no
-/// longer near (`crate::sing` makes them as the player reads).
+/// dropped with the thread.
 pub struct Measurer {
     /// The profile to store into, asked per look (a profile switch replaces it).
     analyses: Arc<Analyses>,
@@ -583,9 +551,7 @@ pub struct Measurer {
 #[derive(Default)]
 struct Schedule {
     ids: Vec<String>,
-    /// Sing is on: masks are wanted too.
-    sing: bool,
-    /// Bumped on news: a new list, Sing switched, or a song arrived.
+    /// Bumped on news: a new list, or a song arrived.
     news: u64,
     /// The news last looked at.
     seen: u64,
@@ -599,11 +565,10 @@ struct Schedule {
 const TRIED_KEPT: usize = 256;
 
 impl Schedule {
-    /// The songs to measure are `ids`, with Sing's masks if `sing`; returns whether a thread should start.
-    fn ask(&mut self, ids: Vec<String>, sing: bool) -> bool {
-        if ids != self.ids || sing != self.sing {
+    /// The songs to measure are `ids`; returns whether a thread should start.
+    fn ask(&mut self, ids: Vec<String>) -> bool {
+        if ids != self.ids {
             self.ids = ids;
-            self.sing = sing;
             self.news += 1;
             if self.tried.len() > TRIED_KEPT {
                 let ids = &self.ids;
@@ -668,16 +633,7 @@ impl Measurer {
     /// Measures songs `shelf` has whole, storing into the profile `analyses` work for; `told` hears of
     /// each stored song.
     pub fn on_shelf(analyses: Arc<Analyses>, shelf: Box<dyn Shelf>, told: Option<Box<dyn Fn() + Send + Sync>>) -> Arc<Measurer> {
-        let m = Arc::new(Measurer {
-            analyses,
-            shelf,
-            plan: Mutex::new(Schedule::default()),
-            idle: Condvar::new(),
-            asked: AtomicU64::new(0),
-            measured: AtomicBool::new(false),
-            told,
-            decoded: AtomicU64::new(0),
-        });
+        let m = Arc::new(Measurer { analyses, shelf, plan: Mutex::new(Schedule::default()), idle: Condvar::new(), asked: AtomicU64::new(0), measured: AtomicBool::new(false), told, decoded: AtomicU64::new(0) });
         m.analyses.arrivals.lock().watch(&m);
         m
     }
@@ -701,12 +657,11 @@ impl Measurer {
 
     /// Measures `ids` (current song first), replacing the old list; an empty one stops.
     pub fn ask(self: &Arc<Self>, ids: Vec<String>) {
-        let sing = self.analyses.client().is_some_and(|c| c.session().settings.prefs(|p| p.sing));
         let mut plan = self.plan.lock();
         if ids != plan.ids {
             self.asked.fetch_add(1, Ordering::AcqRel);
         }
-        let start = plan.ask(ids, sing);
+        let start = plan.ask(ids);
         drop(plan);
         if start {
             self.spawn();
@@ -757,10 +712,8 @@ impl Measurer {
             };
             let Some(client) = self.analyses.client() else { continue };
             let core = client.core();
-            let (auto_mix, sing) = core.session.settings.with_prefs(|p| (p.auto_mix, p.sing)).unwrap_or_default();
-            let missing = if auto_mix { core.analysis_missing(ids.clone()).unwrap_or_default() } else { Vec::new() };
+            let missing = core.analysis_missing(ids.clone()).unwrap_or_default();
             let near = listen_to(core, &ids, &missing);
-            self.sing(&client, sing, &ids);
             let todo: Vec<&String> = ids.iter().filter(|id| missing.contains(id) || near.contains(id)).collect();
             let mut waiting = 0;
             for id in todo {
@@ -835,21 +788,6 @@ impl Measurer {
         Some(measured || listened)
     }
 
-    /// Sing: the masks of songs no longer near (of `ids`) are let go, all of them while it is off; while it is on,
-    /// its model is fetched if missing, and the engine told once it is in.
-    fn sing(&self, client: &Client, on: bool, ids: &[String]) {
-        let masks = &self.analyses.masks;
-        if !on {
-            masks.keep_only(&[]);
-            return;
-        }
-        masks.keep_only(&ids[..ids.len().min(crate::sing::AHEAD)]);
-        let vocals = self.analyses.vocals();
-        if !vocals.ready(client) && vocals.fetch(client) {
-            masks.news();
-        }
-    }
-
     /// Stores the analysis of all of `id`; returns whether it was stored.
     fn finish(&self, core: &Core, id: &str, stream: nori_core::automix::store::AnalysisStream, expected_ms: i64) -> bool {
         let a = core.analysis_finish_whole(id, stream, expected_ms).ok().flatten();
@@ -867,19 +805,10 @@ pub(crate) struct Decoded {
     pub ends: Option<Ends>,
 }
 
-/// Decodes `id` whole from `pieces` for the analyser (`classical`) and the beat model (`ends`) while `go_on`
-/// (asked per buffer); None when abandoned. `what` names the work in the log.
+/// Decodes `id` whole from `pieces` for the analyser (`classical`) and the beat model (`ends`) while
+/// `go_on` (asked per buffer); None when abandoned. `what` names the work in the log.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn decode(
-    id: &str,
-    what: &str,
-    pieces: crate::pieces::Pieces,
-    hint: Option<&str>,
-    expected_ms: i64,
-    classical: bool,
-    ends: bool,
-    mut go_on: impl FnMut() -> bool,
-) -> Option<Decoded> {
+pub(crate) fn decode(id: &str, what: &str, pieces: crate::pieces::Pieces, hint: Option<&str>, expected_ms: i64, classical: bool, ends: bool, mut go_on: impl FnMut() -> bool) -> Option<Decoded> {
     let mut left = false;
     let mut stream = None;
     let mut kept = None;
@@ -960,23 +889,12 @@ pub struct Analyses {
     arrived: Condvar,
     pub(crate) read_back: crate::processing::ReadBack,
     pub(crate) models: Models,
-    /// Sing's masks of the near songs, and the model they are made with.
-    pub(crate) masks: crate::sing::VocalMasks,
-    vocals: Mutex<Arc<dyn crate::sing::Vocals>>,
 }
 
 impl Analyses {
     /// Over the profile `client` gives at each use (a profile switch replaces it).
     pub fn new(client: impl Fn() -> Option<Arc<Client>> + Send + Sync + 'static) -> Arc<Analyses> {
-        Arc::new(Analyses {
-            client: Box::new(client),
-            arrivals: Mutex::default(),
-            arrived: Condvar::new(),
-            read_back: Default::default(),
-            models: Models::default(),
-            masks: Default::default(),
-            vocals: Mutex::new(Arc::new(crate::sing::Downloaded)),
-        })
+        Arc::new(Analyses { client: Box::new(client), arrivals: Mutex::default(), arrived: Condvar::new(), read_back: Default::default(), models: Models::default() })
     }
 
     /// Over `client` for good.
@@ -986,50 +904,6 @@ impl Analyses {
 
     pub(crate) fn client(&self) -> Option<Arc<Client>> {
         (self.client)()
-    }
-
-    /// Sing's masks are made with `vocals` (a test's model) instead of the one downloaded.
-    pub fn use_vocals(&self, vocals: Arc<dyn crate::sing::Vocals>) {
-        *self.vocals.lock() = vocals;
-    }
-
-    pub(crate) fn vocals(&self) -> Arc<dyn crate::sing::Vocals> {
-        self.vocals.lock().clone()
-    }
-
-    /// `song_id`'s vocal mask as far as it is made, while it is near.
-    pub fn vocal_mask(&self, song_id: &str) -> Option<Arc<nori_player::sing::VocalMask>> {
-        self.masks.get(song_id)
-    }
-
-    /// Where Sing stands for `song_id`: whether the player has rows of its vocal mask, and if not, why not.
-    pub fn sing_now(&self, song_id: &str) -> nori_core::settings_model::SingNow {
-        let Some(client) = self.client() else { return nori_core::settings_model::SingNow::Off };
-        let settings = &client.session().settings;
-        let masked = self.masks.get(song_id).is_some_and(|m| m.begun() && !m.given_up());
-        settings.prefs(|p| nori_core::settings_model::sing_now(p, &settings.sing_model, masked))
-    }
-
-    /// The user wants the vocals model now, over mobile data if need be: it is fetched on a thread of its own,
-    /// whatever is playing, and then the measurers and the engine look again. The thread, for a test to wait on.
-    pub fn sing_download_now(self: &Arc<Self>) -> Option<std::thread::JoinHandle<()>> {
-        let client = self.client()?;
-        client.session().settings.sing_model.download_now();
-        let me = self.clone();
-        std::thread::Builder::new()
-            .name("nori-sing-model".into())
-            .spawn(move || {
-                let fetched = me.vocals().fetch(&client);
-                drop(client);
-                let measurers = me.arrivals.lock().measurers();
-                for m in measurers {
-                    m.arrived();
-                }
-                if fetched {
-                    me.masks.news();
-                }
-            })
-            .ok()
     }
 
     /// The heap the loaded beat model holds (1 where the heap is not counted); 0 when none is loaded.
@@ -1372,7 +1246,6 @@ pub fn settings(s: &StoredPrefs, volume_db: f64) -> Settings {
         crossfade_s: s.crossfade_sec,
         auto_mix: s.auto_mix,
         gain_boost_db: if s.gain_prefs().boosts() { s.gain_boost_db } else { 0.0 },
-        sing: s.sing.then_some(s.sing_vocal_level),
     }
 }
 
@@ -1422,20 +1295,20 @@ mod tests {
     #[test]
     fn looks() {
         let mut s = Schedule::default();
-        assert!(s.ask(ids(&["a", "b", "c"]), false), "songs to measure: a thread");
+        assert!(s.ask(ids(&["a", "b", "c"])), "songs to measure: a thread");
         assert_eq!(s.next(), Some(ids(&["a", "b", "c"])));
         assert_eq!(s.next(), None, "nothing new: the thread ends");
         assert!(!s.running);
         // Repeated asks with the same list.
         for _ in 0..100 {
-            assert!(!s.ask(ids(&["a", "b", "c"]), false), "no thread, no look");
+            assert!(!s.ask(ids(&["a", "b", "c"])), "no thread, no look");
         }
-        assert!(s.ask(ids(&["b", "c", "d"]), false), "the queue moved: a look");
+        assert!(s.ask(ids(&["b", "c", "d"])), "the queue moved: a look");
 
         // Arrival during a look is kept.
         let mut s = Schedule::default();
         assert!(!s.arrived(), "nothing asked for: nothing to look at");
-        assert!(s.ask(ids(&["a", "b"]), false));
+        assert!(s.ask(ids(&["a", "b"])));
         assert_eq!(s.next(), Some(ids(&["a", "b"])));
         // Arrivals while measuring: no second thread, news kept.
         assert!(!s.arrived());
@@ -1448,34 +1321,24 @@ mod tests {
     #[test]
     fn song_retried_only_with_more_bytes() {
         let mut s = Schedule::default();
-        s.ask(ids(&["a", "b"]), false);
+        s.ask(ids(&["a", "b"]));
         assert!(s.worth("a", 1000, false));
         s.tried("a", 1000, true);
         assert!(!s.worth("a", 1000, false), "tried with these bytes: not again, however often it is looked at");
         assert!(s.worth("a", 5000, false), "more of it has come since: once more");
         assert!(!s.worth("z", 1000, false), "not asked for");
-        s.ask(ids(&["b"]), false);
+        s.ask(ids(&["b"]));
         assert!(!s.worth("a", 5000, false), "no longer asked for");
     }
 
     #[test]
     fn measured_song_decoded_for_model() {
         let mut s = Schedule::default();
-        s.ask(ids(&["a", "b"]), false);
+        s.ask(ids(&["a", "b"]));
         s.tried("a", 1000, false);
         assert!(!s.worth("a", 1000, false));
         assert!(s.worth("a", 1000, true), "the model has not heard it");
         s.tried("a", 1000, true);
         assert!(!s.worth("a", 1000, true), "heard: never again");
-    }
-
-    #[test]
-    fn sing_switched_is_news() {
-        let mut s = Schedule::default();
-        assert!(s.ask(ids(&["a", "b"]), false));
-        assert_eq!(s.next(), Some(ids(&["a", "b"])));
-        assert_eq!(s.next(), None);
-        assert!(s.ask(ids(&["a", "b"]), true), "the same songs, now for their masks: a look");
-        assert_eq!(s.next(), Some(ids(&["a", "b"])));
     }
 }

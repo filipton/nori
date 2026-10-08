@@ -30,8 +30,6 @@ pub(crate) static CLASS: Class = Class {
         native!(c"processStart", c"(Ldev/nori/music/playback/MeasureBridge;J)V", process_start),
         native!(c"processSaved", c"(J[Ljava/lang/String;)V", process_saved),
         native!(c"processAnalyse", c"(J[Ljava/lang/String;)I", process_analyse),
-        native!(c"singNow", c"(JLjava/lang/String;)I", sing_now),
-        native!(c"singDownloadNow", c"(J)V", sing_download_now),
     ],
 };
 
@@ -270,22 +268,4 @@ extern "system" fn process_saved(mut env: JNIEnv, _: JClass, analyses: jlong, ar
 extern "system" fn process_analyse(mut env: JNIEnv, _: JClass, analyses: jlong, array: JObjectArray) -> jint {
     let ids = ids(&mut env, &array);
     measuring(analyses).map_or(0, |m| m.analyses.analyse(ids) as jint)
-}
-
-// ---- Sing ----
-
-/// Where Sing stands for song `id`: a `SingNow` by its position.
-extern "system" fn sing_now(env: JNIEnv, _: JClass, analyses: jlong, id: JString) -> jint {
-    let now = match (measuring(analyses), crate::string(&env, &id)) {
-        (Some(m), Some(id)) => m.analyses.sing_now(&id),
-        _ => nori_core::settings_model::SingNow::Off,
-    };
-    now as jint
-}
-
-/// The user wants the vocals model now, over mobile data if need be.
-extern "system" fn sing_download_now(analyses: jlong) {
-    if let Some(m) = measuring(analyses) {
-        m.analyses.sing_download_now();
-    }
 }

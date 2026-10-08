@@ -415,6 +415,13 @@ impl Core {
     }
 }
 
+/// Deletes the vocals model and masks that Sing, now removed, kept in `sing/` beside the database at `db_path`.
+fn remove_sing_files(db_path: &str) {
+    if let Some(dir) = std::path::Path::new(db_path).parent().filter(|_| !db_path.is_empty()) {
+        let _ = std::fs::remove_dir_all(dir.join("sing"));
+    }
+}
+
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
     /// Opens the database at `db_path` (empty: in memory) for server profile `server`, over the app's
@@ -423,7 +430,7 @@ impl Core {
     pub fn new(db_path: String, server: String, session: Arc<nori_queue::Session>) -> Result<Arc<Self>> {
         let db = db::open(&db_path, &server)?;
         session.settings.model.set_home(&db_path);
-        session.settings.sing_model.set_home(&db_path);
+        remove_sing_files(&db_path);
         let db = Arc::new(Mutex::new(db));
         let core = Arc::new(Core {
             downloads: Arc::new(transfers::Downloads::load(&db)?),

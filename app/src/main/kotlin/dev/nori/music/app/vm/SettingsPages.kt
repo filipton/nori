@@ -467,19 +467,6 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
 
     fun section(title: Int, rows: List<SettingRow>) = SettingsSection(str(title), rows)
 
-    /** A downloaded model's switch's words: what it does while [on] is false, else how its download stands. */
-    fun modelWords(model: BeatModel, mb: Int, on: Boolean, off: Int, absent: Int, ready: Int): String = if (!on) str(off, mb) else when (model) {
-        is BeatModel.Failed -> str(R.string.settings_better_beats_failed, str(when (model.why) {
-            dev.nori.music.ffi.automix.BeatFailure.NETWORK -> R.string.settings_better_beats_network
-            dev.nori.music.ffi.automix.BeatFailure.WRONG_FILE -> R.string.settings_better_beats_wrong_file
-            dev.nori.music.ffi.automix.BeatFailure.STORAGE -> R.string.settings_better_beats_storage
-        }))
-        BeatModel.WaitingForWifi -> str(R.string.settings_better_beats_waiting, mb)
-        BeatModel.Downloading -> str(R.string.settings_better_beats_downloading, mb)
-        BeatModel.Ready -> str(ready)
-        else -> str(absent, mb)
-    }
-
     // How values read.
     fun offOr(v: String, words: (String) -> String) = if (v == "0") str(R.string.settings_off) else words(v)
     fun seconds(v: String) = str(R.string.settings_seconds, v)
@@ -517,8 +504,19 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             // Only in a build that carries the beat model's runtime.
             val model = s.beatModel
             if (model !is BeatModel.Unavailable) {
+                val mb = s.beatModelMb.toInt()
                 val better = p.autoMixBetterBeats
-                val detail = modelWords(model, s.beatModelMb.toInt(), better, R.string.settings_better_beats_off, R.string.settings_better_beats_absent, R.string.settings_better_beats_ready)
+                val detail = if (!better) str(R.string.settings_better_beats_off, mb) else when (model) {
+                    is BeatModel.Failed -> str(R.string.settings_better_beats_failed, str(when (model.why) {
+                        dev.nori.music.ffi.automix.BeatFailure.NETWORK -> R.string.settings_better_beats_network
+                        dev.nori.music.ffi.automix.BeatFailure.WRONG_FILE -> R.string.settings_better_beats_wrong_file
+                        dev.nori.music.ffi.automix.BeatFailure.STORAGE -> R.string.settings_better_beats_storage
+                    }))
+                    BeatModel.WaitingForWifi -> str(R.string.settings_better_beats_waiting, mb)
+                    BeatModel.Downloading -> str(R.string.settings_better_beats_downloading, mb)
+                    BeatModel.Ready -> str(R.string.settings_better_beats_ready)
+                    else -> str(R.string.settings_better_beats_absent, mb)
+                }
                 between += toggle("autoMixBetterBeats", R.string.settings_better_beats, detail, live)
                 if (better && model != BeatModel.Ready) {
                     between += toggle("autoMixBeatsMobileData", R.string.settings_beats_mobile_data, R.string.settings_beats_mobile_data_detail, live)

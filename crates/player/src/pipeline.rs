@@ -8,7 +8,6 @@ use crate::heard::{HeardTracker, PlayerNow, Seen, StreamAt};
 use crate::pcm::Format;
 use crate::playlist::Playlist;
 use crate::queue::{measure_ahead, ErrorRun, OnError, PlaybackError};
-use crate::sing::Feeding;
 use crate::transitions::WindowSong;
 
 pub use crate::sink::{blended, ChainSettings, Remake, Sink, Sound, Track, BLEND_US};
@@ -19,11 +18,6 @@ pub const BASE_OFFSET_US: i64 = 1_000_000_000_000;
 pub const READ_AHEAD_US: i64 = 10_000_000;
 /// Most buffers offered per turn.
 const BUFFERS_PER_TURN: usize = 256;
-/// A song opened past its start while Sing makes its mask is read from this much earlier, so the vocals model has
-/// the music before as context (64 of its frames).
-pub const SING_HISTORY_MS: i64 = 1_500;
-/// How far past the ear a song read again for its vocal mask starts: past what the output can no longer replace.
-const RESING_AHEAD_MS: i64 = 250;
 
 /// One song opened for reading, as decoded interleaved buffers (16-bit, or float for high quality).
 pub trait Reading {
@@ -101,25 +95,8 @@ pub trait App: Host {
     fn gain(&mut self, _list: &Playlist, _index: usize) -> f32 {
         1.0
     }
-    /// Sing: `song_id`'s vocal mask, once made.
-    fn vocal_mask(&mut self, _song_id: &str) -> Option<std::sync::Arc<crate::sing::VocalMask>> {
-        None
-    }
-    /// Vocal masks came or went since last asked, or the vocals model came.
-    fn masks_made(&mut self) -> bool {
-        false
-    }
-    /// Sing could make a song's vocal mask now (its model is in).
-    fn sings(&mut self) -> bool {
-        false
-    }
-    /// Sing: a feed of `song_id`'s samples from song frame `from` at `rate`, while its vocal mask is made from them
-    /// (`vocal_mask` gives it from then on); none if it is whole or cannot be made. `duration_us`: as far as known.
-    fn sing_feed(&mut self, _song_id: &str, _from: u64, _rate: u32, _duration_us: i64) -> Option<Feeding> {
-        None
-    }
-    /// The sound changed (`what`: the chain, the gain or the vocal masks) from output frame `at.output`, made
-    /// from input frame `at.input` (frames since the last flush).
+    /// The sound changed (`what`: the chain or the gain) from output frame `at.output`, made from input
+    /// frame `at.input` (frames since the last flush).
     fn spliced(&mut self, what: &str, at: Splice) {
         self.log(&format!("the {what} changes from output frame {} (input frame {})", at.output, at.input));
     }
@@ -214,32 +191,23 @@ struct Reader<R> {
     ended: bool,
     /// The last turn found the next buffer's bytes still missing.
     waiting: bool,
-    /// Song time before which what is read only feeds Sing's mask (read early for its history).
-    skip_to: Option<i64>,
-    /// Bytes skipped at the start of the buffer in hand.
-    skipped: usize,
-    /// Sing's feed for the song's mask, and whether it was asked for (at the first buffer read with Sing on).
-    tap: Option<Feeding>,
-    asked: bool,
 }
 
-/// A song opened from `from_ms` (or [`SING_HISTORY_MS`] before it, skipped up to it), not ready yet.
+/// A song opened from `from_ms`, not ready yet.
 struct Opening<R> {
     index: usize,
     from_ms: i64,
-    skip: bool,
     offset_us: i64,
     r: R,
 }
 
 impl<R: Reading> Reader<R> {
-    fn new(index: usize, offset_us: i64, r: R, skip_to: Option<i64>) -> Reader<R> {
-        Reader { index, offset_us, r, pos: 0, ended: false, waiting: false, skip_to, skipped: 0, tap: None, asked: false }
+    fn new(index: usize, offset_us: i64, r: R) -> Reader<R> {
+        Reader { index, offset_us, r, pos: 0, ended: false, waiting: false }
     }
 
     fn fill(&mut self) -> bool {
         self.pos = 0;
-        self.skipped = 0;
         let got = self.r.fill();
         self.ended = !got;
         got
@@ -437,7 +405,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
 
     /// Starts reading song `i` (opened as `r`) from `from_ms` at `offset_us`, after a flush: now if
     /// ready, else once it is. False when it failed at once.
-    fn begin(&mut self, i: usize, from_ms: i64, skip: bool, offset_us: i64, mut r: S::Reading) -> bool {
+    fn begin(&mut self, i: usize, from_ms: i64, offset_us: i64, mut r: S::Reading) -> bool {
         self.reading = None;
         self.next = None;
         self.opening = None;
@@ -449,99 +417,11 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.position_us = Some(offset_us + from_ms * 1000);
         self.source_ended = false;
         self.heard_period = None;
-        self.place_masks();
         if r.ready() {
-            return self.start_reading(i, from_ms, skip, offset_us, r);
+            return self.start_reading(i, from_ms, offset_us, r);
         }
-        self.opening = Some(Opening { index: i, from_ms, skip, offset_us, r });
+        self.opening = Some(Opening { index: i, from_ms, offset_us, r });
         true
-    }
-
-    /// Hands Sing's masker the vocal masks of the songs on the timeline (none while Sing is off).
-    fn place_masks(&mut self) {
-        if self.sink.settings().sing.is_none() {
-            return;
-        }
-        let placed = self.masks_placed();
-        if let Some((input, output)) = self.sink.set_masks(&placed) {
-            self.app.spliced("vocal masks", Splice { input, output });
-            self.burst.restart();
-            self.sink.fill();
-        }
-    }
-
-    /// The vocal masks of the songs on the timeline, where each song is.
-    fn masks_placed(&mut self) -> Vec<crate::sing::Placed> {
-        let mut placed = Vec::new();
-        for (k, p) in self.periods.iter().enumerate() {
-            let id = self.queue.read(|q| q.ids().get(p.index).cloned());
-            if let Some(mask) = id.and_then(|id| self.app.vocal_mask(&id)) {
-                let to = self.periods.get(k + 1).map_or(i64::MAX, |n| n.offset_us);
-                placed.push(crate::sing::Placed { at: p.offset_us..to, mask });
-            }
-        }
-        placed
-    }
-
-    /// Opens song `i` at `ms`; while Sing makes its mask, [`SING_HISTORY_MS`] earlier, so the mask has the music
-    /// before as context. Returns whether what comes before `ms` is to be skipped.
-    fn open_sung(&mut self, i: usize, ms: i64) -> Result<(S::Reading, bool), String> {
-        let id = self.id_at(i);
-        let early = match self.sink.settings().sing {
-            Some(_) if !self.app.vocal_mask(&id).is_some_and(|m| m.whole()) => ms.clamp(0, SING_HISTORY_MS),
-            _ => 0,
-        };
-        self.tracks.open(&id, ms - early).map(|r| (r, early > 0))
-    }
-
-    /// The buffer just read: to Sing's feed (asked for at the song's first buffer), and past what is skipped.
-    fn took_buffer(&mut self) {
-        let sing = self.sink.settings().sing.is_some();
-        let Player { reading, app, queue, .. } = self;
-        let Some(r) = reading.as_mut() else { return };
-        let format = r.r.format();
-        let mut asked = false;
-        if !sing {
-            r.tap = None;
-        } else if !r.asked {
-            r.asked = true;
-            let id = queue.read(|q| q.ids()[r.index].clone());
-            let from = (r.r.at_us().max(0) as i128 * format.rate as i128 / 1_000_000) as u64;
-            r.tap = app.sing_feed(&id, from, format.rate, r.r.duration_us());
-            asked = r.tap.is_some();
-        }
-        if let Some(t) = &r.tap {
-            t.push(r.r.buffer(), format);
-        }
-        if let Some(to) = r.skip_to {
-            let frames = ((to - r.r.at_us()).max(0) as i128 * format.rate as i128 / 1_000_000) as usize;
-            r.pos = (frames * format.frame_bytes()).min(r.r.buffer().len());
-            r.skipped = r.pos;
-            if r.left() {
-                r.skip_to = None;
-            }
-        }
-        if asked {
-            self.place_masks();
-        }
-    }
-
-    /// Sing can make the audible song's mask now (it was turned on, or its model came) but the song is read
-    /// without feeding it: it is read again from a little after the ear.
-    fn resing(&mut self) {
-        if self.sink.settings().sing.is_none() || self.mixing() || self.remaking.is_some() || self.reading.as_ref().is_none_or(|r| r.tap.is_some()) {
-            return;
-        }
-        // Where the ear is now: the last turn may have been a burst ago.
-        if self.playing {
-            self.follow_clock();
-        }
-        let Some((cur, ms)) = self.ear() else { return };
-        if self.app.vocal_mask(&self.id_at(cur)).is_some_and(|m| m.whole()) || !self.app.sings() {
-            return;
-        }
-        self.app.log(&format!("{} is read again from {} ms for its vocal mask", self.id_at(cur), ms + RESING_AHEAD_MS));
-        self.remake_from(cur, ms + RESING_AHEAD_MS);
     }
 
     /// Starts reading the opening song once it is ready.
@@ -551,7 +431,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             return;
         }
         let o = self.opening.take().expect("checked");
-        self.start_reading(o.index, o.from_ms, o.skip, o.offset_us, o.r);
+        self.start_reading(o.index, o.from_ms, o.offset_us, o.r);
     }
 
     /// The plan out of the audible song is asked for again (settings, an analysis or the queue changed).
@@ -588,8 +468,8 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
     /// Opens song `i` again at `ms`, to read on from there once it is open ([`Player::remade`]).
     fn remake_from(&mut self, i: usize, ms: i64) {
         let Some(offset_us) = self.periods.iter().rev().find(|p| p.index == i).map(|p| p.offset_us) else { return };
-        match self.open_sung(i, ms) {
-            Ok((r, skip)) => self.remaking = Some(Opening { index: i, from_ms: ms, skip, offset_us, r }),
+        match self.tracks.open(&self.id_at(i), ms) {
+            Ok(r) => self.remaking = Some(Opening { index: i, from_ms: ms, offset_us, r }),
             Err(why) => self.app.log(&format!("{} would not open again ({why}): its ending plays as it was made", self.id_at(i))),
         }
         self.remade();
@@ -614,32 +494,30 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.call(|e, _, a| e.flush(a));
         self.burst.restart();
         self.periods.retain(|p| p.offset_us <= o.offset_us);
-        self.place_masks();
         self.opening = None;
         self.next = None;
         self.failed = None;
         self.source_ended = false;
         self.sink.track.source_bits(o.r.bits());
-        self.reading = Some(Reader::new(o.index, o.offset_us, o.r, o.skip.then_some(o.from_ms * 1000)));
+        self.reading = Some(Reader::new(o.index, o.offset_us, o.r));
         self.configure(o.index, period.serial, format);
         self.engine.set_output_stream_offset_us(o.offset_us);
         self.engine.set_gain(period.gain);
     }
 
     /// Starts reading ready song `i`; false when it reports an error.
-    fn start_reading(&mut self, i: usize, from_ms: i64, skip: bool, offset_us: i64, r: S::Reading) -> bool {
+    fn start_reading(&mut self, i: usize, from_ms: i64, offset_us: i64, r: S::Reading) -> bool {
         if let Some((kind, why)) = r.error() {
             self.fail(i, kind, why);
             return false;
         }
         let (format, duration_us) = (r.format(), r.duration_us());
         self.sink.track.source_bits(r.bits());
-        self.reading = Some(Reader::new(i, offset_us, r, skip.then_some(from_ms * 1000)));
+        self.reading = Some(Reader::new(i, offset_us, r));
         self.next = None;
         let gain = self.song_gain(i);
         let serial = self.serial_for(i);
         self.periods = vec![Period { index: i, offset_us, duration_us, gain, serial }];
-        self.place_masks();
         self.position_us = Some(offset_us + from_ms * 1000);
         self.heard_from = self.position_us;
         self.source_ended = false;
@@ -717,10 +595,10 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         let i = self.playable(i);
         let id = self.id_at(i);
         let r = match opened.filter(|o| o.0 == id).and_then(|(_, r, at)| taken_from(r, at, from_ms)) {
-            Some((r, from)) => Ok((r, from, false)),
-            None => self.open_sung(i, from_ms).map(|(r, skip)| (r, from_ms, skip)),
+            Some((r, from)) => Ok((r, from)),
+            None => self.tracks.open(&id, from_ms).map(|r| (r, from_ms)),
         };
-        let (r, from_ms, skip) = match r {
+        let (r, from_ms) = match r {
             Ok(r) => r,
             Err(why) => return self.fail(i, PlaybackError::Other, why),
         };
@@ -729,7 +607,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.burst.restart();
         self.sink.flush();
         self.queue.moved_to(i);
-        if self.begin(i, from_ms, skip, offset, r) {
+        if self.begin(i, from_ms, offset, r) {
             self.set_current(i);
         }
     }
@@ -801,14 +679,14 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         // The song the seek bar shows: in a mix, the outgoing one until the takeover.
         let Some(i) = self.bar().index.or(self.current) else { return };
         let offset = self.periods.iter().find(|p| p.index == i).map_or_else(|| self.fresh_offset(), |p| p.offset_us);
-        let (r, skip) = match self.open_sung(i, ms) {
+        let r = match self.tracks.open(&self.id_at(i), ms) {
             Ok(r) => r,
             Err(why) => return self.fail(i, PlaybackError::Other, why),
         };
         self.call(|e, _, a| e.flush(a));
         self.burst.restart();
         self.sink.flush();
-        if self.begin(i, ms, skip, offset, r) {
+        if self.begin(i, ms, offset, r) {
             self.set_current(i);
         }
     }
@@ -817,12 +695,6 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
     pub fn set_chain(&mut self, settings: ChainSettings) {
         if *self.sink.settings() == settings {
             return;
-        }
-        // The masks are in place before the masker joins, so what it makes again has them.
-        let sing_on = self.sink.settings().sing.is_none() && settings.sing.is_some();
-        if sing_on {
-            let placed = self.masks_placed();
-            self.sink.set_masks(&placed);
         }
         let ear = self.sink.ear();
         if let Some((input, output)) = self.sink.change(settings) {
@@ -834,9 +706,6 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         }
         self.burst.restart();
         self.sink.fill();
-        if sing_on {
-            self.resing();
-        }
     }
 
     /// Speed and pitch as set.
@@ -1188,15 +1057,6 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
     /// One render turn at `now_ms`: reads the clock and offers audio until the output refuses.
     pub fn turn(&mut self, now_ms: i64) {
         self.now_ms = now_ms;
-        if self.app.masks_made() {
-            self.place_masks();
-            self.resing();
-        }
-        if let Some((input, output)) = self.sink.remask() {
-            self.app.spliced("vocal mask", Splice { input, output });
-            self.burst.restart();
-            self.sink.fill();
-        }
         self.opened();
         self.remade();
         if !self.playing {
@@ -1250,16 +1110,14 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             let r = reading.as_mut().expect("a buffer is ready");
             app.clock(*now_ms);
             let mut fed = Fed::new(sink, burst, *now_ms);
-            let pts = r.offset_us + r.r.at_us() + r.r.format().us(r.skipped);
+            let pts = r.offset_us + r.r.at_us();
             let (taken, used) = engine.handle_buffer(&mut fed, app, &r.r.buffer()[r.pos..], pts);
             r.pos += used;
             if !taken {
                 self.hungry = false;
-                self.flush_tap();
                 return;
             }
         }
-        self.flush_tap();
         if self.reading.as_ref().is_some_and(|r| r.ended) && (self.at_queue_end() || self.failed.is_some()) && !self.source_ended {
             if self.call(|e, d, a| e.play_to_end_of_stream(d, a)) {
                 self.source_ended = true;
@@ -1269,13 +1127,6 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         } else if self.source_ended {
             self.call(|e, d, _| e.queue_empty(d));
             self.sink.fill();
-        }
-    }
-
-    /// Sing's mask maker takes what this turn read.
-    fn flush_tap(&self) {
-        if let Some(t) = self.reading.as_ref().and_then(|r| r.tap.as_ref()) {
-            t.flush();
         }
     }
 
@@ -1297,7 +1148,6 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
                     return false;
                 }
                 if r.fill() {
-                    self.took_buffer();
                     continue;
                 }
                 // Bytes stopped for good: fail once what was read has played.
@@ -1305,8 +1155,6 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
                     if self.failed.is_none() {
                         self.failed = Some((r.index, kind, why));
                     }
-                } else if let Some(t) = &r.tap {
-                    t.end();
                 }
             }
             let (i, end) = (r.index, r.offset_us + r.r.duration_us());
@@ -1347,9 +1195,8 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             self.call(|e, d, a| e.handle_discontinuity(d, a));
             self.engine.set_output_stream_offset_us(end);
             self.engine.set_gain(gain);
-            self.reading = Some(Reader::new(n, end, next, None));
+            self.reading = Some(Reader::new(n, end, next));
             self.periods.push(Period { index: n, offset_us: end, duration_us, gain, serial });
-            self.place_masks();
         }
     }
 }

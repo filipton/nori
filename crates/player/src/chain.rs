@@ -8,16 +8,14 @@ use std::collections::VecDeque;
 use crate::dsp::Equalizer;
 use crate::pcm::Encoding;
 use crate::silence::SilenceSkipper;
-use crate::sing::Masker;
 use crate::speed::SpeedPitch;
 
 /// Input frames between kept states: the most that is run again to reach a splice.
 pub const MARK_FRAMES: u64 = 8192;
 
-/// The chain: Sing's vocal masker, then media3's order: equalizer, silence skipping, speed.
+/// The chain in media3's order: equalizer, silence skipping, speed.
 #[derive(Default)]
 pub struct Processors {
-    pub sing: Option<Masker>,
     pub eq: Option<Equalizer>,
     pub silence: Option<SilenceSkipper>,
     pub speed: Option<SpeedPitch>,
@@ -26,27 +24,10 @@ pub struct Processors {
 /// `clone_from` keeps every buffer's memory.
 impl Clone for Processors {
     fn clone(&self) -> Self {
-        Processors { sing: self.sing.clone(), eq: self.eq.clone(), silence: self.silence.clone(), speed: self.speed.clone() }
+        Processors { eq: self.eq.clone(), silence: self.silence.clone(), speed: self.speed.clone() }
     }
 
     fn clone_from(&mut self, o: &Self) {
-        self.sing.clone_from(&o.sing);
-        self.eq.clone_from(&o.eq);
-        self.silence.clone_from(&o.silence);
-        self.speed.clone_from(&o.speed);
-    }
-}
-
-impl Processors {
-    /// `o`'s state to keep, in this one's memory: without Sing's scratch, which `clone_from` gives back.
-    fn store_from(&mut self, o: &Self) {
-        self.sing = o.sing.as_ref().map(|from| match self.sing.take() {
-            Some(mut m) => {
-                m.store_from(from);
-                m
-            }
-            None => from.stored(),
-        });
         self.eq.clone_from(&o.eq);
         self.silence.clone_from(&o.silence);
         self.speed.clone_from(&o.speed);
@@ -144,7 +125,7 @@ impl Kept {
 
     fn push_mark(&mut self, frame: u64, out: u64, media: f64, chain: &Processors) {
         let mut kept = self.spare.pop().unwrap_or_default();
-        kept.store_from(chain);
+        kept.clone_from(chain);
         self.marks.push_back(Mark { frame, out, media, chain: kept });
     }
 
@@ -180,11 +161,6 @@ impl Kept {
 
     pub fn mark_at(&self, k: usize) -> &Mark {
         &self.marks[k]
-    }
-
-    /// Timeline position of the last input kept.
-    pub fn last_pts(&self) -> Option<i64> {
-        self.pieces.back().map(|p| p.pts)
     }
 
     /// Lets go of the marks after input frame `frame`.

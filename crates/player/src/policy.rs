@@ -18,8 +18,6 @@ pub struct AudioPrefs {
     pub auto_mix: bool,
     pub speed: f32,
     pub pitch: f32,
-    /// Sing: vocals turned down by each song's mask.
-    pub sing: bool,
 }
 
 /// Facts about the current output.
@@ -53,8 +51,6 @@ pub struct AudioPolicy {
     pub offload: bool,
     /// Keep the (possibly flat) sound chain in the path so enabling it later needs no rebuild.
     pub processor_in_chain: bool,
-    /// Sing's masker is in the chain.
-    pub sing: bool,
 }
 
 /// Bit-perfect disables everything that touches samples; hi-res only raises precision. Offload needs
@@ -71,7 +67,6 @@ pub fn audio_policy(p: &AudioPrefs, o: &OutputState) -> AudioPolicy {
         skip_silence: p.skip_silence && !untouched,
         offload,
         processor_in_chain: !offload && !untouched,
-        sing: p.sing && !untouched,
     }
 }
 
@@ -81,8 +76,6 @@ pub fn offload_blocked(p: &AudioPrefs, o: &OutputState) -> Option<&'static str> 
         "offload is off in the settings"
     } else if p.dsp && !o.bit_perfect {
         "the equalizer or another sound setting is on"
-    } else if p.sing && !o.bit_perfect {
-        "Sing is on"
     } else if o.usb {
         "something USB is attached, which the audio chip cannot reach"
     } else if o.offload_refused {
@@ -137,7 +130,7 @@ mod tests {
     use super::*;
 
     fn prefs() -> AudioPrefs {
-        AudioPrefs { dsp: false, skip_silence: false, offload: true, crossfade_s: 0, auto_mix: false, speed: 1.0, pitch: 1.0, sing: false }
+        AudioPrefs { dsp: false, skip_silence: false, offload: true, crossfade_s: 0, auto_mix: false, speed: 1.0, pitch: 1.0 }
     }
 
     #[test]
@@ -153,7 +146,6 @@ mod tests {
             AudioPrefs { auto_mix: true, ..prefs() },
             AudioPrefs { speed: 1.25, ..prefs() },
             AudioPrefs { pitch: 0.95, ..prefs() },
-            AudioPrefs { sing: true, ..prefs() },
         ] {
             let a = audio_policy(&p, &OutputState::default());
             assert!(!a.offload && a.processor_in_chain, "{p:?}");
@@ -167,7 +159,7 @@ mod tests {
         let o = OutputState::default();
         assert_eq!(offload_blocked(&prefs(), &o), None);
         assert!(audio_policy(&prefs(), &o).offload);
-        let cases: [(AudioPrefs, OutputState, &str); 9] = [
+        let cases: [(AudioPrefs, OutputState, &str); 8] = [
             (AudioPrefs { offload: false, ..prefs() }, o, "offload is off"),
             (AudioPrefs { dsp: true, ..prefs() }, o, "equalizer"),
             (prefs(), OutputState { usb: true, ..o }, "USB"),
@@ -176,7 +168,6 @@ mod tests {
             (AudioPrefs { auto_mix: true, ..prefs() }, o, "AutoMix"),
             (AudioPrefs { skip_silence: true, ..prefs() }, o, "silence"),
             (AudioPrefs { speed: 1.5, ..prefs() }, o, "speed"),
-            (AudioPrefs { sing: true, ..prefs() }, o, "Sing"),
         ];
         for (p, out, words) in cases {
             assert!(!audio_policy(&p, &out).offload, "{words}");
@@ -187,15 +178,13 @@ mod tests {
         let bit_perfect = OutputState { bit_perfect: true, ..o };
         assert_eq!(offload_blocked(&AudioPrefs { dsp: true, ..prefs() }, &bit_perfect), None);
         assert!(audio_policy(&AudioPrefs { dsp: true, ..prefs() }, &bit_perfect).offload);
-        assert_eq!(offload_blocked(&AudioPrefs { sing: true, ..prefs() }, &bit_perfect), None);
     }
 
     #[test]
     fn bit_perfect_disables_processing() {
-        let p = AudioPrefs { dsp: true, skip_silence: true, auto_mix: true, sing: true, ..prefs() };
+        let p = AudioPrefs { dsp: true, skip_silence: true, auto_mix: true, ..prefs() };
         let a = audio_policy(&p, &OutputState { bit_perfect: true, ..Default::default() });
-        assert!(a.untouched && a.float && !a.processing && a.transitions_off && !a.lock_rate && !a.skip_silence && !a.processor_in_chain && !a.sing);
-        assert!(audio_policy(&p, &OutputState::default()).sing);
+        assert!(a.untouched && a.float && !a.processing && a.transitions_off && !a.lock_rate && !a.skip_silence && !a.processor_in_chain);
     }
 
     #[test]

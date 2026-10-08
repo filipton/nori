@@ -104,13 +104,16 @@ fn browse_sorts_filters_decades() {
 }
 
 #[test]
-fn models_live_beside_the_database() {
-    // Each downloadable model has its folder once a database on disk is opened: without one it never downloads.
+fn opening_places_the_beat_model_and_deletes_sing_files() {
+    // The beat model has its folder once a database on disk is opened: without one it never downloads.
     let dir = nori_testdir::TempDir::new("models-home");
     let db = dir.path().join("nori.db");
+    let masks = dir.path().join("sing").join("masks");
+    std::fs::create_dir_all(&masks).unwrap();
+    std::fs::write(dir.path().join("sing").join("umx-hq-vocals.weights"), b"weights").unwrap();
+    std::fs::write(masks.join("73.mask"), b"mask").unwrap();
     let session: Arc<nori_queue::Session> = Default::default();
     let _core = Core::new(db.to_string_lossy().into(), "t".into(), session.clone()).unwrap();
-    for model in [&session.settings.model, &session.settings.sing_model] {
-        assert_eq!(model.dir(), Some(dir.path().join(model.model.dir)), "{}", model.model.dir);
-    }
+    assert_eq!(session.settings.model.dir(), Some(dir.path().join("models")));
+    assert!(!dir.path().join("sing").exists(), "Sing's model and masks are gone");
 }

@@ -273,21 +273,19 @@ fn boost() -> Sound {
     Sound { bands: vec![nori_player::dsp::Band { kind: nori_player::dsp::PEAKING, freq: 1000.0, gain_db: 4.0, q: 1.0, channel: 0 }], ..Sound::default() }
 }
 
-fn sing_off_mid_song(a: &[i16], _: &[i16], gains: &[(&str, f32)]) -> Vec<i16> {
+fn sound_off_mid_song(a: &[i16], _: &[i16], gains: &[(&str, f32)]) -> Vec<i16> {
     let mut p = with_gains(Player::new(vec![track("a", a)]), gains);
     p.set_sound(boost());
-    p.set_sing(Some(1.0));
     p.play_from(0);
     p.run_for(2_000);
-    p.set_sing(None);
+    p.set_sound(Sound::default());
     assert!(p.run_to_end(30_000));
     p.sink.heard_samples()
 }
 
-fn sing_gapless(a: &[i16], b: &[i16], gains: &[(&str, f32)]) -> Vec<i16> {
+fn sound_gapless(a: &[i16], b: &[i16], gains: &[(&str, f32)]) -> Vec<i16> {
     let mut p = with_gains(Player::new(vec![track("a", a), track("b", b)]), gains);
     p.set_sound(boost());
-    p.set_sing(Some(1.0));
     p.play_from(0);
     assert!(p.run_to_end(60_000));
     p.sink.heard_samples()
@@ -304,10 +302,10 @@ fn sound_off_while_reopening(a: &[i16], b: &[i16], gains: &[(&str, f32)]) -> Vec
 }
 
 #[test]
-fn gain_kept_through_sing_and_sound_changes() {
+fn gain_kept_through_sound_changes() {
     let cases: [(&str, &str, Play); 3] = [
-        ("Sing turned off mid-song", "a", sing_off_mid_song),
-        ("a gapless join with Sing and a sound on", "a", sing_gapless),
+        ("the sound turned off mid-song", "a", sound_off_mid_song),
+        ("a gapless join with a sound on", "a", sound_gapless),
         ("the sound turned off while the output reopens", "b", sound_off_while_reopening),
     ];
     let (a, b) = (music(5.0, 52), music(5.0, 53));

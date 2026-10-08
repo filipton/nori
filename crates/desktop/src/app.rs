@@ -1522,7 +1522,7 @@ impl App {
 
     fn source_moved(&mut self, id: &str, up: bool) {
         let Some(p) = crate::session::app().settings.current() else { return };
-        let s = nori_core::settings_model::state(&p, nori_core::settings_model::Output::default(), &crate::session::app().settings.model, &crate::session::app().settings.sing_model);
+        let s = nori_core::settings_model::state(&p, nori_core::settings_model::Output::default(), &crate::session::app().settings.model);
         let Some(at) = s.lyrics_sources.iter().position(|x| x.id == id) else { return };
         let to = if up { at.saturating_sub(1) } else { (at + 1).min(s.lyrics_sources.len() - 1) };
         if to != at {

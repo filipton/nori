@@ -297,14 +297,6 @@ pub struct StoredPrefs {
     /// The beat model may download over mobile data.
     #[setting("autoMixBeatsMobileData", FLAG, default = false, show = K::Switch)]
     pub auto_mix_beats_mobile_data: bool,
-    /// Sing: each song's vocals turned down to `sing_vocal_level` by a mask the Open-Unmix model makes on the
-    /// device ahead of playback (`nori_player::sing`). Needs the `neural-beats` feature and a one-time model
-    /// download over Wi-Fi.
-    #[setting("sing", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO)]
-    pub sing: bool,
-    /// The vocals' level while Sing is on: 0 none, 1 as recorded.
-    #[setting("singVocalLevel", clamped(0.0, 1.0), default = 0.0, show = level, effect = APPLY_AUDIO)]
-    pub sing_vocal_level: f32,
     #[setting("crossfadeKeepAlbums", FLAG, default = true, show = K::Switch, effect = REPLAN)]
     pub crossfade_keep_albums: bool,
     #[setting("crossfadeCurve", PICK, default = CrossfadeCurve::EqualPower, show = K::Named(CrossfadeCurve::NAMES), effect = REPLAN)]

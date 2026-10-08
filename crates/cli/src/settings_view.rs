@@ -165,7 +165,7 @@ impl SettingsView {
     /// Every group's page, built if not cached.
     pub fn pages(&mut self, prefs: &StoredPrefs) -> &[Page] {
         if self.pages.is_none() {
-            let state = settings_model::state(prefs, settings_model::Output::default(), &crate::backend::app().settings.model, &crate::backend::app().settings.sing_model);
+            let state = settings_model::state(prefs, settings_model::Output::default(), &crate::backend::app().settings.model);
             self.pages = Some(GROUPS.iter().map(|g| page(g.id, prefs, &state, &self.facts, &self.own)).collect());
         }
         self.pages.as_deref().expect("made above")
@@ -505,18 +505,11 @@ fn sound(b: &Build) -> Vec<Section> {
     mixing.push(b.toggle_if("crossfadeKeepAlbums", "Gapless albums", "Never mix songs of the same album", live));
     mixing.push(b.choice("fadeMs", "Fade on play/pause", true, |v| off_or(v, |v| format!("{v} ms"))));
 
-    let mut tempo = vec![
+    let tempo = vec![
         b.choice("speed", "Speed", true, |v| format!("{v}×")),
         b.choice("pitch", "Pitch", true, |v| format!("{v}×")),
         b.toggle_if("skipSilence", "Skip silence", "Shorten quiet gaps", live),
     ];
-    if s.sing_model != BeatModel::Unavailable {
-        tempo.push(b.toggle_if("sing", "Sing", &format!("Turn the vocals down (Open-Unmix, a {} MB model fetched on first use)", s.sing_model_mb), live));
-        if p.sing {
-            let label = format!("  Vocals {:.0} %", p.sing_vocal_level * 100.0);
-            tempo.push(Row::Slider { name: "singVocalLevel".into(), label, value: p.sing_vocal_level, min: 0.0, max: 1.0, centred: false, level: None });
-        }
-    }
     let output = vec![
         b.toggle("hiRes", "High quality output", "Float samples to the device; 24-bit files kept whole, effects in float"),
         b.named("maxRate", "Highest sample rate", &["each song's own", "48 kHz", "96 kHz", "192 kHz"]),
@@ -1015,7 +1008,7 @@ mod tests {
     use super::*;
 
     fn every_row(prefs: &StoredPrefs) -> Vec<(&'static str, Row)> {
-        let state = settings_model::state(prefs, settings_model::Output::default(), &crate::backend::app().settings.model, &crate::backend::app().settings.sing_model);
+        let state = settings_model::state(prefs, settings_model::Output::default(), &crate::backend::app().settings.model);
         let facts = Facts { folders: vec![MusicFolder { id: "1".into(), name: "A".into() }, MusicFolder { id: "2".into(), name: "B".into() }], ..Facts::default() };
         GROUPS
             .iter()
@@ -1144,7 +1137,7 @@ mod tests {
         assert!(rows.contains(&EqRow::Layout));
         let parametric = eq_rows(&StoredPrefs { eq_mode: EqMode::Parametric, ..StoredPrefs::default() });
         assert!(parametric.contains(&EqRow::Mode) && !parametric.contains(&EqRow::Layout));
-        let fx = effects(&Build { p: &StoredPrefs { compressor: true, ..StoredPrefs::default() }, s: &settings_model::state(&StoredPrefs::default(), settings_model::Output::default(), &crate::backend::app().settings.model, &crate::backend::app().settings.sing_model) });
+        let fx = effects(&Build { p: &StoredPrefs { compressor: true, ..StoredPrefs::default() }, s: &settings_model::state(&StoredPrefs::default(), settings_model::Output::default(), &crate::backend::app().settings.model) });
         assert!(fx.iter().any(|r| matches!(r, Row::Slider { level: Some(EqLevel::CompRatio), .. })));
 
         // Parametric bands step in range.

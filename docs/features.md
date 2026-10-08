@@ -23,6 +23,10 @@ The owner answered the **ask** rows:
 - Extras: on-device taste model + mixes + Wrapped: yes. Word-by-word lyrics that scroll smoothly: yes,
   explicitly wanted. Wear OS / Android TV, audiobook mode, Bluetooth lyrics: no.
 
+Sing (the vocals turned down by an Open-Unmix mask made on the device, shipped in 0.5.2-beta.3) was
+**removed on 2026-10-08 by the owner's decision**: it did not sound good enough. Not built again unless the
+owner asks.
+
 The rule that follows: **an optional subsystem that is switched off costs nothing** - it is not
 initialised, holds no listener, opens no socket and adds no audio processor. Settings has one
 "Features" page listing them all.

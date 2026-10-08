@@ -50,28 +50,6 @@ class Say(private val r: Resources) {
     val repeat: String = r.getString(R.string.repeat)
     val queue: String = r.getString(R.string.queue)
     val lyrics: String = r.getString(R.string.lyrics)
-    val sing: String = r.getString(R.string.sing)
-    val singOff: String = r.getString(R.string.sing_off)
-    val singVocalsLevel: String = r.getString(R.string.sing_vocals_level)
-    /** The vocals' level as the Sing slider shows it: "20 %". */
-    fun singPercent(level: Float): String = r.getString(R.string.settings_percent, kotlin.math.round(level * 100f).toInt().toString())
-    /** Why the song playing still has its vocals, the voice model being [model]; null when nothing is in the way. */
-    fun singWaiting(now: dev.nori.music.ffi.settings.SingNow, model: dev.nori.music.ffi.settings.SingModel): String? = when (now) {
-        dev.nori.music.ffi.settings.SingNow.PREPARING -> r.getString(R.string.sing_preparing)
-        dev.nori.music.ffi.settings.SingNow.DOWNLOADING -> r.getString(R.string.sing_downloading, mb(model.gotBytes), mb(model.totalBytes))
-        dev.nori.music.ffi.settings.SingNow.WAITING_FOR_WIFI -> r.getString(R.string.sing_waiting_wifi, mb(model.totalBytes))
-        dev.nori.music.ffi.settings.SingNow.FAILED -> r.getString(R.string.sing_failed)
-        dev.nori.music.ffi.settings.SingNow.OFF, dev.nori.music.ffi.settings.SingNow.SINGING -> null
-    }
-    /** What Sing is and what it needs, for a voice model of [total] bytes. */
-    fun singAbout(total: ULong): String = r.getString(R.string.sing_about, mb(total))
-    fun singDownload(total: ULong): String = r.getString(R.string.sing_download, mb(total))
-    fun singProgress(model: dev.nori.music.ffi.settings.SingModel): String = r.getString(R.string.sing_progress, mb(model.gotBytes), mb(model.totalBytes))
-    val singOnMobile: String = r.getString(R.string.sing_on_mobile)
-    val singWaitWifi: String = r.getString(R.string.sing_wait_wifi)
-    private fun mb(bytes: ULong): Int = kotlin.math.round(bytes.toDouble() / 1e6).toInt()
-    val singDownloadNow: String = r.getString(R.string.sing_download_now)
-    val singRetry: String = r.getString(R.string.sing_retry)
     val favourite: String = r.getString(R.string.favourite)
     val addToFavourites: String = r.getString(R.string.add_to_favourites)
     val removeFromFavourites: String = r.getString(R.string.remove_from_favourites)
@@ -501,7 +479,6 @@ class Say(private val r: Resources) {
         is SongAction.GoToArtist -> if (a.named) r.getString(R.string.menu_go_to_named, a.name) else menuGoToArtist
         SongAction.AddToLibrary -> r.getString(R.string.menu_add_to_library)
         SongAction.SleepTimer -> menuSleepTimer
-        is SongAction.Sing -> if (a.on) sing else singOff
         SongAction.StartRadio -> menuStartRadio
         SongAction.InstantMix -> menuInstantMix
         SongAction.ExcludeFromMixes -> menuExclude

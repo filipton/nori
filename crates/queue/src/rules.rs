@@ -68,10 +68,9 @@ impl Session {
         ids
     }
 
-    /// The upcoming analysable ids to analyse for AutoMix or to make Sing's vocal masks of; empty while both
-    /// are off.
+    /// The upcoming analysable ids to analyse for AutoMix; empty while AutoMix is off.
     pub fn measure(&self) -> Vec<String> {
-        let n = self.settings.prefs(|p| q::measure_ahead(p.auto_mix || p.sing));
+        let n = self.settings.prefs(|p| q::measure_ahead(p.auto_mix));
         self.playlist(|p| p.upcoming().take(UPCOMING).take(n).map(|i| &p.ids()[i]).filter(|id| crate::queue::analysable(id)).cloned().collect())
     }
 

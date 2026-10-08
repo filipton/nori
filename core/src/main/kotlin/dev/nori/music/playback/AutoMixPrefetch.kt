@@ -34,10 +34,6 @@ internal object MeasureJni {
     @JvmStatic external fun processSaved(analyses: Long, ids: Array<String>)
     /** Downloads asked for again ("Analyse downloaded songs"): how many are to be read back. Off the main thread. */
     @JvmStatic external fun processAnalyse(analyses: Long, ids: Array<String>): Int
-    /** Where Sing stands for song [id]: a `SingNow` by its position. */
-    @JvmStatic external fun singNow(analyses: Long, id: String): Int
-    /** The user wants the vocals model now, over mobile data if need be: the measurers look again. */
-    @JvmStatic @CriticalNative external fun singDownloadNow(analyses: Long)
 }
 
 /**

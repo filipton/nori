@@ -191,7 +191,7 @@ impl BeatThis {
 
     /// The app's graph filled with the weights file (`weights::convert`).
     pub fn from_weights(weights: &[u8]) -> TractResult<Self> {
-        let proto = super::weights::assemble(super::weights::GRAPH, weights).map_err(|e| tract_onnx::prelude::TractError::msg(e))?;
+        let proto = super::weights::assemble(weights).map_err(|e| tract_onnx::prelude::TractError::msg(e))?;
         Self::prepare(tract_onnx::onnx().model_for_proto_model(&proto)?, CHUNK)
     }
 
