@@ -35,7 +35,7 @@ fun TestDriver(controller: NavHostController, nav: Nav, sheet: PlayerSheet, sett
     val player2 = player
     DisposableEffect(controller) {
         // "queue" is the player on its queue (where a jam's header is), "devices" the devices sheet.
-        TestHooks.open = { route ->
+        val open = { route: String ->
             when (route) {
                 "player" -> sheet.open()
                 "queue" -> nav.player(dev.nori.music.app.ui.Panel.QUEUE)
@@ -43,6 +43,7 @@ fun TestDriver(controller: NavHostController, nav: Nav, sheet: PlayerSheet, sett
                 else -> nav.go(route)
             }
         }
+        TestHooks.open = open
         TestHooks.set = { name, value -> TestActions.setByName(context, settings, name, value) }
         TestHooks.play = { what -> TestActions.playByRef(context, actions, what) }
         TestHooks.login = { spec ->
@@ -101,7 +102,9 @@ fun TestDriver(controller: NavHostController, nav: Nav, sheet: PlayerSheet, sett
                 } +
                 """"loggedIn":${p.loggedIn},"server":"${p.server?.url.orEmpty()}","loginError":"${settings.login.value.error.orEmpty().replace("\"", "'")}"}"""
         }
+        // An app crossfading out (a jam joined or left) goes after the one coming in took the hooks over.
         onDispose {
+            if (TestHooks.open !== open) return@onDispose
             TestHooks.open = null
             TestHooks.state = null
             TestHooks.set = null

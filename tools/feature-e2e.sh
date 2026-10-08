@@ -461,6 +461,37 @@ print(next(json.dumps({'id':s['id'],'title':s['title'],'artist':s['artist'],'cov
     kill $gus $dee 2>/dev/null
     "$app" set jam false >/dev/null
     "$app" login "$APP_URL|$USER|$PASS" >/dev/null; wait_for server "$APP_URL" 30 >/dev/null
+
+    # This phone a guest of a jam on another server (the relay's), hosted on this Mac (tools/jam-host.py),
+    # while its own profile is the home server's.
+    echo "  -- a guest of a jam on another server"
+    relay_song() { curl -s "$jam_server/rest/search3?u=admin&p=admin&v=1.16.1&c=e2e&f=json&songCount=1&albumCount=0&artistCount=0&query=$1" | python3 -c "
+import sys,json
+s=json.load(sys.stdin)['subsonic-response']['searchResult3']['song'][0]
+print(json.dumps({k:s.get(k) for k in ['id','title','artist','album','albumId','coverArt','duration']}))"; }
+    rm -f "$guests/host.log"
+    python3 "$here/jam-host.py" "$jam_server" admin admin "$(relay_song 'Long%20Track%2004')" "$(relay_song 'Long%20Track%2005')" > "$guests/host.log" 2>&1 & host=$!
+    wait_until 15 grep -qs invite: "$guests/host.log"
+    link=$(grep invite: "$guests/host.log" | cut -d' ' -f2)
+    adb shell am start -a android.intent.action.VIEW -d "'$link'" "$pkg" >/dev/null 2>&1
+    check "the invite opens the player on the host's jam" wait_until 20 on_screen 'text="Mac Host’s Jam"'
+    check "playing what the host plays" wait_for title "Long Track 04" 15
+    check "said under the song" on_screen 'text="Jam · Mac Host · 1 listening"'
+    no_controls() { off_screen 'content-desc="Next"' && off_screen 'content-desc="Shuffle"' && off_screen 'content-desc="Remove"'; }
+    check "with no controls of its own" no_controls
+    far=$(relay_song 'Far%20Song%20Two' | python3 -c 'import sys,json; print(json.load(sys.stdin)["albumId"])')
+    "$app" open "album/$far" >/dev/null
+    wait_until 15 on_screen 'text="Far Song Two"'
+    tapnode text "Far Song Two"
+    check "a tap asks the host, and the row says so" wait_until 10 on_screen 'text="Asked"'
+    check "the host takes it" wait_until 20 grep -q "accepted: Far Song Two" "$guests/host.log"
+    check "and the row lets go" wait_until 10 off_screen 'text="Asked"'
+    "$app" open queue >/dev/null
+    check "the host's queue says it was asked for here" wait_until 10 on_screen 'content-desc="Added by '
+    tapnode text Leave
+    check "leaving returns to the home server" wait_for server "$APP_URL" 20
+    check "the host saw it leave" wait_until 15 grep -q "left:" "$guests/host.log"
+    kill $host 2>/dev/null
   fi
 fi
 
