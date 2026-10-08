@@ -561,8 +561,10 @@ struct Told {
     next_position: i64,
     /// A live stream's title, and when playback reaches it.
     title: Option<(String, i64)>,
-    /// While playing, the place last said (song, ms, engine ms when), which clients run on at the pace.
-    said: Option<(usize, i64, i64)>,
+    /// While playing, the place last said (song, ms, engine ms when, the pace said), which clients run on.
+    said: Option<(usize, i64, i64, f64)>,
+    /// When the music written takes the place heard [`PLACE_DUE_MS`] from the one said (engine ms).
+    due: Option<i64>,
     /// The place last read (song, ms).
     read: Option<(usize, i64)>,
 }
@@ -589,8 +591,15 @@ const STANDING_MS: i64 = 250;
 const STALL_GUARD_MS: i64 = 30_000;
 /// A place heard this far from where the one last said runs on to is [`Event::Placed`].
 const PLACE_LEFT_MS: i64 = 10;
-/// The place said is held to only this long after it was said.
+/// The place said is held to only this long after it was said, unless it jumped ([`PLACE_LEAP_MS`]).
 const PLACE_SETTLE_MS: i64 = 1_000;
+/// What is said within this of the last word is an output starting (it finds its pace), not a jump.
+const PLACE_STARTING_MS: i64 = 250;
+/// A place heard this far from the one said jumped (a skipped silence): it is said at once.
+const PLACE_LEAP_MS: i64 = 50;
+/// The music written moving the place this far from the one said (speed, a mix's tempo, a skipped
+/// silence) is said where that happens.
+const PLACE_DUE_MS: i64 = 4;
 /// Less than this to play while a song's bytes are on their way is [`Event::Buffering`].
 const STALL_US: i64 = 200_000;
 const TEAR_DOWNS: u32 = 2;
@@ -2069,24 +2078,39 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
         // The place heard, moving on, has left the one last said as it ran on: clients re-anchor. Not
         // through a switch's dip or while the place stands (a stall or a change of path, said otherwise),
-        // nor while what was said is fresh (an output starting finds its pace).
+        // nor while what was said is fresh (an output starting finds its pace) unless it jumped or the
+        // music written moved it.
         if self.dip.is_some() {
             self.told.said = None;
         }
         let moving = self.told.read.replace((i, ms)).is_some_and(|(at, read)| at == i && ms > read);
-        let pace = self.status.lock().pace as f64;
-        let left = moving && self.told.said.is_some_and(|(at, said, when)| at == i && now - when >= PLACE_SETTLE_MS && (said + ((now - when) as f64 * pace) as i64 - ms).abs() > PLACE_LEFT_MS);
+        let off = |said: Option<(usize, i64, i64, f64)>| said.filter(|s| s.0 == i).map(|(_, said, when, pace)| ms as f64 - (said as f64 + (now - when) as f64 * pace));
+        let due = std::mem::take(&mut self.told.due).is_some_and(|t| now >= t);
+        let left = moving
+            && off(self.told.said).is_some_and(|o| {
+                let age = self.told.said.map_or(0, |s| now - s.2);
+                let jumped = age >= PLACE_STARTING_MS && (o > PLACE_LEAP_MS as f64 || (due && o.abs() > PLACE_DUE_MS as f64));
+                jumped || (age >= PLACE_SETTLE_MS && o.abs() > PLACE_LEFT_MS as f64)
+            });
         let placed = std::mem::take(&mut self.told.placed) || (left && !other && !looped);
         if placed {
             (self.events)(Event::Placed { index: i, ms });
         }
         let positioned = self.say_position(now, i, ms);
+        let pace = self.status.lock().pace as f64;
         self.told.said = match self.state {
             _ if self.dip.is_some() => None,
-            State::Playing if other || looped || placed || positioned || self.told.said.is_none() => Some((i, ms, now)),
+            State::Playing if other || looped || placed || positioned || self.told.said.is_none() => Some((i, ms, now, pace)),
             State::Playing => self.told.said,
             _ => None,
         };
+        // Where the music written will move the place away from what was said, it is looked at again.
+        if let (Some(o), false) = (off(self.told.said), self.offloading()) {
+            let within = self.p.until_next_song_us().map_or(i64::MAX, |u| (u as f64 / self.p.speed().0.max(0.1) as f64) as i64);
+            let said_pace = self.told.said.map_or(1.0, |s| s.3);
+            let starting = self.told.said.map_or(now, |s| s.2 + PLACE_STARTING_MS);
+            self.told.due = self.p.sink.track.leaves(o, said_pace, PLACE_DUE_MS as f64, within).map(|us| (now + us / 1000 + 1).max(starting));
+        }
     }
 
     /// [`Event::Position`]: at the pace asked for while playing, and once when a seek or jump lands.
@@ -2186,6 +2210,9 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
         if positions {
             at(self.told.next_position - now);
+        }
+        if let Some(t) = self.told.due {
+            at(t - now);
         }
         d.map(|x| x.max(1))
     }

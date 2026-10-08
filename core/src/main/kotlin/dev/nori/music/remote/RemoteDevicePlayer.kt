@@ -61,7 +61,7 @@ class RemoteDevicePlayer(private val context: Context, private val nori: Nori) :
         val list = rows(m)
         val at = m.at?.toInt()
         // The core's clock is elapsedRealtime's (Mirror.at_us).
-        val elapsed = if (m.playing) (SystemClock.elapsedRealtimeNanos() / 1_000 - m.atUs) / 1_000 else 0
+        val elapsed = if (m.playing) ((SystemClock.elapsedRealtimeNanos() / 1_000 - m.atUs) / 1_000 * m.rate).toLong() else 0
         return b.setPlaylist(list)
             .setCurrentMediaItemIndex(at ?: C.INDEX_UNSET)
             .setPlayWhenReady(m.playing, Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE)
@@ -74,7 +74,7 @@ class RemoteDevicePlayer(private val context: Context, private val nori: Nori) :
             )
             .setShuffleModeEnabled(m.shuffle)
             .setRepeatMode(m.repeat.toInt())
-            .setContentPositionMs(PositionSupplier.getExtrapolating(m.positionMs + elapsed, if (m.playing) 1f else 0f))
+            .setContentPositionMs(PositionSupplier.getExtrapolating(m.positionMs + elapsed, if (m.playing) m.rate.toFloat() else 0f))
             .setDeviceVolume(m.volume?.let { (it.toInt() * STEPS + 50) / 100 } ?: 0)
             .build()
     }

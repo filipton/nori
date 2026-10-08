@@ -130,7 +130,12 @@ pub fn position_now(state: &wire::DeviceState, elapsed_ms: i64) -> i64 {
         return state.position_ms;
     }
     let length = state.entries.iter().find(|e| Some(e.index) == state.index).map_or(i64::MAX, |e| e.duration as i64 * 1000);
-    (state.position_ms + elapsed_ms.max(0)).min(length)
+    (state.position_ms + (elapsed_ms.max(0) as f64 * rate(state)) as i64).min(length)
+}
+
+/// How fast `state`'s place moves while it plays, song ms per real ms.
+pub fn rate(state: &wire::DeviceState) -> f64 {
+    state.rate.filter(|r| r.is_finite() && *r > 0.0).map_or(1.0, f64::from)
 }
 
 #[cfg(test)]
@@ -195,6 +200,7 @@ mod tests {
         let st = DeviceState { playing: true, position_ms: 2_000, index: Some(4), entries, ..Default::default() };
         assert_eq!(position_now(&st, 1_500), 3_500);
         assert_eq!(position_now(&st, 60_000), 10_000, "not past the song's end");
+        assert_eq!(position_now(&DeviceState { rate: Some(1.25), ..st.clone() }, 2_000), 4_500, "at the device's speed");
         assert_eq!(position_now(&DeviceState { playing: false, ..st }, 1_500), 2_000);
     }
 }

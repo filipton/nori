@@ -105,17 +105,25 @@ pub struct RemoteMe {
 }
 
 /// The platform player's side of a published state; the queue's side is the core's.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct Playing {
     pub playing: bool,
     /// Waiting for the song's bytes while it should play.
     pub buffering: bool,
     pub position_ms: i64,
+    /// Song ms per real ms: the speed times a mix's tempo (the engine's `Status::pace`).
+    pub rate: f32,
     /// The list index heard: the queue's own current song moves only once the player says it arrived.
     pub index: Option<u32>,
     /// The media volume, 0 to 100, when it can be set.
     pub volume: Option<u8>,
+}
+
+impl Default for Playing {
+    fn default() -> Self {
+        Playing { playing: false, buffering: false, position_ms: 0, rate: 1.0, index: None, volume: None }
+    }
 }
 
 /// Another device of the account, as a picker lists it.
@@ -151,8 +159,10 @@ pub struct Mirror {
     pub rev: u64,
     pub playing: bool,
     pub buffering: bool,
-    /// Where the song was at `at_us`; it runs on at one times from there while `playing`.
+    /// Where the song was at `at_us`; it runs on at `rate` from there while `playing`.
     pub position_ms: i64,
+    /// Song ms per real ms there: its speed times a mix's tempo.
+    pub rate: f64,
     /// When the device's listener heard `position_ms`, on this device's clock (`nori_remote::clock::now_us`,
     /// Android's `SystemClock.elapsedRealtimeNanos` / 1000).
     pub at_us: i64,
@@ -171,7 +181,7 @@ impl Mirror {
             return self.position_ms;
         }
         let length = self.at.and_then(|a| self.rows.get(a as usize)).filter(|r| r.song.duration > 0).map_or(i64::MAX, |r| r.song.duration as i64 * 1000);
-        (self.position_ms + (now_us - self.at_us) / 1000).clamp(0, length)
+        (self.position_ms + ((now_us - self.at_us) as f64 / 1000.0 * self.rate) as i64).clamp(0, length)
     }
 
     /// Where the song is now: what the device's listener hears at this moment.
@@ -465,6 +475,7 @@ impl Mirrored {
             playing: st.playing,
             buffering: st.buffering,
             position_ms: st.position_ms,
+            rate: nori_remote::rate(st),
             at_us: self.shown_at(),
             shuffle: st.shuffle,
             repeat: st.repeat,
@@ -606,7 +617,7 @@ impl Inner {
     /// Where this device's song is now, run on from when the platform last said.
     fn position_now(&self) -> i64 {
         let elapsed = self.since_played_ms(clock::now_us());
-        if self.playing.playing { self.playing.position_ms + elapsed } else { self.playing.position_ms }
+        if self.playing.playing { self.playing.position_ms + (elapsed as f64 * self.playing.rate as f64) as i64 } else { self.playing.position_ms }
     }
 
     /// Where this device's song is at `now_us`, held to the end of `state`'s song.
@@ -1082,6 +1093,7 @@ impl Remote {
             playing: st.playing,
             buffering: st.buffering,
             position_ms: st.position_ms,
+            rate: nori_remote::rate(st),
             at_us: i.received.get(&host.id).copied().unwrap_or_else(clock::now_us),
             shuffle: st.shuffle,
             repeat: st.repeat,
@@ -1775,6 +1787,7 @@ impl Remote {
             jam: i.hosted.as_ref().map(|h| h.jam.state()),
             handed_to: i.handed_to.clone(),
             at_us: None,
+            rate: Some(p.rate),
         };
         let now = clock::now_us();
         st.position_ms = i.position_at_of(&st, now);
@@ -1861,6 +1874,10 @@ mod tests {
         assert!(!same_but_time(&last, &later(40_000)), "a seek");
         assert!(!same_but_time(&last, &DeviceState { rev: 3, ..later(15_000) }), "the queue changed");
         assert!(!same_but_time(&last, &DeviceState { playing: false, ..later(15_000) }), "paused");
+        // At another speed: the place runs on at it, and a new speed is news at once.
+        let fast = DeviceState { rate: Some(1.25), ..last.clone() };
+        assert!(same_but_time(&fast, &DeviceState { position_ms: 16_250, ..DeviceState { at_us: Some(6_000_000), ..fast.clone() } }));
+        assert!(!same_but_time(&fast, &DeviceState { rate: Some(1.0), position_ms: 16_250, at_us: Some(6_000_000), ..fast.clone() }), "the speed changed");
     }
 
     #[test]
@@ -1881,6 +1898,9 @@ mod tests {
         assert_eq!(v.at_us, 800_000);
         assert_eq!(v.position_at(1_800_000), 11_000);
         assert_eq!(v.position_at(400_000_000), 300_000, "held at the song's end");
+        // Playing at 1.25 times: a second there is a second and a quarter of the song.
+        assert!(m.heard(&DeviceState { seq: 5, rate: Some(1.25), ..st.clone() }, 3_500_000));
+        assert_eq!(view(&m).position_at(1_800_000), 11_250);
         // A command foreseen here runs on from when it was sent.
         m.foresee(&Op::Pause);
         assert!(!view(&m).playing && view(&m).position_at(900_000_000) == view(&m).position_ms);

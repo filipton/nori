@@ -1489,6 +1489,7 @@ mod tests {
             buffering: false,
             position_ms: 0,
             at_us: 0,
+            rate: 1.0,
             shuffle: true,
             repeat: 2,
             volume: None,

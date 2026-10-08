@@ -223,13 +223,13 @@ class Remotes(private val context: Context, private val nori: Nori) {
     }
 
     /** The player's state changed; nothing happens unless a remote exists. */
-    fun played(playing: Boolean, buffering: Boolean, positionMs: Long, index: Int) {
+    fun played(playing: Boolean, buffering: Boolean, positionMs: Long, rate: Float, index: Int) {
         val r = remote ?: return
         val read = SystemClock.elapsedRealtimeNanos()
         work {
             // The place ran on while the worker was busy: the core takes it as of the call.
-            val ran = if (playing) (SystemClock.elapsedRealtimeNanos() - read) / 1_000_000 else 0
-            r.played(Playing(playing, buffering, positionMs + ran, index.takeIf { it >= 0 }?.toUInt(), volumePercent(context)?.toUByte()))
+            val ran = if (playing) ((SystemClock.elapsedRealtimeNanos() - read) / 1_000_000 * rate).toLong() else 0
+            r.played(Playing(playing, buffering, positionMs + ran, rate, index.takeIf { it >= 0 }?.toUInt(), volumePercent(context)?.toUByte()))
         }
     }
 

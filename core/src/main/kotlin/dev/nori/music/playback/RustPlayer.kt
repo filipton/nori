@@ -70,6 +70,8 @@ internal object RustPlayerJni {
     @JvmStatic @CriticalNative external fun mixing(h: Long): Boolean
     @JvmStatic @CriticalNative external fun chainIn(h: Long): Boolean
     @JvmStatic @CriticalNative external fun onCpu(h: Long): Boolean
+    /** Song ms per real ms: the speed times a mix's tempo. */
+    @JvmStatic @CriticalNative external fun pace(h: Long): Float
     @JvmStatic @CriticalNative external fun gainReductionDb(h: Long): Float
     @JvmStatic @CriticalNative external fun compressionDb(h: Long): Float
     /** The outputs play at [level] (0 to 1) of their own volume from their next volume or open on ([Quiet]). */
@@ -303,6 +305,8 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
     fun setForeground(on: Boolean) = RustPlayerJni.setForeground(h, on)
     fun replan() = RustPlayerJni.replan(h)
     val mixing: Boolean get() = RustPlayerJni.mixing(h)
+    /** How fast the place moves: the speed times a mix's tempo. */
+    val pace: Float get() = RustPlayerJni.pace(h)
     /** The sound chain is in the samples' path, and what its limiter takes off, dB: see [Equalizer.inChain]. */
     val chainIn: Boolean get() = RustPlayerJni.chainIn(h)
     /** The ear is on music the CPU made, through the engine's own output: where [chainIn] says anything. */

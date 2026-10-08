@@ -211,6 +211,11 @@ impl Runner {
         (self.out, self.scratch) = (out, spare);
     }
 
+    /// Frames silence skipping has dropped since it was made.
+    fn skipped(&self) -> u64 {
+        self.chain.silence.as_ref().map_or(0, SilenceSkipper::skipped_frames)
+    }
+
     /// Runs `data` through speed, if it is in the chain.
     fn speed_up(&mut self, data: &mut Vec<u8>) {
         if let Some(s) = self.chain.speed.as_mut() {
@@ -493,7 +498,7 @@ impl<T: Track> Sink<T> {
                 // What it holds goes on through speed.
                 self.runner.drain_stages(false);
                 self.runner.chain.silence = None;
-                self.made_output(0.0);
+                self.made_output(0.0, None);
             }
             _ => {}
         }
@@ -629,10 +634,15 @@ impl<T: Track> Sink<T> {
             self.mark();
             let media = (end - self.run) as f64 * piece.pace;
             self.carry += media;
+            let skipped = self.runner.skipped();
             self.runner.run(self.kept.frames(self.run, end), float, piece.gain);
             self.run_media += media;
             self.run = end;
-            self.made_output(0.0);
+            // What a stage holds back (speed's input, silence it is still judging) is song time not
+            // heard yet: the output carries its own frames at the speed, and the silence dropped.
+            let speed = if self.runner.chain.speed.is_some() { self.settings.speed as f64 } else { 1.0 };
+            let made = (self.runner.out.len() / f.frame_bytes()) as f64 * speed + self.runner.skipped().saturating_sub(skipped) as f64;
+            self.made_output(0.0, Some(made * piece.pace));
         }
     }
 
@@ -645,11 +655,14 @@ impl<T: Track> Sink<T> {
         }
     }
 
-    /// Counts the chain's last output and writes it with `media` more song frames: straight from the
-    /// chain as far as the track has room, the rest queued.
-    fn made_output(&mut self, media: f64) {
+    /// Counts the chain's last output and writes it with `media` more song frames (at most `up_to` of
+    /// what is carried, the rest left for later output): straight from the chain as far as the track has
+    /// room, the rest queued.
+    fn made_output(&mut self, media: f64, up_to: Option<f64>) {
         let fb = self.format.map_or(1, |f| f.frame_bytes());
         self.carry += media;
+        let later = up_to.map_or(0.0, |u| (self.carry - u).max(0.0));
+        self.carry -= later;
         let out = std::mem::take(&mut self.runner.out);
         self.made += (out.len() / fb) as u64;
         let mut from = 0;
@@ -666,6 +679,7 @@ impl<T: Track> Sink<T> {
         }
         self.runner.out = out;
         self.gain_reduction_db = self.gain_reduction_db.max(self.runner.meter_db);
+        self.carry += later;
     }
 
     fn pending_left(&self) -> bool {
@@ -782,10 +796,10 @@ impl<T: Track> Sink<T> {
         let held = self.runner.chain.eq.as_ref().filter(|e| !e.is_identity()).map_or(0, Equalizer::delay_frames);
         if held > 0 {
             self.runner.run(&vec![0u8; held * f.frame_bytes()], f.encoding == Encoding::Float, 1.0);
-            self.made_output(0.0);
+            self.made_output(0.0, None);
         }
         self.runner.drain_stages(true);
-        self.made_output(0.0);
+        self.made_output(0.0, None);
     }
 
     /// Output is waiting for room in the track, or kept input to be run again.

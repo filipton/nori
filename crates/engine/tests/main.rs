@@ -3,6 +3,8 @@
 
 mod common;
 
+#[path = "along.rs"]
+mod along;
 #[path = "perf_alloc.rs"]
 mod perf_alloc;
 #[path = "engine.rs"]

@@ -141,7 +141,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
 
     /** The mirrored device's place now: where its listener is, within the song (the core's clock is elapsedRealtime's). */
     private fun mirrorPosition(m: Mirror): Long {
-        val ran = if (m.playing) (android.os.SystemClock.elapsedRealtimeNanos() / 1_000 - m.atUs) / 1_000 else 0L
+        val ran = if (m.playing) ((android.os.SystemClock.elapsedRealtimeNanos() / 1_000 - m.atUs) / 1_000 * m.rate).toLong() else 0L
         val end = _state.value.durationMs.takeIf { it > 0 } ?: Long.MAX_VALUE
         return (m.positionMs + ran).coerceIn(0, end)
     }

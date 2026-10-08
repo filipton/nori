@@ -264,6 +264,8 @@ pub struct DeviceState {
     /// When the listener heard `position_ms`, on the device's clock ([`crate::clock::now_us`]); None from
     /// an older device, whose reader takes the position as of when the state arrived.
     pub at_us: Option<i64>,
+    /// Song ms per real ms at `at_us`: the speed times a mix's tempo; None from an older device (1).
+    pub rate: Option<f32>,
     /// The current list index.
     pub index: Option<u32>,
     /// The queue's revision; index-based commands name it.

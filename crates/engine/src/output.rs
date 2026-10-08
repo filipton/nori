@@ -103,6 +103,9 @@ const HELD_US: i64 = 250_000;
 /// of it. The device gives back exactly what it did not play ([`Feed::rewind`]).
 const REWIND_EARLY_US: i64 = 100_000;
 
+/// Music written this much faster or slower than the pace said moves the place in a jump
+/// ([`RingTrack::leaves`]).
+const RUSH: f64 = 0.5;
 /// Ring room beyond the deep buffer: resampler rounding and a device's first pull.
 const SLACK_US: i64 = 2_000_000;
 /// A flush reaches the device ([`AudioOutput::flush`]) once this much new music is in the ring, or at
@@ -655,6 +658,35 @@ impl RingTrack {
             self.from = self.marks.pop_front().expect("checked");
         }
         self.at_ring(p)
+    }
+
+    /// When the place heard, `off_ms` from one running on at `pace` now, will be more than `by_ms` from it,
+    /// µs from now, within `within_us` and what is written: where it crosses, or past a jump (music
+    /// written far faster than the pace, a silence skipped) where the place moves at about the pace again.
+    pub(crate) fn leaves(&mut self, off_ms: f64, pace: f64, by_ms: f64, within_us: i64) -> Option<i64> {
+        let (Some(d), Some(f)) = (self.device, self.format) else { return None };
+        let now = self.played_at();
+        let us_of = |s: Stretch| (s.ring.saturating_sub(now.ring)) as i64 * 1_000_000 / d.rate as i64;
+        let off = |s: Stretch| off_ms + (s.media - now.media) * 1000.0 / f.rate as f64 - us_of(s) as f64 / 1000.0 * pace;
+        let rushing = |a: Stretch, b: Stretch| ((b.media - a.media) * d.rate as f64 / f.rate as f64 / (b.ring - a.ring).max(1) as f64 - pace).abs() > RUSH * pace;
+        let (mut at, mut before) = (None, now);
+        for m in self.marks.iter().copied().filter(|m| m.ring > now.ring).take_while(|m| us_of(*m) <= within_us) {
+            match at {
+                // Within a stretch at its own pace the place leaves gradually: where it crosses.
+                None if off(m).abs() > by_ms && !rushing(before, m) => {
+                    let (a, b) = (off(before), off(m));
+                    let k = if b != a { ((by_ms.copysign(b) - a) / (b - a)).clamp(0.0, 1.0) } else { 1.0 };
+                    return Some(us_of(before) + ((us_of(m) - us_of(before)) as f64 * k) as i64);
+                }
+                None if off(m).abs() > by_ms => at = Some(m),
+                None => {}
+                // Through a jump (a silence skipped): to where the place moves at about the pace again.
+                Some(_) if rushing(before, m) => at = Some(m),
+                Some(_) => break,
+            }
+            before = m;
+        }
+        at.map(us_of)
     }
 
     /// The ring frame (since the flush) sink frame `sink` was written to.

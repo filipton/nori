@@ -76,6 +76,7 @@ impl Remotes {
             playing: s.state == State::Playing,
             buffering: self.buffering.load(Ordering::Relaxed),
             position_ms: s.position_now().max(0),
+            rate: s.pace,
             index: s.index.map(|i| i as u32),
             volume: self.level.percent(),
         }
@@ -552,6 +553,7 @@ mod tests {
             playing: true,
             buffering: false,
             position_ms: 10_000,
+            rate: 1.0,
             at_us: 0,
             shuffle: true,
             repeat: 0,

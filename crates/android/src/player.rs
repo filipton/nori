@@ -56,6 +56,7 @@ pub(crate) static CLASS: Class = Class {
         native!(c"mixing", c"(J)Z", mixing),
         native!(c"chainIn", c"(J)Z", chain_in),
         native!(c"onCpu", c"(J)Z", on_cpu),
+        native!(c"pace", c"(J)F", pace),
         native!(c"gainReductionDb", c"(J)F", gain_reduction_db),
         native!(c"compressionDb", c"(J)F", compression_db),
         native!(c"setQuiet", c"(JF)V", set_quiet),
@@ -1549,6 +1550,11 @@ extern "system" fn mixing(h: jlong) -> jboolean {
 /// Whether the sound chain processes the samples.
 extern "system" fn chain_in(h: jlong) -> jboolean {
     player(h).is_some_and(|p| p.engine.status_with(|s| s.chain)) as jboolean
+}
+
+/// `Status::pace`: song ms per real ms.
+extern "system" fn pace(h: jlong) -> f32 {
+    player(h).map_or(1.0, |p| p.engine.status_with(|s| s.pace))
 }
 
 /// `Status::on_cpu`.
