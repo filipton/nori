@@ -209,6 +209,14 @@ class Remotes(private val context: Context, private val nori: Nori) {
         return done
     }
 
+    /** Undoes the removal of song [id] from the mirrored device's queue: it goes back where it was there. */
+    fun putBack(id: String) = work {
+        val r = remote
+        val device = _mirror.value?.id
+        if (r != null && device != null) r.putBack(device, id)
+        mirrorNow()
+    }
+
     /** A song's heart changed here: the mirrored device marks it too. */
     fun starred(id: String, on: Boolean) {
         if (_mirror.value != null) command(Op.Star(id, on))

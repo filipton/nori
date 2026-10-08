@@ -508,10 +508,9 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         mirror?.let { m -> remoteIndex(m, index)?.let { remote(Op.Remove(it, m.rev)) }; return@with }
         c.removeMediaItem(index)
     }
-    /** Undo of [remove]: [song] back where it was (the core's `playlist_restore`), or at [index] if the core no longer has it. */
+    /** Undo of [remove]: [song] back where it was (the core's `playlist_restore`, or the mirrored device's), or at [index] if the core no longer has it. */
     fun restore(song: Song, index: Int) = with { c ->
-        // The device keeps no undo of its own: the song goes back after the one playing.
-        if (mirror != null) return@with run { remote(Op.Add(listOf(song), true)) }
+        if (mirror != null) return@with run { nori.remotes.putBack(song.id) }
         c.addMediaItem(index.coerceIn(0, c.mediaItemCount), items(listOf(song)).single().restored())
         if (c.playbackState == Player.STATE_IDLE) c.prepare()
     }
