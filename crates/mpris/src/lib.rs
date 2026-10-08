@@ -1,5 +1,7 @@
-//! MPRIS (`org.mpris.MediaPlayer2`) media controls on the Linux session bus, served on one thread.
-//! Position is read on request, so nothing ticks. Elsewhere [`Mpris::start`] returns an error.
+//! The system's media controls: MPRIS (`org.mpris.MediaPlayer2`) on the Linux session bus, served on one
+//! thread, its position read on request; on macOS, Now Playing and the media keys (MediaPlayer's info and
+//! command centers), told the position and rate at each change and running on from there by themselves.
+//! Nothing ticks.
 
 use std::sync::{Arc, RwLock};
 
@@ -12,6 +14,8 @@ pub trait Controls: Send + Sync + 'static {
     fn previous(&self);
     /// Seeks the current song to `ms`.
     fn seek(&self, ms: i64);
+    /// Hearts the song playing, or takes its heart away; controls that cannot star leave it.
+    fn like(&self) {}
     fn now(&self) -> Now;
 }
 
@@ -28,6 +32,9 @@ pub struct Now {
     pub album: String,
     pub length_ms: i64,
     pub position_ms: i64,
+    pub starred: bool,
+    /// The cover's file (JPEG, PNG, WebP), once read.
+    pub art: Option<Arc<[u8]>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -182,6 +189,119 @@ mod linux {
     }
 }
 
+#[cfg(target_os = "macos")]
+mod mac {
+    use std::cell::RefCell;
+    use std::ptr::NonNull;
+    use std::sync::Arc;
+
+    use block2::RcBlock;
+    use dispatch2::DispatchQueue;
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::AnyThread;
+    use objc2_app_kit::NSImage;
+    use objc2_core_foundation::CGSize;
+    use objc2_foundation::{NSData, NSMutableDictionary, NSNumber, NSString};
+    use objc2_media_player::{
+        MPChangePlaybackPositionCommandEvent, MPMediaItemArtwork, MPMediaItemPropertyAlbumTitle, MPMediaItemPropertyArtist, MPMediaItemPropertyArtwork, MPMediaItemPropertyPlaybackDuration,
+        MPMediaItemPropertyTitle, MPNowPlayingInfoCenter, MPNowPlayingInfoPropertyElapsedPlaybackTime, MPNowPlayingInfoPropertyPlaybackRate, MPNowPlayingPlaybackState, MPRemoteCommand,
+        MPRemoteCommandCenter, MPRemoteCommandEvent, MPRemoteCommandHandlerStatus,
+    };
+
+    use super::{Controls, Current, Now};
+
+    /// A cover's file and the artwork made of it.
+    type Made = (Arc<[u8]>, Retained<MPMediaItemArtwork>);
+
+    thread_local! {
+        /// The cover Now Playing shows, made once per song. On the main thread: AppKit's objects stay there.
+        static ART: RefCell<Option<Made>> = const { RefCell::new(None) };
+    }
+
+    type Act = fn(&Current, NonNull<MPRemoteCommandEvent>);
+
+    /// Hands the media keys and Now Playing's buttons to `current`. On the main thread, once.
+    pub fn listen(current: Arc<Current>) {
+        // SAFETY: the shared command center lives for the process, and copies each handler block.
+        unsafe {
+            let center = MPRemoteCommandCenter::sharedCommandCenter();
+            let on = |command: &MPRemoteCommand, act: Act| {
+                let current = current.clone();
+                let block = RcBlock::new(move |e: NonNull<MPRemoteCommandEvent>| {
+                    act(&current, e);
+                    MPRemoteCommandHandlerStatus::Success
+                });
+                command.setEnabled(true);
+                command.addTargetWithHandler(&block);
+            };
+            on(&center.playCommand(), |c, _| c.play());
+            on(&center.pauseCommand(), |c, _| c.pause());
+            on(&center.togglePlayPauseCommand(), |c, _| c.toggle());
+            on(&center.nextTrackCommand(), |c, _| c.next());
+            on(&center.previousTrackCommand(), |c, _| c.previous());
+            on(&center.changePlaybackPositionCommand(), |c, e| {
+                // This command's events are position changes.
+                let at = e.cast::<MPChangePlaybackPositionCommandEvent>().as_ref().positionTime();
+                c.seek((at * 1000.0) as i64);
+            });
+            on(&center.likeCommand(), |c, _| c.like());
+        }
+    }
+
+    /// Tells Now Playing what `current` plays now, on the main thread.
+    pub fn show(current: Arc<Current>) {
+        DispatchQueue::main().exec_async(move || set(&current.now()));
+    }
+
+    fn set(n: &Now) {
+        // SAFETY: on the main thread; the keys are MediaPlayer's constants, each with a value of its type.
+        unsafe {
+            let center = MPNowPlayingInfoCenter::defaultCenter();
+            MPRemoteCommandCenter::sharedCommandCenter().likeCommand().setActive(n.starred);
+            if n.index.is_none() {
+                ART.with(|a| a.borrow_mut().take());
+                center.setNowPlayingInfo(None);
+                center.setPlaybackState(MPNowPlayingPlaybackState::Stopped);
+                return;
+            }
+            let info = NSMutableDictionary::<NSString, AnyObject>::new();
+            let text = |key: &NSString, v: &str| info.insert(key, AsRef::<AnyObject>::as_ref(&*NSString::from_str(v)));
+            let number = |key: &NSString, v: f64| info.insert(key, AsRef::<AnyObject>::as_ref(&*NSNumber::new_f64(v)));
+            text(MPMediaItemPropertyTitle, &n.title);
+            text(MPMediaItemPropertyArtist, &n.artist);
+            text(MPMediaItemPropertyAlbumTitle, &n.album);
+            number(MPMediaItemPropertyPlaybackDuration, n.length_ms as f64 / 1000.0);
+            number(MPNowPlayingInfoPropertyElapsedPlaybackTime, n.position_ms.max(0) as f64 / 1000.0);
+            number(MPNowPlayingInfoPropertyPlaybackRate, if n.playing { 1.0 } else { 0.0 });
+            if let Some(art) = n.art.as_ref().and_then(artwork) {
+                info.insert(MPMediaItemPropertyArtwork, AsRef::<AnyObject>::as_ref(&*art));
+            }
+            center.setNowPlayingInfo(Some(&info));
+            center.setPlaybackState(if n.playing { MPNowPlayingPlaybackState::Playing } else { MPNowPlayingPlaybackState::Paused });
+        }
+    }
+
+    /// The cover `file` as Now Playing's artwork, made again only for another cover.
+    fn artwork(file: &Arc<[u8]>) -> Option<Retained<MPMediaItemArtwork>> {
+        ART.with(|a| {
+            let mut a = a.borrow_mut();
+            if let Some((_, art)) = a.as_ref().filter(|(made, _)| Arc::ptr_eq(made, file)) {
+                return Some(art.clone());
+            }
+            // SAFETY: on the main thread; the block hands back the image it holds, alive as long as the block.
+            let art = unsafe {
+                let image = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(file))?;
+                let size = image.size();
+                let block = RcBlock::new(move |_: CGSize| NonNull::from(&*image));
+                MPMediaItemArtwork::initWithBoundsSize_requestHandler(MPMediaItemArtwork::alloc(), size, &block)
+            };
+            *a = Some((file.clone(), art.clone()));
+            Some(art)
+        })
+    }
+}
+
 /// The controls of the session open now; nothing while none is.
 #[derive(Default)]
 struct Current(RwLock<Option<Arc<dyn Controls>>>);
@@ -213,6 +333,9 @@ impl Controls for Current {
     fn seek(&self, ms: i64) {
         self.with(|c| c.seek(ms));
     }
+    fn like(&self) {
+        self.with(|c| c.like());
+    }
     fn now(&self) -> Now {
         let mut now = Now::default();
         self.with(|c| now = c.now());
@@ -220,7 +343,8 @@ impl Controls for Current {
     }
 }
 
-/// Served as `org.mpris.MediaPlayer2.<name>` for the process: one bus name, whichever session is open.
+/// The process's media controls: one bus name on Linux (`org.mpris.MediaPlayer2.<name>`), Now Playing
+/// on macOS, whichever session is open.
 pub struct Mpris {
     current: Arc<Current>,
     #[cfg(target_os = "linux")]
@@ -240,16 +364,33 @@ impl Mpris {
         }
     }
 
+    /// [`Mpris::start`] for a windowed app, whose main thread runs the system's event loop: on macOS, Now
+    /// Playing and the media keys (their commands arrive on that loop). Called on the main thread.
+    pub fn for_app(name: &str) -> Result<Mpris, String> {
+        #[cfg(target_os = "macos")]
+        {
+            let _ = name;
+            let current = Arc::new(Current::default());
+            mac::listen(current.clone());
+            Ok(Mpris { current })
+        }
+        #[cfg(not(target_os = "macos"))]
+        Mpris::start(name)
+    }
+
     /// Media keys drive `controls` from now on; None while no session is open.
     pub fn serve(&self, controls: Option<Arc<dyn Controls>>) {
         *self.current.0.write().unwrap_or_else(|p| p.into_inner()) = controls;
         self.changed();
     }
 
-    /// Emits PropertiesChanged for status and metadata.
+    /// The song or the playback changed: emits PropertiesChanged for status and metadata (Linux), or
+    /// tells Now Playing (macOS).
     pub fn changed(&self) {
         #[cfg(target_os = "linux")]
         self.served.changed();
+        #[cfg(target_os = "macos")]
+        mac::show(self.current.clone());
     }
 }
 
@@ -323,7 +464,7 @@ mod tests {
             self.0.lock().unwrap().push(format!("seek {ms}"));
         }
         fn now(&self) -> Now {
-            Now { playing: true, loaded: true, index: Some(2), title: "T".into(), artist: "A".into(), album: "B".into(), length_ms: 200_000, position_ms: 30_000 }
+            Now { playing: true, loaded: true, index: Some(2), title: "T".into(), artist: "A".into(), album: "B".into(), length_ms: 200_000, position_ms: 30_000, ..Now::default() }
         }
     }
 

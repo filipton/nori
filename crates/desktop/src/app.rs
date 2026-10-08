@@ -309,7 +309,7 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
             compositor,
             tx,
             inbox,
-            mpris: nori_mpris::Mpris::start(&format!("nori.desktop{}", std::process::id())).ok().map(Arc::new),
+            mpris: nori_mpris::Mpris::for_app(&format!("nori.desktop{}", std::process::id())).ok().map(Arc::new),
             data,
             http: Http::new(),
             session: None,
@@ -1155,6 +1155,7 @@ impl App {
             }
             Msg::Jam(Err(e)) => self.say(&format!("{} ({e})", words::JAM_FAILED), true),
             Msg::Starred => {
+                self.on_session(|s| s.mpris_changed());
                 self.follow();
                 self.mark_playing();
             }

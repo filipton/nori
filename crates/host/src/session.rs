@@ -244,12 +244,13 @@ impl Session {
         let engine = Arc::new(Engine::start(library, app, CoreQueue(core.session.clone()), output, None, config, move |e| events(Said::Engine(e))));
         let covers = o.covers.then(|| Arc::new(Loader::new(CoverConfig::new(o.data.join("covers")), cover_net)));
         let remotes = Arc::new(crate::remote::Remotes::new(level.clone()));
-        #[cfg(feature = "desktop")]
-        if let Some(m) = &o.mpris {
-            m.serve(Some(Arc::new(crate::remote::Keys { here: Controls::over_queue(engine.clone(), core.session.clone()), remotes: remotes.clone() })));
-        }
         let keeper = Keeper::start(core.clone(), engine.clone());
         let s = Session { core, client, engine, store, downloader, covers, level, search: SearchSession::new(), offline: o.offline, #[cfg(feature = "desktop")] mpris: o.mpris, keeper, db: PathBuf::from(db), remotes, device: o.device, out: o.out };
+        #[cfg(feature = "desktop")]
+        if let Some(m) = &s.mpris {
+            let cover = crate::remote::NowCover::new(s.covers.clone(), s.core.clone(), Arc::downgrade(m));
+            m.serve(Some(Arc::new(crate::remote::Keys { here: Controls::over_queue(s.engine.clone(), s.core.session.clone()), remotes: s.remotes.clone(), hearts: s.handle(), cover })));
+        }
         s.restore();
         s.follow_remote();
         if !s.offline && s.core.download_counts().pending > 0 {
@@ -860,6 +861,11 @@ impl Handle {
         if let Some(p) = self.queue.settings.current().filter(|p| p.loudness) {
             self.engine.set_settings(settings(&p, self.level.loudness.db()));
         }
+    }
+
+    /// Whether `song` shows starred here: its record, or a heart pressed since.
+    pub(crate) fn starred(&self, song: &Song) -> bool {
+        self.client.core().starred(Starrable::Song, &song.id, song.starred)
     }
 
     /// The marks moving, as this session shows them.

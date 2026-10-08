@@ -243,6 +243,8 @@ impl nori_mpris::Controls for Controls {
             album: song.album,
             length_ms: song.duration as i64 * 1000,
             position_ms: s.position_now(),
+            starred: song.starred,
+            art: None,
         }
     }
 }

@@ -3,7 +3,7 @@ name = "nori-mpris"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "nori on the Linux desktop's media controls: MPRIS over D-Bus"
+description = "nori in the desktop's media controls: MPRIS over D-Bus on Linux, Now Playing and the media keys on macOS"
 
 [lib]
 name = "nori_mpris"
@@ -12,3 +12,13 @@ name = "nori_mpris"
 # Thin libdbus bindings; zbus would bring its own async runtime.
 dbus = "0.9"
 dbus-crossroads = "0.5"
+
+# Now Playing and the media keys: MediaPlayer's info and command centers.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+dispatch2 = "0.3"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSValue", "NSDictionary", "NSData", "NSObject"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSImage"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
+objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "MPNowPlayingInfoCenter", "MPRemoteCommandCenter", "MPRemoteCommand", "MPRemoteCommandEvent", "MPMediaItem"] }

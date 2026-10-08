@@ -257,7 +257,70 @@ impl Elsewhere {
 pub(crate) struct Keys {
     pub(crate) here: crate::Controls,
     pub(crate) remotes: Arc<Remotes>,
+    /// Hearts this device's songs.
+    pub(crate) hearts: Handle,
+    pub(crate) cover: NowCover,
 }
+
+/// The cover of the song the media controls show, as its file (macOS's Now Playing draws it).
+#[cfg(feature = "desktop")]
+pub(crate) struct NowCover {
+    pub(crate) covers: Option<Arc<nori_covers::loader::Loader>>,
+    pub(crate) core: Arc<nori_core::Core>,
+    /// Told when the file is read.
+    pub(crate) media: Weak<nori_mpris::Mpris>,
+    shown: Arc<Mutex<CoverShown>>,
+}
+
+/// The cover the media controls show.
+#[cfg(feature = "desktop")]
+#[derive(Default)]
+struct CoverShown {
+    id: String,
+    /// Its file, once read.
+    file: Option<Arc<[u8]>>,
+}
+
+#[cfg(feature = "desktop")]
+impl NowCover {
+    pub(crate) fn new(covers: Option<Arc<nori_covers::loader::Loader>>, core: Arc<nori_core::Core>, media: Weak<nori_mpris::Mpris>) -> NowCover {
+        NowCover { covers, core, media, shown: Arc::default() }
+    }
+
+    /// Cover `id`'s file once read; asked for another cover, it is read on a thread of its own and the
+    /// media controls are told when it is in.
+    fn of(&self, id: &str) -> Option<Arc<[u8]>> {
+        let covers = self.covers.clone()?;
+        let mut shown = self.shown.lock();
+        if shown.id == id {
+            return shown.file.clone();
+        }
+        *shown = CoverShown { id: id.to_string(), file: None };
+        let url = self.core.cover_address(id.to_string(), nori_core::covers::cover_rendition(NOW_COVER_PX));
+        let (slot, media, id) = (self.shown.clone(), self.media.clone(), id.to_string());
+        crate::spawn("nori-now-cover", move || {
+            let mut file = Vec::new();
+            if covers.read(&url, &mut file).is_err() {
+                return;
+            }
+            {
+                let mut shown = slot.lock();
+                if shown.id != id {
+                    return;
+                }
+                shown.file = Some(file.into());
+            }
+            if let Some(m) = media.upgrade() {
+                m.changed();
+            }
+        });
+        None
+    }
+}
+
+/// Now Playing's cover size, in pixels.
+#[cfg(feature = "desktop")]
+const NOW_COVER_PX: u32 = 600;
 
 #[cfg(feature = "desktop")]
 impl Keys {
@@ -295,20 +358,49 @@ impl nori_mpris::Controls for Keys {
     fn seek(&self, ms: i64) {
         self.on(Press::Seek(ms), |c| c.seek(ms));
     }
-    fn now(&self) -> nori_mpris::Now {
-        let Some(e) = self.remotes.elsewhere() else { return self.here.now() };
-        let row = e.row();
-        let song = row.map(|r| r.song.clone()).unwrap_or_default();
-        nori_mpris::Now {
-            playing: e.mirror.playing,
-            loaded: row.is_some() && !e.mirror.playing,
-            index: row.map(|r| r.index as usize),
-            length_ms: song.duration as i64 * 1000,
-            position_ms: e.position_ms(),
-            title: song.title,
-            artist: song.artist,
-            album: song.album,
+    fn like(&self) {
+        match self.remotes.elsewhere() {
+            Some(e) => {
+                if let Some(s) = e.song() {
+                    e.send(Op::Star { id: s.id.clone(), on: !s.starred });
+                }
+            }
+            None => {
+                let Some(song) = (self.here.song)(&self.here.engine.status()) else { return };
+                let on = !self.hearts.starred(&song);
+                self.hearts.star(song.id, on);
+            }
         }
+    }
+    fn now(&self) -> nori_mpris::Now {
+        let (mut now, song) = match self.remotes.elsewhere() {
+            None => {
+                let song = (self.here.song)(&self.here.engine.status());
+                (nori_mpris::Now { starred: song.as_ref().is_some_and(|s| self.hearts.starred(s)), ..self.here.now() }, song)
+            }
+            Some(e) => {
+                let row = e.row();
+                let song = row.map(|r| r.song.clone()).unwrap_or_default();
+                let now = nori_mpris::Now {
+                    playing: e.mirror.playing,
+                    loaded: row.is_some() && !e.mirror.playing,
+                    index: row.map(|r| r.index as usize),
+                    length_ms: song.duration as i64 * 1000,
+                    position_ms: e.position_ms(),
+                    title: song.title.clone(),
+                    artist: song.artist.clone(),
+                    album: song.album.clone(),
+                    starred: song.starred,
+                    art: None,
+                };
+                (now, row.map(|_| song))
+            }
+        };
+        // Only Now Playing draws the cover.
+        if cfg!(target_os = "macos") {
+            now.art = song.and_then(|s| s.cover_art).and_then(|id| self.cover.of(&id));
+        }
+        now
     }
 }
 
