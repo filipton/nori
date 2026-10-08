@@ -80,7 +80,7 @@ struct Relay {
     waiting: Mutex<Vec<Waker>>,
     next: AtomicU64,
     /// A plain Navidrome: no `noriRemote.*` at all.
-    absent: bool,
+    absent: std::sync::atomic::AtomicBool,
     /// A device whose clock reads this much ahead (µs), and whose sends reach the relay late: see
     /// [`Relay::lagging`].
     lagging: Mutex<Option<(String, i64)>>,
@@ -123,11 +123,11 @@ const GUEST_ENDPOINTS: &[&str] = &["ping", "search3", "getCoverArt", "getSong", 
 
 impl Relay {
     fn new() -> Arc<Relay> {
-        Arc::new(Relay { hub: Mutex::default(), waiting: Mutex::default(), next: AtomicU64::new(1), absent: false, lagging: Mutex::new(None), lagged: AtomicU64::new(0), door_late: Default::default(), leave_late: Default::default(), down: Default::default() })
+        Arc::new(Relay { hub: Mutex::default(), waiting: Mutex::default(), next: AtomicU64::new(1), absent: Default::default(), lagging: Mutex::new(None), lagged: AtomicU64::new(0), door_late: Default::default(), leave_late: Default::default(), down: Default::default() })
     }
 
     fn absent() -> Arc<Relay> {
-        Arc::new(Relay { absent: true, ..Arc::into_inner(Relay::new()).unwrap() })
+        Arc::new(Relay { absent: true.into(), ..Arc::into_inner(Relay::new()).unwrap() })
     }
 
     /// Device `dev`'s times read `skew_us` ahead as the relay passes them on. Its states reach the relay
@@ -182,7 +182,7 @@ impl Relay {
     /// An account device's poll says whether it serves: it joins or leaves the account's room as the poll
     /// arrives, before any hold.
     fn arrived(&self, p: &HashMap<String, String>) {
-        let (Some(user), Some(dev), false) = (p.get("u"), p.get("dev"), self.absent) else { return };
+        let (Some(user), Some(dev), false) = (p.get("u"), p.get("dev"), self.absent.load(Ordering::Relaxed)) else { return };
         let mut hub = self.hub.lock();
         let room = hub.rooms.entry(format!("u:{user}")).or_default();
         let listed = room.members.iter().position(|m| m.id == *dev);
@@ -230,7 +230,7 @@ impl Relay {
 
     fn answer(&self, endpoint: &str, p: &HashMap<String, String>, body: Option<&str>) -> Vec<u8> {
         self.hub.lock().asked.push(format!("{endpoint} {} {}", p.get("id").map_or("", String::as_str), p.get("dev").map_or("", String::as_str)));
-        if self.absent && endpoint.starts_with("noriRemote.") {
+        if self.absent.load(Ordering::Relaxed) && endpoint.starts_with("noriRemote.") {
             return subsonic_error("not here");
         }
         let caller = match self.caller(endpoint, p) {
@@ -736,7 +736,7 @@ fn nearby_devices_need_no_relay() {
 }
 
 #[test]
-fn a_server_without_the_relay_is_asked_once() {
+fn a_server_without_the_relay_is_asked_again_only_by_a_picker() {
     let relay = Relay::absent();
     let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
     phone.until("the answer", |r| (r.relay() == RelaySupport::Unsupported).then_some(()));
@@ -746,13 +746,34 @@ fn a_server_without_the_relay_is_asked_once() {
     // Serving, watching and playing go on without the relay; a jam is refused before anything is asked.
     phone.playing(&["s1"], 0);
     phone.remote.clone().watch(true);
+    phone.until("the picker's probe", |_| (asked() == 2).then_some(()));
     phone.remote.clone().serve(true);
     phone.remote.clone().watch(false);
     phone.remote.clone().serve(false);
     phone.remote.send("elsewhere".into(), Op::Pause);
     assert!(block_on(phone.remote.clone().jam_open()).is_err());
-    assert_eq!(asked(), 1, "nothing more asked of a server that has no relay");
+    assert_eq!(asked(), 2, "nothing more asked of a server that has no relay");
     assert!(phone.remote.jam_view().is_none());
+}
+
+#[test]
+fn a_picker_opened_asks_again_whether_the_server_relays() {
+    let relay = Relay::absent();
+    let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
+    phone.until("the answer", |r| (r.relay() == RelaySupport::Unsupported).then_some(()));
+    let asked = || relay.asked().iter().filter(|a| a.starts_with("noriRemote.")).count();
+
+    phone.remote.clone().watch(true);
+    phone.until("asked again", |_| (asked() == 2).then_some(()));
+    phone.remote.clone().watch(false);
+    assert_eq!(phone.remote.relay(), RelaySupport::Unsupported);
+
+    // The server gained the relay: the next opening finds it, and the picker follows the account's devices.
+    relay.absent.store(false, Ordering::Relaxed);
+    phone.remote.clone().watch(true);
+    phone.until("the relay", |r| (r.relay() == RelaySupport::Supported).then_some(()));
+    phone.until("polling", |_| (phone.polls(&relay) >= 3).then_some(()));
+    relay.close();
 }
 
 impl Device {

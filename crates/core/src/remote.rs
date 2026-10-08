@@ -244,8 +244,8 @@ impl Out {
     }
 }
 
-/// Whether the server relays remote control and jams (octo-fiesta's `noriRemote.*`), as asked once when
-/// the remote is made for a profile.
+/// Whether the server relays remote control and jams (octo-fiesta's `noriRemote.*`), as asked when the
+/// remote is made for a profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum RelaySupport {
@@ -253,7 +253,8 @@ pub enum RelaySupport {
     #[default]
     Unknown,
     Supported,
-    /// Plain Navidrome, or an octo-fiesta without the hub: nearby devices only, no jams. Never asked again.
+    /// Plain Navidrome, or an octo-fiesta without the hub: nearby devices only, no jams. Asked again only
+    /// when a device picker opens.
     Unsupported,
 }
 
@@ -628,29 +629,7 @@ impl Remote {
                 deliver(&client, &who, o);
             }
         });
-        // Whether the server relays, asked once: one poll that is not held.
-        let me = remote.clone();
-        remote.spawn("nori-remote-probe", move || {
-            let Some(got) = me.get(me.poll_url(None, false, false), 0) else { return };
-            let serving = {
-                let mut i = me.inner.lock();
-                if let Some(found) = support(&got) {
-                    if i.relay == RelaySupport::Unknown {
-                        i.relay = found;
-                    }
-                }
-                // The probe says this device does not serve, and may have reached the relay after its
-                // first state did: serving by now, it says its state again.
-                if i.serving {
-                    i.published = None;
-                }
-                i.serving
-            };
-            if serving {
-                me.publish();
-            }
-            me.keep_polling();
-        });
+        remote.probe();
         remote
     }
 
@@ -695,9 +674,10 @@ impl Remote {
         self.keep_polling();
     }
 
-    /// A device picker or jam screen is open: other devices' states are followed while on.
+    /// A device picker or jam screen is open: other devices' states are followed while on. Opened while
+    /// the server was found without the relay, it is asked again (it may have gained one since).
     pub fn watch(self: Arc<Self>, on: bool) {
-        {
+        let probe = {
             let mut i = self.inner.lock();
             if i.watching == on {
                 return;
@@ -707,9 +687,13 @@ impl Remote {
                 i.lan_generation += 1;
                 i.peers.iter_mut().for_each(|p| p.polling = false);
             }
-        }
+            on && i.relay == RelaySupport::Unsupported
+        };
         if let Some(d) = &self.discovery {
             d.browse(on);
+        }
+        if probe {
+            self.probe();
         }
         self.keep_polling();
     }
@@ -1217,6 +1201,30 @@ impl Remote {
             }),
         );
         opened.map_err(|e| crate::alog::info(&format!("remote: no door: {e}"))).ok()
+    }
+
+    /// Asks whether the server relays, on a thread of its own: one poll that is not held.
+    fn probe(self: &Arc<Self>) {
+        let me = self.clone();
+        self.spawn("nori-remote-probe", move || {
+            let Some(got) = me.get(me.poll_url(None, false, false), 0) else { return };
+            let serving = {
+                let mut i = me.inner.lock();
+                if let Some(found) = support(&got) {
+                    i.relay = found;
+                }
+                // The probe says this device does not serve, and may have reached the relay after its
+                // first state did: serving by now, it says its state again.
+                if i.serving {
+                    i.published = None;
+                }
+                i.serving
+            };
+            if serving {
+                me.publish();
+            }
+            me.keep_polling();
+        });
     }
 
     /// Starts the pollers that should run and are not.
