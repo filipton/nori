@@ -369,7 +369,7 @@ impl Device {
         let songs: Vec<Song> = ids.iter().map(|id| Song { id: id.to_string(), title: id.to_uppercase(), duration: 200, ..Default::default() }).collect();
         self.core.session.register(songs);
         self.core.session.set(ids.iter().map(|s| s.to_string()).collect(), Some(start), false, None);
-        self.remote.clone().played(Playing { playing: true, position_ms: 5_000, index: None, volume: Some(40) });
+        self.remote.clone().played(Playing { playing: true, position_ms: 5_000, index: None, volume: Some(40), ..Default::default() });
     }
 }
 
@@ -390,14 +390,14 @@ fn two_devices_control_each_other_through_the_relay() {
     desk.remote.send(phone_id.clone(), Op::Next);
     assert_eq!(phone.told(), Op::Next);
     // The song the player says it arrived on is the one shown, before the queue's own current moves.
-    phone.remote.clone().played(Playing { playing: true, position_ms: 0, index: Some(2), volume: Some(40) });
+    phone.remote.clone().played(Playing { playing: true, position_ms: 0, index: Some(2), volume: Some(40), ..Default::default() });
     let moved = desk.until("the next song", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state).filter(|s| s.index == Some(2)));
     assert_eq!(moved.entries.iter().find(|e| Some(e.index) == moved.index).map(|e| e.title.as_str()), Some("S3"));
 
     // An edit made against a queue that changed since is refused, and the controller is told.
     let stale = state.rev;
     phone.core.session.remove(2, 3);
-    phone.remote.clone().played(Playing { playing: true, position_ms: 6_000, index: None, volume: Some(40) });
+    phone.remote.clone().played(Playing { playing: true, position_ms: 6_000, index: None, volume: Some(40), ..Default::default() });
     desk.remote.send(phone_id.clone(), Op::Remove { index: 0, rev: stale });
     let refused = desk.until("the refusal", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.refused));
     assert_eq!(refused, Refusal::Stale);
@@ -409,7 +409,7 @@ fn two_devices_control_each_other_through_the_relay() {
     // Playing here: the phone hands over its queue and position, then pauses.
     desk.remote.send(phone_id.clone(), Op::Transfer { to: desk.remote.id() });
     match desk.told() {
-        Op::Replace { songs, index, position_ms, play } => {
+        Op::Replace { songs, index, position_ms, play, .. } => {
             assert_eq!(songs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["s1", "s2"]);
             assert_eq!(index, 1);
             assert!(play && position_ms >= 6_000, "at {position_ms}");
@@ -513,6 +513,12 @@ fn nearby_devices_need_no_relay() {
     let through_relay = format!("noriRemote.send  {}", desk.remote.id());
     assert!(!relay.asked().contains(&through_relay), "the command went to the door, not the relay");
 
+    // Mirrored with the picker closed: its door is still followed, and its whole queue read through it.
+    desk.remote.clone().watch(false);
+    desk.remote.clone().pick(Some(seen.id.clone()));
+    phone.remote.clone().played(Playing { playing: false, position_ms: 9_000, index: None, volume: None, ..Default::default() });
+    desk.until("the phone's newer word", |r| r.active().filter(|m| m.position_ms == 9_000 && m.rows.len() == 2));
+
     // A device of the same user with an old password is not shown the door.
     let stranger = Device::new(&relay, ann("old"), DeviceKind::Desktop, "Old");
     stranger.remote.clone().watch(true);
@@ -538,4 +544,137 @@ fn a_server_without_the_relay_is_asked_once() {
     assert!(block_on(phone.remote.clone().jam_open()).is_err());
     assert_eq!(asked(), 1, "nothing more asked of a server that has no relay");
     assert!(phone.remote.jam_view().is_none());
+}
+
+impl Device {
+    /// Polls this device has asked of the relay.
+    fn polls(&self, relay: &Relay) -> usize {
+        relay.asked().iter().filter(|a| a.starts_with("noriRemote.poll") && a.ends_with(&self.remote.id())).count()
+    }
+}
+
+#[test]
+fn a_device_playing_elsewhere_is_mirrored_whole() {
+    let relay = Relay::new();
+    let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    let ids: Vec<String> = (0..130).map(|n| format!("s{n}")).collect();
+    phone.playing(&ids.iter().map(String::as_str).collect::<Vec<_>>(), 60);
+    phone.core.session.shuffle(true);
+    phone.remote.clone().played(Playing { playing: true, position_ms: 5_000, index: None, volume: Some(40), ..Default::default() });
+    phone.remote.clone().serve(true);
+    let phone_id = phone.remote.id();
+
+    // Nothing queued on the desk: picking the phone only follows it, without a picker open.
+    desk.remote.clone().watch(true);
+    desk.until("the phone", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state));
+    desk.remote.clone().watch(false);
+    desk.remote.clone().pick(Some(phone_id.clone()));
+    let order: Vec<u32> = phone.core.session.playlist(|p| p.play_order().map(|i| i as u32).collect());
+    let m = desk.until("the whole queue", |r| r.active().filter(|m| m.rows.len() == 130));
+    assert_eq!(m.rows.iter().map(|r| r.index).collect::<Vec<_>>(), order, "in play order, by list index");
+    assert_eq!(m.at.map(|a| m.rows[a as usize].song.id.clone()), Some("s60".to_string()));
+    assert!(m.shuffle && m.playing && m.len == 130);
+    assert!(phone.ops.try_recv().is_err(), "pages are answered by the core, not the player");
+
+    // A command shows at once, before the phone's own word.
+    desk.remote.send(phone_id.clone(), Op::Pause);
+    let m = desk.remote.active().unwrap();
+    assert!(!m.playing);
+    assert_eq!(phone.told(), Op::Pause);
+    desk.remote.send(phone_id.clone(), Op::Volume { percent: 15 });
+    desk.remote.send(phone_id.clone(), Op::Star { id: "s60".into(), on: true });
+    let m = desk.remote.active().unwrap();
+    assert_eq!(m.volume, Some(15));
+    assert!(m.rows[m.at.unwrap() as usize].song.starred);
+    assert_eq!((phone.told(), phone.told()), (Op::Volume { percent: 15 }, Op::Star { id: "s60".into(), on: true }));
+
+    // The phone's next word corrects what was foreseen.
+    phone.remote.clone().played(Playing { playing: false, position_ms: 7_000, index: None, volume: Some(30), ..Default::default() });
+    desk.until("the phone's volume", |r| r.active().filter(|m| m.volume == Some(30) && m.position_ms == 7_000));
+    // Its own keys move it too.
+    phone.remote.clone().volume_changed(Some(22));
+    desk.until("the phone's keys", |r| r.active().filter(|m| m.volume == Some(22) && m.position_ms == 7_000));
+
+    // Gone: no longer followed, and nothing more is asked of the relay for it.
+    phone.remote.clone().serve(false);
+    desk.until("the phone gone", |r| r.active().is_none().then_some(()));
+    let asked = desk.polls(&relay);
+    let other = Device::account(&relay, DeviceKind::Phone, "Other");
+    other.playing(&["s1"], 0);
+    other.remote.clone().serve(true);
+    other.until("serving", |_| (relay.asked().iter().filter(|a| a.ends_with(&other.remote.id())).count() >= 2).then_some(()));
+    assert_eq!(desk.polls(&relay), asked, "the desk stopped polling with nothing to follow");
+    relay.close();
+}
+
+#[test]
+fn a_transfer_keeps_the_play_order_shuffle_and_repeat() {
+    let relay = Relay::new();
+    let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    phone.playing(&["s1", "s2", "s3", "s4", "s5"], 2);
+    phone.core.session.shuffle(true);
+    phone.core.session.repeat(2);
+    phone.remote.clone().serve(true);
+    desk.remote.clone().serve(true);
+    let (phone_id, desk_id) = (phone.remote.id(), desk.remote.id());
+    desk.until("the phone", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state));
+    // The phone follows only a device it lists.
+    phone.until("the desk", |r| r.devices().into_iter().find(|d| d.id == desk_id).and_then(|d| d.state));
+    desk.remote.clone().pick(Some(phone_id.clone()));
+    desk.until("the phone mirrored", |r| r.active());
+
+    // "This device": the phone hands its queue over as it plays, and follows the desk.
+    desk.remote.clone().pick(None);
+    let order: Vec<u32> = phone.core.session.playlist(|p| p.play_order().map(|i| i as u32).collect());
+    match desk.told() {
+        Op::Replace { songs, index, play, order: sent, shuffle, repeat, .. } => {
+            assert_eq!(songs.len(), 5);
+            assert_eq!((index, play, shuffle, repeat), (2, true, true, 2));
+            assert_eq!(sent, Some(order));
+        }
+        op => panic!("{op:?}"),
+    }
+    assert_eq!(phone.told(), Op::Pause);
+    desk.until("playing here", |r| r.active().is_none().then_some(()));
+    let m = phone.until("the desk mirrored", |r| r.active());
+    assert_eq!(m.id, desk_id);
+    relay.close();
+}
+
+#[test]
+fn controllers_follow_playback_to_where_it_was_handed() {
+    let relay = Relay::new();
+    let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    let tablet = Device::account(&relay, DeviceKind::Phone, "Tablet");
+    phone.playing(&["s1", "s2"], 0);
+    for d in [&phone, &desk] {
+        d.remote.clone().serve(true);
+    }
+    let (phone_id, desk_id) = (phone.remote.id(), desk.remote.id());
+    tablet.remote.clone().watch(true);
+    tablet.until("both", |r| (r.devices().iter().filter(|d| d.state.is_some()).count() == 2).then_some(()));
+    // A device hears commands from its first answer on: the desk has had one once it lists the phone.
+    desk.until("the phone", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state));
+    tablet.remote.clone().pick(Some(phone_id.clone()));
+    tablet.until("the phone mirrored", |r| r.active().filter(|m| m.id == phone_id));
+
+    // Moved on from the tablet: the phone hands over to the desk, and the tablet follows the desk.
+    tablet.remote.clone().pick(Some(desk_id.clone()));
+    assert_eq!(phone.told(), Op::Pause);
+    assert!(matches!(desk.told(), Op::Replace { play: true, .. }));
+    assert_eq!(tablet.until("the desk mirrored", |r| r.active()).id, desk_id);
+
+    // The desk handing its playback on by itself is followed too.
+    let elsewhere = Device::account(&relay, DeviceKind::Desktop, "Elsewhere");
+    elsewhere.remote.clone().serve(true);
+    let elsewhere_id = elsewhere.remote.id();
+    desk.remote.clone().watch(true);
+    desk.until("elsewhere", |r| r.devices().into_iter().find(|d| d.id == elsewhere_id && d.state.is_some()));
+    desk.playing(&["s1", "s2"], 1);
+    desk.remote.clone().hand_over(elsewhere_id.clone());
+    assert_eq!(tablet.until("followed on", |r| r.active().filter(|m| m.id == elsewhere_id)).name, "Elsewhere");
+    relay.close();
 }

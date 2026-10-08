@@ -6,6 +6,7 @@ pub mod remote;
 pub mod session;
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,6 +18,7 @@ use nori_core::{Core, IngestStats, OriginKind, PageOrigin, ServerConfig, Song};
 use nori_covers::memory::Image;
 #[cfg(feature = "desktop")]
 use nori_engine::State;
+use nori_engine::core::OutputVolume;
 use nori_engine::{Engine, Status};
 use nori_look::cover::CoverColours;
 
@@ -51,6 +53,44 @@ pub fn spawn(name: &str, f: impl FnOnce() + Send + 'static) {
 /// Volume (0 to 1) in dB, floored at -96.
 pub fn volume_db(v: f32) -> f64 {
     if v > 0.0 { 20.0 * (v as f64).log10() } else { -96.0 }
+}
+
+/// The client's volume, 0 to 1, and the loudness compensation it is. The account's other devices read
+/// and set it too (remote control).
+pub struct Level {
+    value: AtomicU32,
+    /// Sets the sound card's level; None where the system keeps the volume (iOS), which is then followed
+    /// but not offered to other devices.
+    card: Option<Box<dyn Fn(f32) + Send + Sync>>,
+    /// The volume in dB, for loudness compensation.
+    pub loudness: Arc<OutputVolume>,
+}
+
+impl Level {
+    pub fn new(v: f32, card: Option<Box<dyn Fn(f32) + Send + Sync>>) -> Arc<Level> {
+        let level = Level { value: AtomicU32::new(0), card, loudness: Arc::default() };
+        level.set(v);
+        Arc::new(level)
+    }
+
+    pub fn get(&self) -> f32 {
+        f32::from_bits(self.value.load(Ordering::Relaxed))
+    }
+
+    /// Sets the volume; true when that moved loudness compensation audibly.
+    pub fn set(&self, v: f32) -> bool {
+        let v = v.clamp(0.0, 1.0);
+        self.value.store(v.to_bits(), Ordering::Relaxed);
+        if let Some(card) = &self.card {
+            card(v);
+        }
+        self.loudness.set(volume_db(v))
+    }
+
+    /// As another device shows and sets it, 0 to 100; None when this client cannot set it.
+    pub fn percent(&self) -> Option<u8> {
+        self.card.as_ref().map(|_| (self.get() * 100.0).round() as u8)
+    }
 }
 
 /// Page colours from a cover (dark theme), as Android's `CoverLoader.colours`: RGBA converted to ARGB.

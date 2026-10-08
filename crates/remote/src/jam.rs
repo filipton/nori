@@ -133,7 +133,7 @@ impl Jam {
             pending: self
                 .waiting
                 .iter()
-                .map(|w| Pending { request: w.request, from: w.from.clone(), from_name: w.from_name.clone(), song: Entry::of(0, &w.song, None), provider: is_provider_id(&w.song.id) })
+                .map(|w| Pending { request: w.request, from: w.from.clone(), from_name: w.from_name.clone(), song: Entry::of(0, 0, &w.song, None), provider: is_provider_id(&w.song.id) })
                 .collect(),
         }
     }

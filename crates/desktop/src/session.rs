@@ -21,9 +21,8 @@ use nori_host::session::{read_pages, Chore, Note, Said};
 pub use nori_host::Fetch;
 use nori_http::Http;
 use nori_look::cover::CoverColours;
-use nori_engine::core::OutputVolume;
 use nori_engine::AudioOutput;
-use nori_output_cpal::{CpalOutput, Volume};
+use nori_output_cpal::CpalOutput;
 
 use crate::words::{net_error, songs};
 use crate::AppWindow;
@@ -58,6 +57,8 @@ pub enum Msg {
     Reachable(Result<(), String>),
     /// The other devices changed (remote control).
     Remote,
+    /// Another device set the volume (0 to 1).
+    Volume(f32),
     /// A message from the session with this id; dropped once another session is open.
     From(u64, Box<Msg>),
 }
@@ -153,17 +154,14 @@ pub fn check_login(http: Arc<Http>, draft: SavedServer) -> Result<SavedServer, S
     Ok(SavedServer { legacy_auth: legacy || draft.legacy_auth, ..draft })
 }
 
-/// The cpal device at `volume` (0 to 1), and the loudness compensation that volume is.
-fn sound(device: Option<&str>, volume: f32) -> (Box<dyn AudioOutput>, Volume, Arc<OutputVolume>) {
+/// The cpal device at `volume` (0 to 1).
+fn sound(device: Option<&str>, volume: f32) -> (Box<dyn AudioOutput>, Arc<nori_host::Level>) {
     let card = match device {
         Some(name) => CpalOutput::with_device(name),
         None => CpalOutput::new(),
     };
     let level = card.volume();
-    level.set(volume);
-    let loudness = Arc::new(OutputVolume::default());
-    loudness.set(nori_host::volume_db(volume));
-    (Box::new(card), level, loudness)
+    (Box::new(card), nori_host::Level::new(volume, Some(Box::new(move |v| level.set(v)))))
 }
 
 /// One open server profile; its messages come tagged with its id.
@@ -171,8 +169,6 @@ pub struct Session {
     pub id: u64,
     host: nori_host::session::Session,
     tx: Tx,
-    level: Volume,
-    loudness: Arc<OutputVolume>,
 }
 
 impl std::ops::Deref for Session {
@@ -192,14 +188,14 @@ impl Session {
         let to = tx.clone();
         let out = Arc::new(move |s: Said| to.send(Msg::From(id, Box::new(worded(s)))));
         let v = own::number(own::VOLUME, 1.0);
-        let (output, level, loudness) = sound(own::text(own::DEVICE).as_deref(), v);
+        let (output, level) = sound(own::text(own::DEVICE).as_deref(), v);
         let o = nori_host::session::Open {
             queue: app().clone(),
             data,
             http,
             profile,
             output,
-            volume: loudness.clone(),
+            volume: level,
             memory_mb: 256,
             covers: true,
             offline: false,
@@ -207,20 +203,7 @@ impl Session {
             device: nori_core::remote::RemoteMe { name: nori_host::device_name(), kind: nori_core::remote::wire::DeviceKind::Desktop },
             out,
         };
-        Ok(Session { id, host: nori_host::session::Session::open(o)?, tx, level, loudness })
-    }
-
-    /// Listener volume, 0 to 1.
-    pub fn volume(&self) -> f32 {
-        self.level.get()
-    }
-
-    /// Sets the device volume and, when that changes loudness compensation, the chain.
-    pub fn set_volume(&self, v: f32) {
-        self.level.set(v);
-        if self.loudness.set(nori_host::volume_db(v)) {
-            self.host.volume_changed();
-        }
+        Ok(Session { id, host: nori_host::session::Session::open(o)?, tx })
     }
 
     fn sender(&self) -> impl Fn(Msg) + Send + 'static {
@@ -354,6 +337,7 @@ fn worded(s: Said) -> Msg {
         Said::Search(v) => Msg::Search(v),
         Said::Reachable(r) => Msg::Reachable(r.map_err(|e| net_error(&e))),
         Said::Remote => Msg::Remote,
+        Said::Volume(v) => Msg::Volume(v),
         Said::Note(n) => match n {
             Note::Queued { next, songs: n } => note(format!("{}: {}", if next { "Playing next" } else { "Added to the queue" }, songs(n)), false),
             Note::NothingToPlay => note("Nothing to play".into(), false),

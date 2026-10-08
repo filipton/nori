@@ -18,9 +18,8 @@ use nori_host::session::{read_pages, Note, Said};
 pub use nori_host::{db_path, Controls, Fetch};
 use nori_http::Http;
 use nori_look::cover::CoverColours;
-use nori_engine::core::OutputVolume;
 use nori_engine::AudioOutput;
-use nori_output_cpal::{CpalOutput, Volume};
+use nori_output_cpal::CpalOutput;
 use ratatui::crossterm::event::{KeyEvent, MouseEvent};
 
 use crate::settings_view::{Facts, Storage};
@@ -49,6 +48,8 @@ pub enum Msg {
     LoggedIn(Result<SavedServer, String>),
     /// Result of the reachability check made when a session opens.
     Reachable(Result<(), String>),
+    /// Another device set the volume (0 to 1).
+    Volume(f32),
     /// A message from the session with this id; dropped once another session is open.
     From(u64, Box<Msg>),
 }
@@ -70,6 +71,7 @@ impl Msg {
             Msg::Note { text, error } => format!("note {text:?} error={error}"),
             Msg::LoggedIn(r) => format!("logged in: {}", r.is_ok()),
             Msg::Reachable(r) => format!("reachable: {}", r.is_ok()),
+            Msg::Volume(v) => format!("volume {v}"),
             Msg::From(id, m) => format!("session {id}: {}", m.brief()),
         }
     }
@@ -183,17 +185,14 @@ pub struct Open<'a> {
     pub tx: Sender<Msg>,
 }
 
-/// The cpal device at `volume` (0 to 1), and the loudness compensation that volume is.
-fn sound(device: Option<&str>, volume: f32) -> (Box<dyn AudioOutput>, Volume, Arc<OutputVolume>) {
+/// The cpal device at `volume` (0 to 1).
+fn sound(device: Option<&str>, volume: f32) -> (Box<dyn AudioOutput>, Arc<nori_host::Level>) {
     let card = match device {
         Some(name) => CpalOutput::with_device(name),
         None => CpalOutput::new(),
     };
     let level = card.volume();
-    level.set(volume);
-    let loudness = Arc::new(OutputVolume::default());
-    loudness.set(nori_host::volume_db(volume));
-    (Box::new(card), level, loudness)
+    (Box::new(card), nori_host::Level::new(volume, Some(Box::new(move |v| level.set(v)))))
 }
 
 /// One open server profile; its messages come tagged with its id.
@@ -201,8 +200,6 @@ pub struct Session {
     pub id: u64,
     host: nori_host::session::Session,
     tx: Sender<Msg>,
-    level: Volume,
-    loudness: Arc<OutputVolume>,
 }
 
 impl std::ops::Deref for Session {
@@ -224,15 +221,14 @@ impl Session {
             }
         });
         let v = own::number(own::VOLUME, 1.0);
-        let (output, level, loudness) =
-            sound(o.device.or_else(|| own::text(own::DEVICE)).as_deref(), v);
+        let (output, level) = sound(o.device.or_else(|| own::text(own::DEVICE)).as_deref(), v);
         let host = nori_host::session::Session::open(nori_host::session::Open {
             queue: app().clone(),
             data: o.data,
             http: o.http,
             profile: o.profile,
             output,
-            volume: loudness.clone(),
+            volume: level,
             memory_mb: 256,
             covers: o.images,
             offline: o.offline,
@@ -240,15 +236,7 @@ impl Session {
             device: nori_core::remote::RemoteMe { name: nori_host::device_name(), kind: nori_core::remote::wire::DeviceKind::Terminal },
             out,
         })?;
-        Ok(Session { id, host, tx: o.tx, level, loudness })
-    }
-
-    /// Sets the device volume and, when that changes loudness compensation, the chain.
-    pub fn set_volume(&self, v: f32) {
-        self.level.set(v);
-        if self.loudness.set(nori_host::volume_db(v)) {
-            self.host.volume_changed();
-        }
+        Ok(Session { id, host, tx: o.tx })
     }
 
     /// Loads a screen's data in the background: the stored copy first, then the server's if different.
@@ -334,6 +322,7 @@ fn worded(s: Said) -> Option<Msg> {
     let note = |text: String, error: bool| Msg::Note { text, error };
     Some(match s {
         Said::Remote => return None,
+        Said::Volume(v) => Msg::Volume(v),
         Said::Engine(e) => Msg::Engine(e),
         Said::Lyrics { song, pick } => Msg::Lyrics { song, pick },
         Said::Search(v) => Msg::Search(v),

@@ -184,6 +184,13 @@ impl Core {
     }
 }
 
+/// Rows for a mirrored queue of `len` songs, listed in play order already (`remote::Mirror::rows`), with
+/// row `shown` playing.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn mirrored_queue_rows(len: u32, shuffle: bool, shown: i32) -> QueueRows {
+    rows(None, len, shuffle, shown, None)
+}
+
 fn rows(order: Option<Vec<u32>>, len: u32, shuffle: bool, shown: i32, current: Option<usize>) -> QueueRows {
     let order = order.filter(|o| o.len() == len as usize).unwrap_or_else(|| (0..len).collect());
     let mut kept: Vec<u32> = u32::try_from(shown).ok().into_iter().chain(current.map(|c| c as u32)).filter(|&i| i < len).collect();

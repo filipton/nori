@@ -199,6 +199,20 @@ impl Session {
         q.change(at)
     }
 
+    /// A queue handed over from another device: from list index `index`, under `shuffle` in `order`
+    /// (shuffled here, from wherever that starts, when there is none), repeating as `repeat` says.
+    pub fn handed(&self, ids: Vec<String>, index: u32, order: Option<Vec<u32>>, shuffle: bool, repeat: u8) -> QueueChange {
+        let mut q = self.queue.lock();
+        q.set_origin(None);
+        let at = match (shuffle, order) {
+            (true, Some(order)) => q.list.set_in_order(ids, index as usize, order.into_iter().map(|i| i as usize).collect(), seed()),
+            (true, None) => q.list.set(ids, None, true, seed()),
+            (false, _) => q.list.set(ids, Some(index as usize), false, seed()),
+        };
+        q.list.set_repeat(repeat);
+        q.change(at)
+    }
+
     /// Inserts songs near `at`, each marked with how it was added (`hands`); `Playlist::take` picks the
     /// spot.
     pub fn take(&self, at: u32, ids: Vec<String>, hands: Vec<Hand>) -> QueueChange {
@@ -414,6 +428,11 @@ impl Session {
     /// [`Session::set_ordered`].
     pub fn playlist_set_ordered(&self, ids: Vec<String>, origin: Option<PageOrigin>) -> QueueChange {
         self.set_ordered(ids, origin)
+    }
+
+    /// [`Session::handed`].
+    pub fn playlist_handed(&self, ids: Vec<String>, index: u32, order: Option<Vec<u32>>, shuffle: bool, repeat: u8) -> QueueChange {
+        self.handed(ids, index, order, shuffle, repeat)
     }
 
     /// [`Session::take`].

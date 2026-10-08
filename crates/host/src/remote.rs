@@ -2,6 +2,7 @@
 //! [`RemotePlayer`], and mDNS through mdns-sd for nearby devices (`desktop` feature). A [`Remote`] is
 //! made only while remote control or jams are switched on.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 #[cfg(feature = "desktop")]
 use std::sync::Weak;
@@ -9,19 +10,30 @@ use std::sync::Weak;
 use nori_core::remote::{Playing, Remote, RemotePlayer, RemoteShown};
 #[cfg(feature = "desktop")]
 use nori_core::remote::{Announcement, Discovery};
-use nori_engine::{Engine, State};
+use nori_engine::{Engine, State, Status};
 use nori_remote::wire::Op;
 use parking_lot::Mutex;
 
 use crate::session::{Handle, Out, Said};
+use crate::Level;
 
 /// The session's remote, while there is one.
-#[derive(Default)]
 pub struct Remotes {
     slot: Mutex<Option<Arc<Remote>>>,
+    level: Arc<Level>,
+    /// The engine waits for a song's bytes with nothing left to play.
+    buffering: AtomicBool,
 }
 
 impl Remotes {
+    pub(crate) fn new(level: Arc<Level>) -> Remotes {
+        Remotes { slot: Mutex::default(), level, buffering: AtomicBool::new(false) }
+    }
+
+    pub(crate) fn buffering(&self, on: bool) {
+        self.buffering.store(on, Ordering::Relaxed);
+    }
+
     pub fn get(&self) -> Option<Arc<Remote>> {
         self.slot.lock().clone()
     }
@@ -37,8 +49,18 @@ impl Remotes {
     /// Tells the remote (if any) where the engine is now.
     pub fn played(&self, engine: &Engine) {
         let Some(r) = self.get() else { return };
-        let s = engine.status();
-        r.played(Playing { playing: s.state == State::Playing, position_ms: s.position_now().max(0), index: s.index.map(|i| i as u32), volume: None });
+        r.played(self.playing(&engine.status()));
+    }
+
+    /// The playback other devices see, from the engine's status `s`.
+    fn playing(&self, s: &Status) -> Playing {
+        Playing {
+            playing: s.state == State::Playing,
+            buffering: self.buffering.load(Ordering::Relaxed),
+            position_ms: s.position_now().max(0),
+            index: s.index.map(|i| i as u32),
+            volume: self.level.percent(),
+        }
     }
 }
 
@@ -70,13 +92,13 @@ impl RemotePlayer for HostPlayer {
             Op::Remove { index, .. } => h.remove(index as usize),
             Op::Move { from, to, .. } => h.move_song(from as usize, to as usize),
             Op::Add { songs, next } => h.enqueue(songs, next),
-            Op::Replace { songs, index, position_ms, play } => h.replace(songs, index as usize, position_ms, play),
+            Op::Replace { songs, index, position_ms, play, order, shuffle, repeat } => h.replace(songs, index as usize, position_ms, play, order, shuffle, repeat),
             Op::Shuffle { on } => h.shuffle(on),
             Op::Repeat { mode } => h.repeat(mode),
-            // The device volume is the client's own; a terminal or desktop does not offer it.
-            Op::Volume { .. } => {}
-            // The core keeps transfers and jam ops to itself.
-            Op::Transfer { .. } | Op::Request { .. } | Op::Decide { .. } | Op::Promote { .. } | Op::Kick { .. } => {}
+            Op::Volume { percent } => return h.volume_from_afar(percent as f32 / 100.0),
+            Op::Star { id, on } => h.star(id, on),
+            // The core keeps transfers, pages and jam ops to itself.
+            Op::Transfer { .. } | Op::Page { .. } | Op::Request { .. } | Op::Decide { .. } | Op::Promote { .. } | Op::Kick { .. } => {}
         }
         h.remotes.played(&h.engine);
     }
@@ -159,5 +181,27 @@ impl Discovery for Mdns {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn other_devices_see_and_set_the_volume() {
+        let card = Arc::new(Mutex::new(0.0f32));
+        let to_card = card.clone();
+        let remotes = Remotes::new(Level::new(0.4, Some(Box::new(move |v| *to_card.lock() = v))));
+        let status = Status { state: State::Playing, ..Default::default() };
+        assert_eq!(remotes.playing(&status).volume, Some(40));
+        assert!(remotes.level.set(0.25), "loudness moves with it");
+        assert_eq!((*card.lock(), remotes.playing(&status).volume), (0.25, Some(25)));
+        remotes.buffering(true);
+        assert!(remotes.playing(&status).buffering);
+
+        // A volume the system keeps is followed, not offered.
+        let system = Remotes::new(Level::new(0.4, None));
+        assert_eq!(system.playing(&status).volume, None);
     }
 }

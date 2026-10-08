@@ -102,6 +102,8 @@ pub enum Body {
     Command { id: u64, op: Box<Op> },
     /// None: done.
     Ack { id: u64, refusal: Option<Refusal> },
+    /// The answer to [`Op::Page`]: the queue at revision `rev`, in play order from turn `from`.
+    Page { id: u64, rev: u64, from: u32, entries: Vec<Entry> },
 }
 
 /// What a controller asks of a device. Index-based edits carry the queue revision they were made
@@ -122,8 +124,21 @@ pub enum Op {
     Move { from: u32, to: u32, rev: u64 },
     /// After the current song (`next`) or at the end.
     Add { songs: Vec<Song>, next: bool },
-    /// A new queue, from `index` at `position_ms`, playing or paused.
-    Replace { songs: Vec<Song>, index: u32, position_ms: i64, play: bool },
+    /// A new queue, from list index `index` at `position_ms`, playing or paused. Under `shuffle` it plays
+    /// in `order` (list indexes), or in an order of the device's own when that is None.
+    Replace {
+        songs: Vec<Song>,
+        index: u32,
+        position_ms: i64,
+        play: bool,
+        #[serde(default)]
+        order: Option<Vec<u32>>,
+        #[serde(default)]
+        shuffle: bool,
+        /// Media3 numbering, as [`Op::Repeat`].
+        #[serde(default)]
+        repeat: u8,
+    },
     /// The device's media volume, 0 to 100.
     Volume { percent: u8 },
     Shuffle { on: bool },
@@ -131,6 +146,10 @@ pub enum Op {
     Repeat { mode: u8 },
     /// Hands the queue and position to device `to`, which plays on; this one pauses.
     Transfer { to: String },
+    /// Favourites song `id` (or not) where the device shows it.
+    Star { id: String, on: bool },
+    /// Asks for `count` songs of the queue from turn `from` of its play order; answered with [`Body::Page`].
+    Page { from: u32, count: u32 },
     /// A jam member asks for a song.
     Request { song: Song },
     /// The host or an admin accepts or declines request `request`.
@@ -163,19 +182,59 @@ pub enum Refusal {
 pub struct Entry {
     /// The list index commands name it by.
     pub index: u32,
+    /// Its place in the play order.
+    pub turn: u32,
     pub id: String,
     pub title: String,
     pub artist: String,
+    pub album: String,
+    pub album_id: Option<String>,
+    pub artist_id: Option<String>,
     pub cover_art: Option<String>,
     /// Seconds.
     pub duration: u32,
+    pub starred: bool,
+    /// A provider's song, not in the library yet.
+    pub external: bool,
     /// The jam member who asked for it.
     pub by: Option<String>,
 }
 
 impl Entry {
-    pub fn of(index: u32, song: &Song, by: Option<String>) -> Entry {
-        Entry { index, id: song.id.clone(), title: song.title.clone(), artist: song.artist.clone(), cover_art: song.cover_art.clone(), duration: song.duration, by }
+    pub fn of(index: u32, turn: u32, song: &Song, by: Option<String>) -> Entry {
+        Entry {
+            index,
+            turn,
+            id: song.id.clone(),
+            title: song.title.clone(),
+            artist: song.artist.clone(),
+            album: song.album.clone(),
+            album_id: song.album_id.clone(),
+            artist_id: song.artist_id.clone(),
+            cover_art: song.cover_art.clone(),
+            duration: song.duration,
+            starred: song.starred,
+            external: song.is_external,
+            by,
+        }
+    }
+
+    /// The song as a controller's player shows it.
+    pub fn song(&self) -> Song {
+        Song {
+            id: self.id.clone(),
+            title: self.title.clone(),
+            artist: self.artist.clone(),
+            album: self.album.clone(),
+            album_id: self.album_id.clone(),
+            artist_id: self.artist_id.clone(),
+            cover_art: self.cover_art.clone(),
+            duration: self.duration,
+            starred: self.starred,
+            is_external: self.external,
+            ..Default::default()
+        }
+        .dressed()
     }
 }
 
@@ -185,13 +244,20 @@ impl Entry {
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 #[serde(default, rename_all = "camelCase")]
 pub struct DeviceState {
+    /// Bumped by every publish: a reader takes `position_ms` as of when a new one arrived.
+    pub seq: u64,
     pub playing: bool,
+    /// Waiting for the song's bytes while it should play.
+    pub buffering: bool,
+    /// Where the song was as this was published.
     pub position_ms: i64,
     /// The current list index.
     pub index: Option<u32>,
     /// The queue's revision; index-based commands name it.
     pub rev: u64,
-    /// The songs around the current one, in play order.
+    /// Songs in the queue.
+    pub len: u32,
+    /// The songs around the current one, in play order; the rest by [`Op::Page`].
     pub entries: Vec<Entry>,
     /// The device's media volume, 0 to 100, when it can be set.
     pub volume: Option<u8>,
@@ -199,6 +265,8 @@ pub struct DeviceState {
     pub repeat: u8,
     /// The jam this device hosts.
     pub jam: Option<JamState>,
+    /// The device this one last handed its playback to, until it plays again: its controllers follow it there.
+    pub handed_to: Option<String>,
 }
 
 /// A jam member's role.
@@ -269,5 +337,16 @@ mod tests {
         assert_eq!((a.id.as_str(), a.kind, a.state.is_none()), ("a", DeviceKind::Phone, true));
         let answer: Answer = serde_json::from_str(r#"{"seq":5,"events":[{"seq":4,"room":"u","from":"a","body":{"t":"command","id":1,"op":{"op":"dance"}}},{"seq":5,"room":"u","from":"a","body":{"t":"command","id":2,"op":{"op":"pause"}}}]}"#).unwrap();
         assert_eq!(answer.events.iter().map(|e| e.seq).collect::<Vec<_>>(), [5], "an op this version does not know is passed over");
+
+        // An older client's transfer and state read with the newer fields at their defaults.
+        let old: Op = serde_json::from_str(r#"{"op":"replace","songs":[{"id":"s1"}],"index":0,"position_ms":5,"play":true}"#).unwrap();
+        assert!(matches!(old, Op::Replace { order: None, shuffle: false, repeat: 0, .. }), "{old:?}");
+        let st: DeviceState = serde_json::from_str(r#"{"playing":true,"index":1,"entries":[{"index":1,"id":"s2","title":"Two"}],"later":7}"#).unwrap();
+        assert_eq!((st.seq, st.len, st.entries[0].turn, st.entries[0].starred), (0, 0, 0, false));
+
+        let page = Body::Page { id: 2, rev: 9, from: 40, entries: vec![Entry::of(3, 40, &song, None)] };
+        let json = serde_json::to_string(&page).unwrap();
+        assert_eq!(serde_json::from_str::<Body>(&json).unwrap(), page);
+        assert!(Entry::of(3, 40, &song, None).song().is_external, "the provider flag goes both ways");
     }
 }

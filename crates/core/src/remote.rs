@@ -1,10 +1,15 @@
 //! Remote control and jams over a client (nori-remote has the protocol). A [`Remote`] exists only while
 //! remote control or jams are switched on, or the profile is a jam guest's; it polls the relay only
-//! while it serves (this device is controllable), watches (a device picker or jam screen is open) or
-//! hosts a jam, and holds each poll up to [`HOLD_MS`], so a quiet device wakes about once a minute.
-//! Nearby devices are reached through their LAN door instead of the relay.
+//! while it serves (this device is controllable), watches (a device picker or jam screen is open),
+//! mirrors the account's active device or hosts a jam, and holds each poll up to [`HOLD_MS`], so a quiet
+//! device wakes about once a minute. Nearby devices are reached through their LAN door instead of the relay.
+//!
+//! One device of the account plays at a time: the active one. This one is it until a transfer moves the
+//! playback elsewhere ([`Remote::pick`], or another device's transfer); it then mirrors that device
+//! ([`Remote::active`]) until playback comes back, a transfer moves it on, or the device goes.
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::mpsc;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -26,6 +31,14 @@ pub use nori_remote::wire;
 /// Songs before and after the current one a published state lists.
 const ENTRIES_BEFORE: usize = 10;
 const ENTRIES_AFTER: usize = 40;
+
+/// Songs a controller asks for at a time beyond that window, and the most a device answers with.
+const PAGE: u32 = 100;
+const PAGE_MAX: u32 = 200;
+
+/// Back this far into a song, a controller's previous restarts it rather than going to the song before
+/// (as the player's own rule does, before the device's next state says what it did).
+const PREVIOUS_RESTARTS_MS: i64 = 3_000;
 
 /// After a failed poll, the relay is asked again this much later (or when something changes here).
 const RETRY_MS: u64 = 30_000;
@@ -80,6 +93,8 @@ pub struct RemoteMe {
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct Playing {
     pub playing: bool,
+    /// Waiting for the song's bytes while it should play.
+    pub buffering: bool,
     pub position_ms: i64,
     /// The list index heard: the queue's own current song moves only once the player says it arrived.
     pub index: Option<u32>,
@@ -101,6 +116,41 @@ pub struct RemoteDevice {
     pub nearby: bool,
     /// Its answer to the last command sent to it, when it refused.
     pub refused: Option<Refusal>,
+}
+
+/// The account's active device while it is another one: what this device mirrors in its own player.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct Mirror {
+    pub id: String,
+    pub name: String,
+    pub kind: DeviceKind,
+    /// The queue in play order, as far as it is known here: the whole of it once its pages are in.
+    pub rows: Vec<MirrorRow>,
+    /// The row playing.
+    pub at: Option<u32>,
+    /// Songs in the device's queue.
+    pub len: u32,
+    /// The queue's revision, for [`Op::Jump`], [`Op::Remove`] and [`Op::Move`].
+    pub rev: u64,
+    pub playing: bool,
+    pub buffering: bool,
+    /// Where the song is now; it runs on at one times from here while `playing`.
+    pub position_ms: i64,
+    pub shuffle: bool,
+    pub repeat: u8,
+    /// The device's volume, 0 to 100, when it can be set.
+    pub volume: Option<u8>,
+    /// Its answer to the last command sent to it, when it refused.
+    pub refused: Option<Refusal>,
+}
+
+/// A song of a mirrored queue, and the list index commands name it by.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct MirrorRow {
+    pub index: u32,
+    pub song: Song,
 }
 
 /// A jam this device hosts or is a guest in.
@@ -148,9 +198,15 @@ enum Link {
 }
 
 enum Out {
-    Send(Link, Outgoing),
+    Send(Link, Box<Outgoing>),
     /// A GET to the relay (leaving, closing a jam, sending a member out).
     Get(String),
+}
+
+impl Out {
+    fn send(link: Link, outgoing: Outgoing) -> Out {
+        Out::Send(link, Box::new(outgoing))
+    }
 }
 
 /// Whether the server relays remote control and jams (octo-fiesta's `noriRemote.*`), as asked once when
@@ -189,6 +245,157 @@ struct Hosted {
     link: String,
 }
 
+/// What this device knows of the active device it mirrors.
+struct Mirrored {
+    id: String,
+    /// Its state as it last arrived.
+    heard: Option<DeviceState>,
+    /// That state with this device's own commands since then foreseen in it.
+    shown: Option<DeviceState>,
+    /// When `shown`'s position was right.
+    at: Instant,
+    /// The queue by turn, at `shown`'s revision, as its pages arrive.
+    pages: Vec<Option<Entry>>,
+    /// The turn the page asked for and not answered yet starts at.
+    asking: Option<u32>,
+}
+
+impl Mirrored {
+    fn new(id: String) -> Mirrored {
+        Mirrored { id, heard: None, shown: None, at: Instant::now(), pages: Vec::new(), asking: None }
+    }
+
+    /// A state arrived from the device (`at`: when). False when it is the one already heard.
+    fn heard(&mut self, state: &DeviceState, at: Instant) -> bool {
+        if self.heard.as_ref() == Some(state) {
+            return false;
+        }
+        let rev = self.shown.as_ref().map(|s| (s.rev, s.len));
+        if rev != Some((state.rev, state.len)) {
+            self.pages = vec![None; state.len as usize];
+            self.asking = None;
+        }
+        for e in &state.entries {
+            if let Some(slot @ None) = self.pages.get_mut(e.turn as usize) {
+                *slot = Some(e.clone());
+            }
+        }
+        self.heard = Some(state.clone());
+        self.shown = Some(state.clone());
+        self.at = at;
+        true
+    }
+
+    /// A page of the queue arrived.
+    fn page(&mut self, rev: u64, from: u32, entries: Vec<Entry>) {
+        if self.shown.as_ref().map(|s| s.rev) != Some(rev) {
+            return;
+        }
+        self.asking = None;
+        for (k, e) in entries.into_iter().enumerate() {
+            if let Some(slot) = self.pages.get_mut(from as usize + k) {
+                *slot = Some(e);
+            }
+        }
+    }
+
+    /// The page to ask for next: where the first song not known yet is, unless one is being asked for.
+    fn wanted(&self) -> Option<u32> {
+        if self.asking.is_some() {
+            return None;
+        }
+        self.pages.iter().position(Option::is_none).map(|p| p as u32)
+    }
+
+    /// The queue in play order: every page once all are in, the published window (newer) over them.
+    fn rows(&self) -> Vec<Entry> {
+        let Some(st) = &self.shown else { return Vec::new() };
+        if self.pages.is_empty() || self.pages.iter().any(Option::is_none) {
+            return st.entries.clone();
+        }
+        let mut all: Vec<Entry> = self.pages.iter().flatten().cloned().collect();
+        for e in &st.entries {
+            if let Some(slot) = all.get_mut(e.turn as usize).filter(|slot| slot.index == e.index) {
+                *slot = e.clone();
+            }
+        }
+        all
+    }
+
+    /// `op`, sent to the device, as this device expects it to come out; the device's next state says
+    /// what it really did.
+    fn foresee(&mut self, op: &Op) {
+        let rows = self.rows();
+        let elapsed = self.at.elapsed().as_millis() as i64;
+        let Some(st) = &mut self.shown else { return };
+        let now = nori_remote::position_now(st, elapsed);
+        let at = rows.iter().position(|e| Some(e.index) == st.index);
+        let to = |k: Option<usize>| k.and_then(|k| rows.get(k)).map(|e| e.index);
+        let (index, position) = match *op {
+            Op::Play => {
+                st.playing = true;
+                (st.index, now)
+            }
+            Op::Pause => {
+                st.playing = false;
+                st.buffering = false;
+                (st.index, now)
+            }
+            Op::Seek { ms } => (st.index, ms),
+            Op::Next => match to(at.map(|a| a + 1)).or_else(|| (st.repeat != 0).then(|| to(Some(0))).flatten()) {
+                Some(i) => (Some(i), 0),
+                None => return,
+            },
+            Op::Previous if now > PREVIOUS_RESTARTS_MS => (st.index, 0),
+            Op::Previous => (to(at.and_then(|a| a.checked_sub(1))).or(st.index), 0),
+            Op::Jump { index, .. } => (Some(index), 0),
+            Op::Shuffle { on } => {
+                st.shuffle = on;
+                return;
+            }
+            Op::Repeat { mode } => {
+                st.repeat = mode;
+                return;
+            }
+            Op::Volume { percent } => {
+                st.volume = Some(percent);
+                return;
+            }
+            Op::Star { ref id, on } => {
+                for e in st.entries.iter_mut().chain(self.pages.iter_mut().flatten()).filter(|e| e.id == *id) {
+                    e.starred = on;
+                }
+                return;
+            }
+            _ => return,
+        };
+        st.index = index;
+        st.position_ms = position;
+        self.at = Instant::now();
+    }
+
+    fn view(&self, name: String, kind: DeviceKind, refused: Option<Refusal>) -> Option<Mirror> {
+        let st = self.shown.as_ref()?;
+        let rows = self.rows();
+        Some(Mirror {
+            id: self.id.clone(),
+            name,
+            kind,
+            at: rows.iter().position(|e| Some(e.index) == st.index).map(|p| p as u32),
+            rows: rows.iter().map(|e| MirrorRow { index: e.index, song: e.song() }).collect(),
+            len: st.len,
+            rev: st.rev,
+            playing: st.playing,
+            buffering: st.buffering,
+            position_ms: nori_remote::position_now(st, self.at.elapsed().as_millis() as i64),
+            shuffle: st.shuffle,
+            repeat: st.repeat,
+            volume: st.volume,
+            refused,
+        })
+    }
+}
+
 #[derive(Default)]
 struct Inner {
     serving: bool,
@@ -207,7 +414,15 @@ struct Inner {
     peers: Vec<Peer>,
     hosted: Option<Hosted>,
     playing: Playing,
+    /// When `playing` was said: its position runs on from then.
+    playing_at: Option<Instant>,
+    /// The device this one last handed its playback to, until it plays again.
+    handed_to: Option<String>,
+    /// The account's active device, while it is another one.
+    mirror: Option<Mirrored>,
     published: Option<(DeviceState, Instant)>,
+    /// The last published state's [`DeviceState::seq`].
+    seq: u64,
     next_id: u64,
     refused: HashMap<String, Refusal>,
     door: Option<Door>,
@@ -215,7 +430,33 @@ struct Inner {
 
 impl Inner {
     fn wants_relay(&self) -> bool {
-        self.relay != RelaySupport::Unsupported && (self.serving || self.watching || self.hosted.is_some())
+        self.relay != RelaySupport::Unsupported && (self.serving || self.watching || self.mirror.is_some() || self.hosted.is_some())
+    }
+
+    /// Whether the door of nearby device `id` is followed: every one while a picker is open, else only
+    /// the one mirrored.
+    fn follows_peer(&self, id: &str) -> bool {
+        self.watching || self.mirror.as_ref().is_some_and(|m| m.id == id)
+    }
+
+    /// Device `id`'s last state and when it arrived; a nearby device's door says it first.
+    fn state_of(&self, id: &str) -> Option<(&DeviceState, Instant)> {
+        if let Some(p) = self.peers.iter().find(|p| p.member.id == id) {
+            return p.member.state.as_ref().map(|s| (s, p.received));
+        }
+        let m = self.rooms.iter().filter(|r| !r.jam).flat_map(|r| &r.members).find(|m| m.id == id)?;
+        m.state.as_ref().map(|s| (s, self.received.get(id).copied().unwrap_or_else(Instant::now)))
+    }
+
+    /// Whether device `id` is still there to be followed (it serves, nearby or through the relay).
+    fn listed(&self, id: &str) -> bool {
+        self.peers.iter().any(|p| p.member.id == id) || self.rooms.iter().filter(|r| !r.jam).flat_map(|r| &r.members).any(|m| m.id == id)
+    }
+
+    /// Device `id`'s name and kind, as it is listed.
+    fn who(&self, id: &str) -> Option<(String, DeviceKind)> {
+        let m = self.peers.iter().map(|p| &p.member).chain(self.rooms.iter().filter(|r| !r.jam).flat_map(|r| &r.members)).find(|m| m.id == id)?;
+        Some((m.name.clone(), m.kind))
     }
 
     fn jam_room(&self) -> Option<&str> {
@@ -230,6 +471,18 @@ impl Inner {
 
     fn age(&self, id: &str) -> i64 {
         self.received.get(id).map_or(0, |t| t.elapsed().as_millis() as i64)
+    }
+
+    /// Where this device's song is now, run on from when the platform last said.
+    fn position_now(&self) -> i64 {
+        let elapsed = self.playing_at.map_or(0, |t| t.elapsed().as_millis() as i64);
+        if self.playing.playing { self.playing.position_ms + elapsed } else { self.playing.position_ms }
+    }
+
+    /// [`Inner::position_now`], held to the end of `state`'s song.
+    fn position_now_of(&self, state: &DeviceState) -> i64 {
+        let elapsed = self.playing_at.map_or(0, |t| t.elapsed().as_millis() as i64);
+        nori_remote::position_now(&DeviceState { position_ms: self.playing.position_ms, ..state.clone() }, elapsed)
     }
 }
 
@@ -274,11 +527,22 @@ impl Remote {
         let me = remote.clone();
         let _ = std::thread::Builder::new().name("nori-remote-probe".into()).spawn(move || {
             let got = block_on(transport::get(&*me.client.transport, me.poll_url(None, false), 0));
-            if let Some(found) = support(&got) {
+            let serving = {
                 let mut i = me.inner.lock();
-                if i.relay == RelaySupport::Unknown {
-                    i.relay = found;
+                if let Some(found) = support(&got) {
+                    if i.relay == RelaySupport::Unknown {
+                        i.relay = found;
+                    }
                 }
+                // The probe says this device does not serve, and may have reached the relay after its
+                // first state did: serving by now, it says its state again.
+                if i.serving {
+                    i.published = None;
+                }
+                i.serving
+            };
+            if serving {
+                me.publish();
             }
             me.keep_polling();
         });
@@ -340,15 +604,72 @@ impl Remote {
         self.keep_polling();
     }
 
-    /// The platform's playback changed (play, pause, seek, another song, the queue, the volume).
+    /// The platform's playback changed (play, pause, seek, another song, the queue, the volume). Music
+    /// starting here makes this the active device again.
     pub fn played(self: Arc<Self>, playing: Playing) {
+        let (publish, started) = {
+            let mut i = self.inner.lock();
+            let started = playing.playing && !i.playing.playing;
+            if started {
+                i.handed_to = None;
+            }
+            i.playing = playing;
+            i.playing_at = Some(Instant::now());
+            (i.serving || i.hosted.is_some(), started && i.mirror.is_some())
+        };
+        if started {
+            self.set_active(None);
+        }
+        if publish {
+            self.publish();
+        }
+    }
+
+    /// The device's volume moved by itself (its own keys), 0 to 100; None when it cannot be set.
+    pub fn volume_changed(self: Arc<Self>, volume: Option<u8>) {
         let publish = {
             let mut i = self.inner.lock();
-            i.playing = playing;
+            if i.playing.volume == volume {
+                return;
+            }
+            i.playing.volume = volume;
             i.serving || i.hosted.is_some()
         };
         if publish {
             self.publish();
+        }
+    }
+
+    /// The account's active device while it is another one, as this device mirrors it; None while this
+    /// one is the active device.
+    pub fn active(&self) -> Option<Mirror> {
+        let i = self.inner.lock();
+        let m = i.mirror.as_ref()?;
+        let (name, kind) = i.who(&m.id)?;
+        m.view(name, kind, i.refused.get(&m.id).copied())
+    }
+
+    /// Moves the playback to `device`, or here (None): the active device hands its queue over and
+    /// pauses. With nothing queued here, the device is only followed.
+    pub fn pick(self: Arc<Self>, device: Option<String>) {
+        let (active, idle) = {
+            let i = self.inner.lock();
+            let m = i.mirror.as_ref();
+            (m.map(|m| m.id.clone()), m.and_then(|m| m.shown.as_ref()).is_some_and(|s| s.index.is_none()))
+        };
+        let here = self.client.core.session.playlist(|p| p.current().is_some());
+        match (active, device) {
+            (None, None) => {}
+            (Some(_), None) if idle => self.set_active(None),
+            // Followed until the queue arrives (its transfer replaces the queue here).
+            (Some(a), None) => self.send(a, Op::Transfer { to: self.id.clone() }),
+            (None, Some(d)) if here => self.hand_over(d),
+            (None, Some(d)) => self.set_active(Some(d)),
+            (Some(a), Some(d)) if a == d => {}
+            (Some(a), Some(d)) => {
+                self.send(a, Op::Transfer { to: d.clone() });
+                self.set_active(Some(d));
+            }
         }
     }
 
@@ -367,10 +688,14 @@ impl Remote {
         out
     }
 
-    /// Sends `op` to device `device`; its answer shows in [`Remote::devices`].
+    /// Sends `op` to device `device`; its answer shows in [`Remote::devices`]. Sent to the mirrored
+    /// device, it shows in [`Remote::active`] at once, as it is expected to come out.
     pub fn send(&self, device: String, op: Op) {
         let link = {
             let mut i = self.inner.lock();
+            if let Some(m) = i.mirror.as_mut().filter(|m| m.id == device) {
+                m.foresee(&op);
+            }
             i.refused.remove(&device);
             let lan = i.peers.iter().find(|p| p.member.id == device).map(|p| Link::Lan(p.base.clone()));
             match lan {
@@ -380,7 +705,8 @@ impl Remote {
             }
         };
         let id = self.next_id();
-        self.out(Out::Send(link, Outgoing { to: Some(device), body: Some(Body::Command { id, op: Box::new(op) }), ..Default::default() }));
+        self.out(Out::send(link, Outgoing { to: Some(device), body: Some(Body::Command { id, op: Box::new(op) }), ..Default::default() }));
+        self.shown.changed();
     }
 
     /// Hands this device's queue and position to device `to`, which plays on; this one pauses.
@@ -409,8 +735,9 @@ impl Remote {
     }
 
     /// A door went away.
-    pub fn lan_lost(&self, service: String) {
+    pub fn lan_lost(self: Arc<Self>, service: String) {
         self.inner.lock().peers.retain(|p| p.service != service);
+        self.follow_active();
         self.shown.changed();
     }
 
@@ -470,7 +797,7 @@ impl Remote {
             }
             Some((room, host)) => {
                 let id = self.next_id();
-                self.out(Out::Send(Link::Relay, Outgoing { room: Some(room), to: Some(host), body: Some(Body::Command { id, op: Box::new(op) }), state: None }));
+                self.out(Out::send(Link::Relay, Outgoing { room: Some(room), to: Some(host), body: Some(Body::Command { id, op: Box::new(op) }), state: None }));
             }
         }
     }
@@ -625,12 +952,11 @@ impl Remote {
                 i.generation += 1;
                 i.relay_polling = false;
             }
-            if i.watching {
-                let generation = i.lan_generation;
-                for p in i.peers.iter_mut().filter(|p| !p.polling) {
-                    p.polling = true;
-                    start_peers.push((p.service.clone(), generation));
-                }
+            let generation = i.lan_generation;
+            let follow: Vec<bool> = i.peers.iter().map(|p| !p.polling && i.follows_peer(&p.member.id)).collect();
+            for (p, _) in i.peers.iter_mut().zip(follow).filter(|(_, f)| *f) {
+                p.polling = true;
+                start_peers.push((p.service.clone(), generation));
             }
         }
         self.retry.notify_all();
@@ -684,12 +1010,16 @@ impl Remote {
     fn poll_peer(self: Arc<Self>, service: String, generation: u64) {
         loop {
             let (base, since) = {
-                let i = self.inner.lock();
-                let Some(p) = i.peers.iter().find(|p| p.service == service) else { return };
-                if i.lan_generation != generation || !i.watching {
+                let mut i = self.inner.lock();
+                let Some(at) = i.peers.iter().position(|p| p.service == service) else { return };
+                if i.lan_generation != generation {
                     return;
                 }
-                (p.base.clone(), p.since)
+                if !i.follows_peer(&i.peers[at].member.id) {
+                    i.peers[at].polling = false;
+                    return;
+                }
+                (i.peers[at].base.clone(), i.peers[at].since)
             };
             let Some((_, secret)) = self.client.core.account.read().clone() else { return };
             let query = match since {
@@ -718,6 +1048,7 @@ impl Remote {
                     match e.body {
                         Body::Command { id, op } => commands.push((id, *op)),
                         Body::Ack { refusal, .. } => note(&mut i.refused, &from, refusal),
+                        Body::Page { rev, from: turn, entries, .. } => paged(&mut i, &from, rev, turn, entries),
                     }
                 }
                 (from, base)
@@ -725,6 +1056,7 @@ impl Remote {
             for (id, op) in commands {
                 self.obey(Via::Peer(base.clone()), from.clone(), id, op);
             }
+            self.follow_active();
             self.shown.changed();
         }
     }
@@ -734,6 +1066,12 @@ impl Remote {
         let mut republish = false;
         {
             let mut i = self.inner.lock();
+            // Commands are heard from the first answer on: only then is this device's state said to the
+            // relay, so no controller sends it one before it can hear it.
+            if i.since.is_none() && i.serving {
+                i.published = None;
+                republish = true;
+            }
             i.since = Some(a.seq);
             i.you = a.you;
             for m in a.rooms.iter().flat_map(|r| &r.members).filter(|m| m.id != self.id) {
@@ -752,6 +1090,7 @@ impl Remote {
                 match e.body {
                     Body::Command { id, op } => commands.push((Via::Relay(jam.then_some(e.room)), e.from, id, *op)),
                     Body::Ack { refusal, .. } => note(&mut i.refused, &e.from, refusal),
+                    Body::Page { rev, from, entries, .. } => paged(&mut i, &e.from, rev, from, entries),
                 }
             }
             i.rooms = a.rooms;
@@ -762,24 +1101,80 @@ impl Remote {
         if republish {
             self.publish();
         }
+        self.follow_active();
         self.shown.changed();
+    }
+
+    /// Makes `to` the active device (None: this one), and follows it while it is another.
+    fn set_active(self: &Arc<Self>, to: Option<String>) {
+        {
+            let mut i = self.inner.lock();
+            if i.mirror.as_ref().map(|m| &m.id) == to.as_ref() {
+                return;
+            }
+            i.mirror = to.map(Mirrored::new);
+        }
+        self.follow_active();
+        self.keep_polling();
+    }
+
+    /// Takes the mirrored device's newest state, follows it on to the device it handed its playback to,
+    /// lets it go once it is gone, and asks for the next page of its queue.
+    fn follow_active(self: &Arc<Self>) {
+        let mut page = None;
+        let next = {
+            let mut i = self.inner.lock();
+            let Some(id) = i.mirror.as_ref().map(|m| m.id.clone()) else { return };
+            if !i.listed(&id) {
+                i.mirror = None;
+                drop(i);
+                self.keep_polling();
+                return;
+            }
+            let heard = i.state_of(&id).map(|(s, at)| (s.clone(), at));
+            let me = self.id.clone();
+            let m = i.mirror.as_mut().expect("mirrored");
+            let moved = match heard {
+                Some((st, at)) if m.heard(&st, at) => st.handed_to.filter(|to| *to != me && *to != id),
+                _ => None,
+            };
+            if moved.is_none() {
+                if let Some(from) = m.wanted() {
+                    m.asking = Some(from);
+                    page = Some((id, from));
+                }
+            }
+            moved
+        };
+        if let Some(to) = next {
+            return self.set_active(Some(to));
+        }
+        if let Some((id, from)) = page {
+            self.send(id, Op::Page { from, count: PAGE });
+        }
     }
 
     /// Carries out a command and answers it.
     fn obey(self: &Arc<Self>, via: Via, from: String, id: u64, op: Op) {
-        let refusal = self.carry_out(&via, &from, op).err();
-        self.answer_to(via, from, Body::Ack { id, refusal });
+        let body = match op {
+            Op::Page { from: turn, count } if !matches!(via, Via::Relay(Some(_))) => {
+                let q = self.read_queue(|_, len| turn as usize..(turn.saturating_add(count.min(PAGE_MAX)) as usize).min(len));
+                Body::Page { id, rev: q.rev, from: turn, entries: q.entries }
+            }
+            op => Body::Ack { id, refusal: self.carry_out(&via, &from, op).err() },
+        };
+        self.answer_to(via, from, body);
     }
 
     fn answer_to(&self, via: Via, to: String, body: Body) {
         match via {
-            Via::Relay(room) => self.out(Out::Send(Link::Relay, Outgoing { room, to: Some(to), body: Some(body), state: None })),
+            Via::Relay(room) => self.out(Out::send(Link::Relay, Outgoing { room, to: Some(to), body: Some(body), state: None })),
             Via::Door => {
                 if let Some(d) = &self.inner.lock().door {
                     d.reply(&to, body);
                 }
             }
-            Via::Peer(base) => self.out(Out::Send(Link::Lan(base), Outgoing { to: Some(to), body: Some(body), ..Default::default() })),
+            Via::Peer(base) => self.out(Out::send(Link::Lan(base), Outgoing { to: Some(to), body: Some(body), ..Default::default() })),
         }
     }
 
@@ -810,60 +1205,99 @@ impl Remote {
         admit(&op, sender, rev, len)?;
         match op {
             Op::Transfer { to } => self.transfer(via, from, to),
-            op => self.player.apply(op),
+            op => {
+                // A queue sent here plays here: this is the active device.
+                if matches!(op, Op::Replace { .. }) {
+                    self.set_active(None);
+                }
+                self.player.apply(op)
+            }
         }
         Ok(())
     }
 
-    /// Hands the queue and position to device `to`, then pauses here.
+    /// Hands the queue, its play order, shuffle, repeat and the position to device `to`, then pauses here
+    /// and follows `to`, the active device now.
     fn transfer(self: &Arc<Self>, via: &Via, from: &str, to: String) {
         let session = &self.client.core.session;
-        let (ids, index) = session.playlist(|p| (p.ids().to_vec(), p.current()));
+        // A weighted shuffle's list is already in play order: shown shuffled, it goes as that order.
+        let (ids, index, order, shuffle, repeat) = session.playlist(|p| (p.ids().to_vec(), p.current(), p.lit().then(|| p.play_order().map(|i| i as u32).collect()), p.lit(), p.repeat()));
         let Some(index) = index else { return };
         let songs = ids.into_iter().map(|id| session.song(&id).unwrap_or_else(|| Song::only_id(id))).collect();
-        let (playing, age) = {
-            let i = self.inner.lock();
-            (i.playing, i.published.as_ref().map_or(0, |(_, at)| at.elapsed().as_millis() as i64))
+        let (playing, position_ms) = {
+            let mut i = self.inner.lock();
+            i.handed_to = Some(to.clone());
+            (i.playing.playing, i.position_now())
         };
-        let position_ms = if playing.playing { playing.position_ms + age } else { playing.position_ms };
-        let op = Op::Replace { songs, index: index as u32, position_ms, play: playing.playing };
+        let op = Op::Replace { songs, index: index as u32, position_ms, play: playing, order, shuffle, repeat };
         let id = self.next_id();
         let command = Body::Command { id, op: Box::new(op) };
         if to == from {
-            self.answer_to(via.clone(), to, command);
+            self.answer_to(via.clone(), to.clone(), command);
         } else {
             let link = self.inner.lock().peers.iter().find(|p| p.member.id == to).map_or(Link::Relay, |p| Link::Lan(p.base.clone()));
-            self.out(Out::Send(link, Outgoing { to: Some(to), body: Some(command), ..Default::default() }));
+            self.out(Out::send(link, Outgoing { to: Some(to.clone()), body: Some(command), ..Default::default() }));
         }
         self.player.apply(Op::Pause);
+        self.set_active(Some(to));
+        self.publish();
     }
 
-    /// This device's state now.
-    fn state_now(&self) -> DeviceState {
+    /// The songs at the turns of the play order `span` picks (from where the song heard is, and how many
+    /// there are), with the queue's revision, length, shuffle and repeat.
+    fn read_queue(&self, span: impl FnOnce(Option<usize>, usize) -> Range<usize>) -> QueueRead {
         let session = &self.client.core.session;
         let heard = self.inner.lock().playing.index.map(|i| i as usize);
-        let (window, index, rev, shuffle, repeat) = session.playlist(|p| {
+        let (picked, index, rev, len, shuffle, repeat) = session.playlist(|p| {
             let current = heard.filter(|&i| i < p.len()).or(p.current());
             let order: Vec<usize> = p.play_order().collect();
-            let at = current.and_then(|c| order.iter().position(|&o| o == c)).unwrap_or(0);
-            let window: Vec<(usize, String)> = order[at.saturating_sub(ENTRIES_BEFORE)..(at + ENTRIES_AFTER + 1).min(order.len())].iter().map(|&i| (i, p.ids()[i].clone())).collect();
-            (window, current.map(|c| c as u32), p.rev(), p.lit(), p.repeat())
+            let at = current.and_then(|c| order.iter().position(|&o| o == c));
+            let r = span(at, order.len());
+            let picked: Vec<(u32, u32, String)> = order[r.clone()].iter().zip(r.start..).map(|(&i, turn)| (i as u32, turn as u32, p.ids()[i].clone())).collect();
+            (picked, current.map(|c| c as u32), p.rev(), p.len() as u32, p.lit(), p.repeat())
         });
         let i = self.inner.lock();
         let jam = i.hosted.as_ref().map(|h| &h.jam);
-        let entries = window
+        let entries = picked
             .into_iter()
-            .map(|(index, id)| {
+            .map(|(index, turn, id)| {
                 let by = jam.and_then(|j| j.added_by(&id));
-                Entry::of(index as u32, &session.song(&id).unwrap_or_else(|| Song::only_id(id)), by)
+                Entry::of(index, turn, &session.song(&id).unwrap_or_else(|| Song::only_id(id)), by)
             })
             .collect();
-        DeviceState { playing: i.playing.playing, position_ms: i.playing.position_ms, index, rev, entries, volume: i.playing.volume, shuffle, repeat, jam: jam.map(Jam::state) }
+        QueueRead { entries, index, rev, len, shuffle, repeat }
+    }
+
+    /// This device's state now, its position where the song is at this moment.
+    fn state_now(&self) -> DeviceState {
+        let q = self.read_queue(|at, len| {
+            let at = at.unwrap_or(0);
+            at.saturating_sub(ENTRIES_BEFORE)..(at + ENTRIES_AFTER + 1).min(len)
+        });
+        let i = self.inner.lock();
+        let p = i.playing;
+        let mut st = DeviceState {
+            seq: i.seq,
+            playing: p.playing,
+            buffering: p.buffering,
+            position_ms: p.position_ms,
+            index: q.index,
+            rev: q.rev,
+            len: q.len,
+            entries: q.entries,
+            volume: p.volume,
+            shuffle: q.shuffle,
+            repeat: q.repeat,
+            jam: i.hosted.as_ref().map(|h| h.jam.state()),
+            handed_to: i.handed_to.clone(),
+        };
+        st.position_ms = i.position_now_of(&st);
+        st
     }
 
     /// Publishes this device's state where it is followed, unless only time moved on.
     fn publish(self: &Arc<Self>) {
-        let state = self.state_now();
+        let mut state = self.state_now();
         let (serving, jam_room, relay) = {
             let mut i = self.inner.lock();
             if let Some((last, at)) = &i.published {
@@ -871,19 +1305,38 @@ impl Remote {
                     return;
                 }
             }
+            i.seq += 1;
+            state.seq = i.seq;
             i.published = Some((state.clone(), Instant::now()));
             if let Some(d) = &i.door {
                 d.publish(state.clone());
             }
-            (i.serving, i.jam_room().map(str::to_string), i.relay != RelaySupport::Unsupported)
+            (i.serving && i.since.is_some(), i.jam_room().map(str::to_string), i.relay != RelaySupport::Unsupported)
         };
         if serving && relay {
-            self.out(Out::Send(Link::Relay, Outgoing { state: Some(state.clone()), ..Default::default() }));
+            self.out(Out::send(Link::Relay, Outgoing { state: Some(state.clone()), ..Default::default() }));
         }
         if let Some(room) = jam_room {
-            self.out(Out::Send(Link::Relay, Outgoing { room: Some(room), state: Some(state), ..Default::default() }));
+            self.out(Out::send(Link::Relay, Outgoing { room: Some(room), state: Some(state), ..Default::default() }));
         }
         self.shown.changed();
+    }
+}
+
+/// What [`Remote::read_queue`] read.
+struct QueueRead {
+    entries: Vec<Entry>,
+    index: Option<u32>,
+    rev: u64,
+    len: u32,
+    shuffle: bool,
+    repeat: u8,
+}
+
+/// A page of the queue of device `from` arrived.
+fn paged(i: &mut Inner, from: &str, rev: u64, turn: u32, entries: Vec<Entry>) {
+    if let Some(m) = i.mirror.as_mut().filter(|m| m.id == from) {
+        m.page(rev, turn, entries);
     }
 }
 
@@ -897,7 +1350,7 @@ fn note(refused: &mut HashMap<String, Refusal>, from: &str, refusal: Option<Refu
 /// Whether `now` is `last` with only its position run on as time passed.
 fn same_but_time(last: &DeviceState, now: &DeviceState, elapsed_ms: i64) -> bool {
     let expected = nori_remote::position_now(last, elapsed_ms);
-    (expected - now.position_ms).abs() <= POSITION_SLACK_MS && DeviceState { position_ms: now.position_ms, ..last.clone() } == *now
+    (expected - now.position_ms).abs() <= POSITION_SLACK_MS && DeviceState { position_ms: now.position_ms, seq: now.seq, ..last.clone() } == *now
 }
 
 #[cfg(test)]
@@ -912,6 +1365,23 @@ mod tests {
         assert!(!same_but_time(&last, &DeviceState { position_ms: 15_000, rev: 3, ..last.clone() }, 5_000), "the queue changed");
         let paused = DeviceState { playing: false, ..last.clone() };
         assert!(!same_but_time(&last, &DeviceState { position_ms: 15_000, ..paused }, 5_000), "paused");
+    }
+
+    #[test]
+    fn a_mirrored_playhead_runs_on_from_when_its_state_arrived() {
+        let entries = vec![Entry { index: 0, duration: 300, ..Default::default() }];
+        let st = DeviceState { seq: 4, playing: true, position_ms: 10_000, index: Some(0), len: 1, entries, ..Default::default() };
+        let mut m = Mirrored::new("desk".into());
+        let arrived = Instant::now() - Duration::from_secs(2);
+        assert!(m.heard(&st, arrived));
+        let at = |m: &Mirrored| m.view("Desk".into(), DeviceKind::Desktop, None).unwrap().position_ms;
+        assert!((12_000..12_500).contains(&at(&m)), "{}", at(&m));
+        // The same state read again (every poll answer carries it) does not start the clock again.
+        assert!(!m.heard(&st, Instant::now()));
+        assert!(at(&m) >= 12_000);
+        // A new publish of the same place does.
+        assert!(m.heard(&DeviceState { seq: 5, ..st }, Instant::now()));
+        assert!(at(&m) < 10_500);
     }
 
     #[test]

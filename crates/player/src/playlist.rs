@@ -264,6 +264,18 @@ impl Playlist {
         self.cur
     }
 
+    /// Replaces the queue, shuffled into `order` (list indexes, each once) and starting at `start`: the
+    /// play order a queue had on another device. An order that does not fit the list is shuffled here.
+    pub fn set_in_order(&mut self, ids: Vec<String>, start: usize, order: Vec<usize>, seed: u64) -> Option<usize> {
+        let n = ids.len();
+        let at = self.set(ids, Some(start), true, seed);
+        let mut seen = vec![false; n];
+        if order.len() == n && order.iter().all(|&i| i < n && !std::mem::replace(&mut seen[i], true)) {
+            self.order = order;
+        }
+        at
+    }
+
     /// A list already in the order it should play, shown as shuffled.
     pub fn set_ordered(&mut self, ids: Vec<String>) -> Option<usize> {
         let at = self.set(ids, Some(0), false, 0);
@@ -560,6 +572,22 @@ mod tests {
 
     fn played(p: &Playlist) -> Vec<&str> {
         p.play_order().map(|i| p.ids()[i].as_str()).collect()
+    }
+
+    #[test]
+    fn a_handed_order_is_kept() {
+        let mut p = Playlist::new();
+        assert_eq!(p.set_in_order(ids(&["a", "b", "c", "d"]), 2, vec![3, 2, 0, 1], 7), Some(2));
+        assert_eq!(p.play_order().collect::<Vec<_>>(), [3, 2, 0, 1]);
+        assert_eq!(p.next(), Some(0));
+        assert!(p.lit());
+
+        // Not a whole order of the list: shuffled here, around the start.
+        p.set_in_order(ids(&["a", "b", "c"]), 1, vec![1, 1, 0], 7);
+        let mut order: Vec<usize> = p.play_order().collect();
+        assert_eq!(order[0], 1);
+        order.sort();
+        assert_eq!(order, [0, 1, 2]);
     }
 
     #[test]

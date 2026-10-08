@@ -1056,6 +1056,7 @@ impl App {
             Msg::Reachable(Err(e)) => self.say(&e, true),
             Msg::Reachable(Ok(())) | Msg::From(..) => {}
             Msg::Remote => self.devices_shown(),
+            Msg::Volume(v) => self.ui().set_volume(v),
             Msg::LoggedIn(r) => {
                 let ui = self.ui();
                 ui.set_login_busy(false);

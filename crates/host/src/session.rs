@@ -21,14 +21,14 @@ use nori_core::transport::{block_on, Exchange, FailureKind, NetError, Transport,
 use nori_core::{Core, CoreError, IngestStats, PageOrigin, Song};
 use nori_covers::loader::{Config as CoverConfig, Loader, Ticket};
 use nori_covers::memory::Image;
-use nori_engine::core::{settings, Analyses, CoreApp, CoreLibrary, CoreQueue, Downloader, Measurer, OutputVolume};
+use nori_engine::core::{settings, Analyses, CoreApp, CoreLibrary, CoreQueue, Downloader, Measurer};
 use nori_engine::{AudioOutput, Body, ByteSource, Cancel, Config, Engine, Event, OpenError, State, Store};
 use nori_http::Http;
 use nori_look::cover::CoverColours;
 
 #[cfg(feature = "desktop")]
 use crate::Controls;
-use crate::{config, db_path, derive, net, save, spawn, Fetch, Keeper};
+use crate::{config, db_path, derive, net, save, spawn, Fetch, Keeper, Level};
 
 /// What a session reports from any thread.
 pub enum Said {
@@ -41,6 +41,8 @@ pub enum Said {
     Reachable(Result<(), NetError>),
     /// The other devices or the jam changed (remote control): read them again.
     Remote,
+    /// Another device set the volume (0 to 1).
+    Volume(f32),
 }
 
 /// Something done or failed, for the status line.
@@ -160,9 +162,9 @@ pub struct Open<'a> {
     pub profile: SavedServer,
     /// The sound card. The client built it and owns its device volume.
     pub output: Box<dyn AudioOutput>,
-    /// Listener volume in dB, for loudness compensation. Set before opening; the client keeps its own
-    /// handle and calls [`Session::volume_changed`] when it moves.
-    pub volume: Arc<OutputVolume>,
+    /// The volume, set through [`Session::set_volume`] (or followed with [`Level::set`] and
+    /// [`Session::volume_changed`] where the system keeps it).
+    pub volume: Arc<Level>,
     /// Bytes the engine may hold for songs ahead. 256 on the desktop, less on a phone.
     pub memory_mb: u32,
     pub covers: bool,
@@ -188,8 +190,7 @@ pub struct Session {
     pub store: Arc<Store>,
     downloader: Arc<Downloader>,
     pub covers: Option<Arc<Loader>>,
-    /// `volume` in dB, for loudness compensation.
-    loudness: Arc<OutputVolume>,
+    level: Arc<Level>,
     search: Arc<SearchSession>,
     pub offline: bool,
     #[cfg(feature = "desktop")]
@@ -216,7 +217,8 @@ impl Session {
         client.set_profile(net(&o.profile));
         let prefs = core.session.settings.current().unwrap_or_default();
         // Set by the client before the engine starts, so the first chain has the right compensation.
-        let loudness = o.volume;
+        let level = o.volume;
+        let loudness = level.loudness.clone();
         let output = o.output;
         let store = Store::open(o.data.join("music"), prefs.cache_mb.max(0) as u64 * 1024 * 1024).map_err(|e| format!("the music directory: {e}"))?;
         let audio = Arc::new(Audio::new(o.http.clone(), o.offline));
@@ -234,7 +236,8 @@ impl Session {
             m.serve(Some(Arc::new(Controls::over_queue(engine.clone(), core.session.clone()))));
         }
         let keeper = Keeper::start(core.clone(), engine.clone());
-        let s = Session { core, client, engine, store, downloader, covers, loudness, search: SearchSession::new(), offline: o.offline, #[cfg(feature = "desktop")] mpris: o.mpris, keeper, db: PathBuf::from(db), remotes: Default::default(), device: o.device, out: o.out };
+        let remotes = Arc::new(crate::remote::Remotes::new(level.clone()));
+        let s = Session { core, client, engine, store, downloader, covers, level, search: SearchSession::new(), offline: o.offline, #[cfg(feature = "desktop")] mpris: o.mpris, keeper, db: PathBuf::from(db), remotes, device: o.device, out: o.out };
         s.restore();
         s.follow_remote();
         if !s.offline && s.core.download_counts().pending > 0 {
@@ -350,7 +353,7 @@ impl Session {
     }
 
     fn handle(&self) -> Handle {
-        Handle { engine: self.engine.clone(), queue: self.core.session.clone(), keeper: self.keeper.clone(), remotes: self.remotes.clone(), out: self.out.clone() }
+        Handle { engine: self.engine.clone(), queue: self.core.session.clone(), client: self.client.clone(), keeper: self.keeper.clone(), remotes: self.remotes.clone(), level: self.level.clone(), out: self.out.clone() }
     }
 
     /// The remote control and jams, while switched on: other devices to control, the jam hosted.
@@ -476,17 +479,25 @@ impl Session {
     }
 
     /// The listener volume moved enough to change loudness compensation: rebuilds the chain when that
-    /// compensation is on. The device's own volume is the client's.
+    /// compensation is on.
     pub fn volume_changed(&self) {
-        if let Some(p) = self.core.session.settings.current().filter(|p| p.loudness) {
-            self.engine.set_settings(settings(&p, self.loudness.db()));
-        }
+        self.handle().loudness_moved();
+    }
+
+    /// The volume, 0 to 1.
+    pub fn volume(&self) -> f32 {
+        self.level.get()
+    }
+
+    /// Sets the volume, as the client's own control does; the account's other devices see it.
+    pub fn set_volume(&self, v: f32) {
+        self.handle().set_volume(v);
     }
 
     /// Applies a settings change's `effect` bits to the engine.
     pub fn apply(&self, effect: u32, prefs: &StoredPrefs) {
         if effect & (APPLY_AUDIO | SOUND | PLAYER) != 0 {
-            self.engine.set_settings(settings(prefs, self.loudness.db()));
+            self.engine.set_settings(settings(prefs, self.level.loudness.db()));
         }
         if effect & APPLY_GAIN != 0 {
             self.engine.gain_changed();
@@ -630,7 +641,10 @@ impl Session {
             Event::Bridge { .. } => self.bridge(),
             _ => {}
         }
-        if matches!(e, Event::Song { .. } | Event::Looped { .. } | Event::State(_) | Event::Position { .. }) {
+        if let Event::Buffering(on) = e {
+            self.remotes.buffering(*on);
+        }
+        if matches!(e, Event::Song { .. } | Event::Looped { .. } | Event::State(_) | Event::Position { .. } | Event::Buffering(_)) {
             self.remotes.played(&self.engine);
         }
     }
@@ -722,14 +736,47 @@ impl Session {
 pub(crate) struct Handle {
     pub(crate) engine: Arc<Engine>,
     queue: Arc<nori_core::queue::Session>,
+    client: Arc<Client>,
     keeper: Arc<Keeper>,
     pub(crate) remotes: Arc<crate::remote::Remotes>,
+    level: Arc<Level>,
     out: Out,
 }
 
 impl Handle {
     fn note(&self, n: Note) {
         (self.out)(Said::Note(n));
+    }
+
+    /// Sets the volume; the account's other devices see it.
+    pub(crate) fn set_volume(&self, v: f32) {
+        if self.level.set(v) {
+            self.loudness_moved();
+        }
+        self.remotes.played(&self.engine);
+    }
+
+    /// Another device set the volume: as [`Handle::set_volume`], and the client is told.
+    pub(crate) fn volume_from_afar(&self, v: f32) {
+        self.set_volume(v);
+        (self.out)(Said::Volume(self.level.get()));
+    }
+
+    /// Rebuilds the chain for the volume's loudness compensation, when that is on.
+    fn loudness_moved(&self) {
+        if let Some(p) = self.queue.settings.current().filter(|p| p.loudness) {
+            self.engine.set_settings(settings(&p, self.level.loudness.db()));
+        }
+    }
+
+    /// Another device favourited a song (or not): the server is told, and the core's marks follow.
+    pub(crate) fn star(&self, id: String, on: bool) {
+        let client = self.client.clone();
+        spawn("nori-star", move || {
+            if let Err(e) = block_on(client.star(Starrable::Song, id, on, Arc::new(NoMarks))) {
+                nori_core::alog::info(&format!("remote: star not kept: {e}"));
+            }
+        });
     }
 
     /// After a queue edit: tells the engine and schedules a save.
@@ -770,13 +817,16 @@ impl Handle {
         self.engine.set_repeat(mode);
     }
 
-    /// A queue handed over from another device: `songs` from `index` at `position_ms`, playing or not.
-    pub(crate) fn replace(&self, songs: Vec<Song>, index: usize, position_ms: i64, play: bool) {
+    /// A queue handed over from another device: `songs` from `index` at `position_ms`, playing or not,
+    /// shuffled into `order` under `shuffle`, repeating as `repeat` says.
+    #[allow(clippy::too_many_arguments, reason = "the transfer's own fields, as they came")]
+    pub(crate) fn replace(&self, songs: Vec<Song>, index: usize, position_ms: i64, play: bool, order: Option<Vec<u32>>, shuffle: bool, repeat: u8) {
         if songs.is_empty() {
             return;
         }
         self.queue.register(songs.clone());
-        let change = self.queue.set(songs.iter().map(|s| s.id.clone()).collect(), Some(index.min(songs.len() - 1) as u32), false, None);
+        let change = self.queue.handed(songs.iter().map(|s| s.id.clone()).collect(), index.min(songs.len() - 1) as u32, order, shuffle, repeat);
+        self.engine.set_repeat(repeat);
         self.edited();
         let at = change.at.unwrap_or(0) as usize;
         if play {

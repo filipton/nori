@@ -8,9 +8,9 @@ use std::sync::{Arc, Condvar, Mutex, Once, OnceLock};
 use nori_core::rules::QueueMoment;
 use nori_core::settings::SavedServer;
 use nori_core::settings::StoredPrefs;
-use nori_engine::core::OutputVolume;
 use nori_engine::{AudioOutput, Event, State};
 use nori_host::session::{Note, Open, Out, Said, Session};
+use nori_host::Level;
 use nori_http::Http;
 
 /// How much decoded audio the engine may hold. The iPod has 1 GB.
@@ -215,8 +215,8 @@ fn pack(said: &Said) -> Packed {
             p.kind = REPORT_REACHABLE;
             p.text = c(&e.to_string());
         }
-        // The iPod lists no other devices.
-        Said::Remote => {}
+        // The iPod lists no other devices, and the system keeps its volume.
+        Said::Remote | Said::Volume(_) => {}
     }
     p
 }
@@ -349,13 +349,14 @@ pub(crate) fn audio_changed() {
     });
 }
 
-static LOUDNESS: OnceLock<Arc<OutputVolume>> = OnceLock::new();
+/// The system's volume, which the app follows and does not set.
+static LEVEL: OnceLock<Arc<Level>> = OnceLock::new();
 
 /// The system volume moved (0 to 1): loudness compensation follows it.
 #[no_mangle]
 pub extern "C" fn nori_ios_volume(fraction: f32) {
-    let Some(loudness) = LOUDNESS.get() else { return };
-    if loudness.set(nori_host::volume_db(fraction)) {
+    let Some(level) = LEVEL.get() else { return };
+    if level.set(fraction) {
         with_session(|s| s.volume_changed());
     }
 }
@@ -412,13 +413,7 @@ fn start_queue(
     if held().is_some() {
         return Err("already open".into());
     }
-    let volume = LOUDNESS
-        .get_or_init(|| {
-            let v = Arc::new(OutputVolume::default());
-            v.set(0.0);
-            v
-        })
-        .clone();
+    let volume = LEVEL.get_or_init(|| Level::new(1.0, None)).clone();
     let out: Out = Arc::new(enqueue);
     let session = Session::open(Open {
         queue,
