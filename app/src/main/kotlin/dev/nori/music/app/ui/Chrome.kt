@@ -505,6 +505,11 @@ fun MiniPlayer(vm: PlayerViewModel, actions: ActionsViewModel, onOpen: () -> Uni
         }
         // Another device plays: said under the song, a tap away from moving it.
         PlayingOnStrip(state.playingOn, look.color(CoverLook.ACCENT), Modifier.padding(start = 4.dp, bottom = 2.dp))
+        // The jam this phone hosts: said under the song, a tap away from its queue.
+        if (state.playingOn == null) {
+            val listening by vm.jamListening.collectAsStateWithLifecycle()
+            JamStrip(listening, look.color(CoverLook.ACCENT), Modifier.padding(start = 4.dp, bottom = 2.dp))
+        }
         }
         }
     }

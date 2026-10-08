@@ -1650,7 +1650,8 @@ impl App {
             ui.set_shuffle(v.shuffle);
             ui.set_repeat(v.repeat as i32);
             let jam = self.session.as_ref().and_then(|s| s.remote()).filter(|_| self.jam_hosting);
-            let rows = queue_rows(&v, |id| jam.as_ref().and_then(|r| r.jam_added_by(id)), |s| self.starred(s));
+            let added = jam.map(|r| r.jam_added()).unwrap_or_default();
+            let rows = queue_rows(&v, |id| added.get(id).cloned(), |s| self.starred(s));
             self.queue_shown(rows);
             ui.set_queue_from(queue_from(upcoming(&v).map(|(_, s)| s)).into());
             self.queue = Some(v);
@@ -1729,7 +1730,7 @@ fn credits(s: &Song) -> Credits {
 /// The heart, album and artists of `s`'s menu (menus.rs's `song_menu`), `starred` as its heart shows.
 fn song_menu(s: &Song, starred: bool) -> ModelRc<SongGo> {
     use nori_core::menus::{song_menu, SongAction, SongDownload};
-    let lines: Vec<SongGo> = song_menu(s.clone(), starred, SongDownload::None, false, false)
+    let lines: Vec<SongGo> = song_menu(s.clone(), starred, SongDownload::None, false, None)
         .into_iter()
         .filter_map(|item| {
             let title = words::song_action(&item.action)?.into();

@@ -30,11 +30,19 @@ val traceLyrics: Boolean get() = TestHooks.traceLyrics
 
 /** The test bridge's handles, live for as long as the signed-in app is on screen. See TestHooks. */
 @Composable
-fun TestDriver(controller: NavHostController, nav: Nav, sheet: PlayerSheet, settings: SettingsViewModel, actions: ActionsViewModel, player: PlayerViewModel) {
+fun TestDriver(controller: NavHostController, nav: Nav, sheet: PlayerSheet, settings: SettingsViewModel, actions: ActionsViewModel, player: PlayerViewModel, devices: () -> Unit) {
     val context = LocalContext.current
     val player2 = player
     DisposableEffect(controller) {
-        TestHooks.open = { route -> if (route == "player") sheet.open() else nav.go(route) }
+        // "queue" is the player on its queue (where a jam's header is), "devices" the devices sheet.
+        TestHooks.open = { route ->
+            when (route) {
+                "player" -> sheet.open()
+                "queue" -> nav.player(dev.nori.music.app.ui.Panel.QUEUE)
+                "devices" -> devices()
+                else -> nav.go(route)
+            }
+        }
         TestHooks.set = { name, value -> TestActions.setByName(context, settings, name, value) }
         TestHooks.play = { what -> TestActions.playByRef(context, actions, what) }
         TestHooks.login = { spec ->

@@ -149,7 +149,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 
-private enum class Panel { ART, QUEUE, LYRICS }
+enum class Panel { ART, QUEUE, LYRICS }
 
 /**
  * Now playing, the way a full-screen player should feel: the page is a wash of the artwork's own
@@ -184,14 +184,15 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
     // drawn inside the sheet, then sat a whole sheet's travel below the cover all the way up.
     val player = remember { arrayOfNulls<androidx.compose.ui.layout.LayoutCoordinates>(1) }
     var sleeveHeight by remember { mutableFloatStateOf(0f) }
-    // The lyrics widget's tap: the lyrics once the player is up and its sleeve measured, as its button there
-    // would have them. Asked for while the app was still opening, the change ran before either, and its
-    // fade stopped with the cover still whole and the lyrics not shown.
-    LaunchedEffect(sheet.lyricsAsked) {
-        if (!sheet.lyricsAsked) return@LaunchedEffect
+    // A panel asked for from outside (the lyrics widget's tap, a jam strip's): that panel once the player is
+    // up and its sleeve measured, as its button there would have it. Asked for while the app was still
+    // opening, the change ran before either, and its fade stopped with the cover still whole and the
+    // lyrics not shown.
+    LaunchedEffect(sheet.panelAsked) {
+        val asked = sheet.panelAsked ?: return@LaunchedEffect
         androidx.compose.runtime.snapshotFlow { sheet.progress.value >= 1f && sleeveHeight > 0f }.first { it }
-        sheet.lyricsAsked = false
-        if (panel != Panel.LYRICS) choose(Panel.LYRICS)
+        sheet.panelAsked = null
+        if (panel != asked) choose(asked)
     }
     // The transport's way of asking the sleeve to change record; see SleeveSlide.
     val slide = remember { SleeveSlide() }
@@ -723,8 +724,10 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
 
                 if (page == Panel.ART && !across) Spacer(Modifier.weight(0.17f))
                 Box(kept("volume")) { VolumeRow(vm) }
-                state.playingOn?.let { device ->
-                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { PlayingOnStrip(device, live.color(CoverLook.ACCENT)) }
+                val listening by vm.jamListening.collectAsStateWithLifecycle()
+                if (state.playingOn != null || listening != null) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    if (state.playingOn != null) PlayingOnStrip(state.playingOn, live.color(CoverLook.ACCENT))
+                    else JamStrip(listening, live.color(CoverLook.ACCENT))
                 }
 
                 Row(kept("icons").fillMaxWidth().padding(top = 2.dp, bottom = 4.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
@@ -2664,10 +2667,17 @@ private fun Queue(vm: PlayerViewModel) {
     }
     var listWidth by remember { mutableFloatStateOf(0f) }
 
+    // The jam this phone hosts heads the queue; its guests' songs carry who asked for them.
+    val remote: dev.nori.music.app.vm.RemoteViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+    val jam by remote.jam.collectAsStateWithLifecycle()
+    val added by vm.jamAdded.collectAsStateWithLifecycle()
+    val plate = androidx.compose.ui.graphics.ColorProducer { look.color(CoverLook.VEIL_13) }
+
   Box(Modifier.fillMaxSize()) {
     // Shuffle and repeat live here, pinned above the list - not in the transport, and never scrolled
     // away (the list opens at the playing row, which used to hide them).
     Column(Modifier.fillMaxSize()) {
+        jam?.takeIf { it.hosting }?.let { j -> JamHeader(j) { vm.cover(it, CoverSize.ROW) } }
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
             Caption(remember { say.queue }, Modifier.padding(top = 4.dp, bottom = 8.dp))
             Row(Modifier, Arrangement.spacedBy(4.dp), Alignment.CenterVertically) {
@@ -2847,8 +2857,10 @@ private fun Queue(vm: PlayerViewModel) {
                             maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge,
                         )
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            // Added by hand: plays before the rest of the queue carries on.
-                            if (i in state.queued) LookIcon(Icons.AutoMirrored.Filled.QueueMusic, say.addedByYou, Modifier.padding(end = 4.dp).size(14.dp), accent)
+                            // Added by hand: plays before the rest of the queue carries on. A jam guest's song says who.
+                            val by = added[s.id]
+                            if (by != null) AddedBy(by, ink, plate)
+                            else if (i in state.queued) LookIcon(Icons.AutoMirrored.Filled.QueueMusic, say.addedByYou, Modifier.padding(end = 4.dp).size(14.dp), accent)
                             LookText(s.artist, quiet, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
                         }
                     }

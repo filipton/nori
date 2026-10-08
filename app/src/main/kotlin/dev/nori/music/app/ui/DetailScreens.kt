@@ -310,7 +310,13 @@ private fun AlbumPage(album: Album, detail: AlbumDetail?, failed: String?, actio
         actions = {
             val albumStarred = LocalStarMarks.current.effectiveStar(dev.nori.music.data.StarKind.ALBUM, album.id, album.starred)
             FavoriteCircle(albumStarred) { actions.starAlbum(album.id, !albumStarred); Unit }
-            LateMore(detail != null) { listOf(say.addToQueue to { actions.enqueue(detail!!.songs) }, downloadEntry(detail!!.songs, done, actions)) }
+            LateMore(detail != null) {
+                listOfNotNull(
+                    say.addToQueue to { actions.enqueue(detail!!.songs) },
+                    downloadEntry(detail!!.songs, done, actions),
+                    jamStartEntry { actions.play(detail!!.songs, from = from) },
+                )
+            }
         },
     ) {
         when {
@@ -501,9 +507,10 @@ private fun PlaylistPage(
             // them reads it.
             FavoriteCircle(pinned) { settings.pin(id, !pinned); Unit }
             LateMore(detail != null) {
-                listOf(
+                listOfNotNull(
                     say.addToQueue to { actions.enqueue(detail!!.songs) },
                     downloadEntry(detail!!.songs, done, actions),
+                    jamStartEntry { actions.play(detail!!.songs, from = from) },
                     say.exportPlaylistFile to { export(playlist.name) },
                 )
             }

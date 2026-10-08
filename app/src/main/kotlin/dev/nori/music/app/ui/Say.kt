@@ -485,6 +485,7 @@ class Say(private val r: Resources) {
         SongAction.Share -> menuShare
         SongAction.Details -> details
         SongAction.Request -> r.getString(R.string.menu_request)
+        SongAction.StartJam -> r.getString(R.string.jam_start)
     }
 
     /** One of the sleep timer's choices: "30 minutes", "End of track", "After 3 songs", or "Off" (all zeros). */

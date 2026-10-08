@@ -33,6 +33,7 @@ fn action_code(a: &SongAction) -> i32 {
         SongAction::Share => 14,
         SongAction::Details => 15,
         SongAction::Request => 16,
+        SongAction::StartJam => 18,
     }
 }
 
@@ -68,7 +69,7 @@ fn details_json(s: &Song) -> Value {
 }
 
 fn menu_json(song: &Song, starred: bool, download: SongDownload, player: bool) -> Value {
-    let items: Vec<Value> = song_menu(song.clone(), starred, download, player, false)
+    let items: Vec<Value> = song_menu(song.clone(), starred, download, player, None)
         .iter()
         .map(item_json)
         .collect();
@@ -341,6 +342,7 @@ mod tests {
             SongAction::ExcludeFromMixes,
             SongAction::Share,
             SongAction::Details,
+            SongAction::StartJam,
         ];
         let mut seen: Vec<i32> = actions.iter().map(action_code).collect();
         seen.sort_unstable();

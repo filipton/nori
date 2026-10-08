@@ -842,6 +842,9 @@ impl Remote {
             i.relay = RelaySupport::Supported;
             i.hosted = Some(Hosted { jam: Jam::new(opened.room, opened.invite, self.id.clone(), self.me.name.clone()), link: link.clone() });
             i.published = None;
+            // A poll held from before listens to the account's room only: polled again, now with the jam's.
+            i.generation += 1;
+            i.relay_polling = false;
         }
         self.publish();
         self.keep_polling();
@@ -850,8 +853,14 @@ impl Remote {
 
     /// Ends the jam this device hosts.
     pub fn jam_close(self: Arc<Self>) {
-        let Some(h) = self.inner.lock().hosted.take() else { return };
-        self.out(Out::Get(self.relay_url("noriRemote.close", &[("room", h.jam.room)])));
+        let room = {
+            let mut i = self.inner.lock();
+            let Some(h) = i.hosted.take() else { return };
+            // Its room is no one's now; kept, it would read as a jam this device is a guest of.
+            i.rooms.retain(|r| r.room != h.jam.room);
+            h.jam.room
+        };
+        self.out(Out::Get(self.relay_url("noriRemote.close", &[("room", room)])));
         self.keep_polling();
         self.shown.changed();
     }
@@ -936,6 +945,12 @@ impl Remote {
         self.shown.changed();
     }
 
+    /// Who asked for each song that came in through the jam this device hosts, by song id, for "added by"
+    /// on the whole queue (the published window holds only a few songs); empty with no jam.
+    pub fn jam_added(&self) -> HashMap<String, String> {
+        self.inner.lock().hosted.as_ref().map(|h| h.jam.added().clone()).unwrap_or_default()
+    }
+
     /// Leaves the jam this guest profile is in; the app then drops the profile.
     pub async fn jam_leave(&self) -> Result<(), NetError> {
         transport::get(&*self.client.transport, self.relay_url("noriRemote.leave", &[]), 0).await.map(|_| ())
@@ -989,12 +1004,6 @@ fn deliver(client: &Client, who: &[(String, String)], o: Out) {
 }
 
 impl Remote {
-    /// The member who asked for song `id` in the jam this device hosts, for "added by" on a queue too
-    /// long for the published window.
-    pub fn jam_added_by(&self, id: &str) -> Option<String> {
-        self.inner.lock().hosted.as_ref()?.jam.added_by(id)
-    }
-
     fn out(&self, o: Out) {
         if let Some(out) = &*self.out.lock() {
             let _ = out.send(o);
@@ -1131,6 +1140,10 @@ impl Remote {
             };
             let Some(got) = self.get(url, POLL_TIMEOUT_MS) else { return };
             let received = clock::now_us();
+            // Asked for before the rooms changed: its seq may pass events of a room it did not cover.
+            if self.inner.lock().generation != generation {
+                return;
+            }
             match (support(&got), got) {
                 (Some(RelaySupport::Supported), Ok(body)) => {
                     self.inner.lock().relay = RelaySupport::Supported;

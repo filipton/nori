@@ -116,9 +116,9 @@ class Nav(private val c: NavHostController, private val sheet: PlayerSheet) {
     fun downloads() { if (c.currentDestination?.route == "downloads") { if (sheet.isOpen) sheet.close() } else go("downloads") }
     /** A settings group, optionally landing on one row of it (from the settings search). */
     fun settingsGroup(id: String, key: String = "") = go("settings/$id?key=${Uri.encode(key)}")
-    fun player() = sheet.open()
+    /** Opens the player, on [panel] if one is asked for. */
+    fun player(panel: Panel? = null) { sheet.panelAsked = panel; sheet.open() }
     fun equalizer() = go("equalizer")
-    fun jam() = go("jam")
     fun autoEq() = go("autoeq")
     fun back() { if (sheet.isOpen) sheet.close() else c.popBackStack() }
     /**
@@ -253,7 +253,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
 
         // The debug build's test bridge drives the app through this (src/debug TestDriver.kt); every
         // other build has an empty one (src/noTest), so a release carries none of it.
-        dev.nori.music.app.TestDriver(controller, nav, sheet, settings, actions, player)
+        dev.nori.music.app.TestDriver(controller, nav, sheet, settings, actions, player) { devicesOpen = true }
 
         // Whether the beat model also reads what is being downloaded, when the settings say to ask.
         BeatsQuestion(actions)
@@ -273,7 +273,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
                     "search" -> nav.tab(route)
                     // A widget's song: the player, or the player turned to the lyrics.
                     "player" -> nav.player()
-                    "lyrics" -> { sheet.lyricsAsked = true; nav.player() }
+                    "lyrics" -> nav.player(Panel.LYRICS)
                     dev.nori.music.app.SHUFFLE_SONGS -> actions.shuffleAll()
                     dev.nori.music.app.SHUFFLE_ALBUMS -> actions.shuffleAlbums()
                     else -> nav.go(route)
@@ -418,7 +418,6 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
                     page("smart/{id}") { SmartScreen(it.arguments!!.getString("id")!!, actions) }
                     page("smartEdit/{id}") { SmartEditScreen(it.arguments!!.getString("id")!!.let { i -> if (i == "new") "" else i }) }
                     page("stats") { StatsScreen() }
-                    page("jam") { JamScreen() }
                     page("perf") { dev.nori.music.app.PerfHooks.recorder?.Page() }
                     page("downloads") { DownloadsScreen(actions) }
                     page("folder/{id}") { FolderScreen(it.arguments!!.getString("id")!!, actions) }
@@ -477,6 +476,8 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             }
             SongMenu(menuSong, actions, onDismiss = { menuSong = null }, player = player.takeIf { menuFromPlayer })
             DevicesHost(devicesOpen) { devicesOpen = false }
+            // A jam that would not start says so, whichever menu started it.
+            if (prefs.jam) JamFailures()
         }
         }
     }

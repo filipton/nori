@@ -38,6 +38,28 @@ struct RoomState {
     members: Vec<Member>,
     /// (seq, from, to, body).
     events: Vec<(u64, String, Option<String>, Body)>,
+    /// The seq of its last change: a held poll wakes only for a room it listens to.
+    touched: u64,
+}
+
+/// Marks room `room` changed at `seq`.
+fn room_touched(hub: &mut Hub, room: &str, seq: u64) {
+    if let Some(r) = hub.rooms.get_mut(room) {
+        r.touched = seq;
+    }
+}
+
+/// The rooms a poll by `caller` from device `dev` listens to: its account's and the jams it hosts, or a
+/// guest's jam.
+fn listened(hub: &Hub, caller: &Caller, dev: &str) -> Vec<String> {
+    match caller {
+        Caller::Account(user) => {
+            let hosted = hub.rooms.iter().filter(|(_, r)| r.host.as_ref().is_some_and(|(u, d)| u == user && d == dev)).map(|(id, _)| id.clone());
+            std::iter::once(format!("u:{user}")).chain(hosted).collect()
+        }
+        Caller::Guest(room, _) => vec![room.clone()],
+        Caller::Invited(_) => Vec::new(),
+    }
 }
 
 #[derive(Default)]
@@ -164,14 +186,16 @@ impl Relay {
             _ => return,
         }
         hub.seq += 1;
+        let seq = hub.seq;
+        room_touched(&mut hub, &format!("u:{user}"), seq);
         self.wake();
     }
 
-    /// A held poll's wait: until there is news after `since`, or the relay closed.
-    async fn news(&self, since: u64) {
+    /// A held poll's wait: until there is news after `since` in one of `rooms`, or the relay closed.
+    async fn news(&self, since: u64, rooms: &[String]) {
         std::future::poll_fn(|cx| {
             let hub = self.hub.lock();
-            if hub.seq > since || hub.closed {
+            if rooms.iter().any(|r| hub.rooms.get(r).is_some_and(|s| s.touched > since)) || hub.closed {
                 return Poll::Ready(());
             }
             self.waiting.lock().push(cx.waker().clone());
@@ -203,21 +227,20 @@ impl Relay {
         };
         let dev = p.get("dev").cloned().unwrap_or_default();
         let mut hub = self.hub.lock();
-        let bump = |hub: &mut Hub| {
+        let bump = |hub: &mut Hub, room: &str| {
             hub.seq += 1;
+            let seq = hub.seq;
+            room_touched(hub, room, seq);
             self.wake();
         };
         match (endpoint, &caller) {
             ("noriRemote.poll", _) => {
-                let (me, rooms) = match &caller {
-                    Caller::Account(user) => {
-                        let account = format!("u:{user}");
-                        let hosted = hub.rooms.iter().filter(|(_, r)| r.host.as_ref() == Some(&(user.clone(), dev.clone()))).map(|(id, _)| id.clone());
-                        (dev.clone(), std::iter::once(account).chain(hosted).collect::<Vec<_>>())
-                    }
-                    Caller::Guest(room, member) => (member.clone(), vec![room.clone()]),
+                let me = match &caller {
+                    Caller::Account(_) => dev.clone(),
+                    Caller::Guest(_, member) => member.clone(),
                     Caller::Invited(_) => unreachable!(),
                 };
+                let rooms = listened(&hub, &caller, &dev);
                 let since = p.get("since").and_then(|s| s.parse::<u64>().ok());
                 let mine = |hub: &Hub| -> Vec<Event> {
                     rooms
@@ -244,7 +267,7 @@ impl Relay {
                     Caller::Invited(_) => unreachable!(),
                 };
                 let seq = hub.seq + 1;
-                let state = hub.rooms.entry(room).or_default();
+                let state = hub.rooms.entry(room.clone()).or_default();
                 if let Some(s) = out.state {
                     // A device publishing in its account's room serves, polled or not yet.
                     if !state.jam && !state.members.iter().any(|m| m.id == from) {
@@ -259,29 +282,29 @@ impl Relay {
                 if let Some(b) = out.body {
                     state.events.push((seq, from, out.to, b));
                 }
-                bump(&mut hub);
+                bump(&mut hub, &room);
                 json(serde_json::json!({ "seq": seq }))
             }
             ("noriRemote.open", Caller::Account(user)) => {
                 let (room, invite) = (format!("j{}", self.key()), self.key());
                 let host = Member { id: dev.clone(), name: p["name"].clone(), kind: DeviceKind::Phone, state: None };
-                hub.rooms.insert(room.clone(), RoomState { jam: true, host: Some((user.clone(), dev)), members: vec![host], events: Vec::new() });
+                hub.rooms.insert(room.clone(), RoomState { jam: true, host: Some((user.clone(), dev)), members: vec![host], ..Default::default() });
                 hub.keys.insert(invite.clone(), (room.clone(), None));
-                bump(&mut hub);
+                bump(&mut hub, &room);
                 json(serde_json::json!({ "room": room, "invite": invite }))
             }
             ("noriRemote.join", Caller::Invited(room)) => {
                 let (member, key) = (format!("m{}", self.key()), self.key());
                 hub.keys.insert(key.clone(), (room.clone(), Some(member.clone())));
                 hub.rooms.get_mut(room).unwrap().members.push(Member { id: member.clone(), name: p["name"].clone(), kind: DeviceKind::Guest, state: None });
-                bump(&mut hub);
+                bump(&mut hub, room);
                 json(serde_json::json!({ "room": room, "member": member, "key": key }))
             }
             ("noriRemote.kick", Caller::Account(_)) => {
                 let (room, member) = (p["room"].clone(), p["member"].clone());
                 hub.keys.retain(|_, (r, m)| !(*r == room && m.as_deref() == Some(member.as_str())));
                 hub.rooms.get_mut(&room).unwrap().members.retain(|m| m.id != member);
-                bump(&mut hub);
+                bump(&mut hub, &room);
                 json(serde_json::json!({}))
             }
             ("ping" | "star" | "unstar", _) => br#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.to_vec(),
@@ -317,7 +340,9 @@ impl Transport for Relay {
         if endpoint == "noriRemote.poll" {
             self.arrived(&params);
             if let (Some(since), Some("1")) = (params.get("since").and_then(|s| s.parse().ok()), params.get("hold").map(String::as_str)) {
-                self.news(since).await;
+                // The rooms it listens to as it arrives: a jam opened meanwhile is not one of them.
+                let rooms = self.caller(endpoint, &params).map(|c| listened(&self.hub.lock(), &c, params.get("dev").map_or("", String::as_str))).unwrap_or_default();
+                self.news(since, &rooms).await;
             }
         }
         let json = match endpoint {
@@ -577,7 +602,10 @@ fn a_jam_takes_requests_through_its_host() {
     dee.remote.clone().jam_act(Op::Decide { request: pending.request, accept: true });
     assert_eq!(host.told(), Op::Add { songs: vec![wish], next: false });
     gus.until("the request gone", |r| r.jam_view().filter(|v| v.pending.is_empty()));
-    assert_eq!(host.remote.jam_added_by("ext-deezer-song-9").as_deref(), Some("Gus"), "added by who asked, not who accepted");
+    let added = host.remote.jam_added();
+    assert_eq!(added.get("ext-deezer-song-9").map(String::as_str), Some("Gus"), "added by who asked, not who accepted");
+    assert_eq!(added.get("s5").map(String::as_str), Some("Dee"));
+    assert_eq!(added.len(), 2, "the host's own songs are nobody's: {added:?}");
 
     // A guest cannot accept, and is told.
     gus.remote.clone().jam_act(Op::Request { song: Song { id: "s4".into(), ..Default::default() } });
@@ -586,10 +614,36 @@ fn a_jam_takes_requests_through_its_host() {
     assert_eq!(gus.until("the refusal", |r| r.jam_view().and_then(|v| v.refused)), Refusal::NotAllowed);
 
     host.remote.clone().jam_close();
-    assert_eq!(host.remote.jam_added_by("s5"), None, "no jam, no names");
+    assert!(host.remote.jam_added().is_empty(), "no jam, no names");
+    assert!(host.remote.jam_view().is_none(), "the host is in no jam once it ended it");
 
     let provider_asked: Vec<String> = relay.asked().into_iter().filter(|a| a.contains("ext-")).collect();
     assert!(provider_asked.is_empty(), "the relay never looked the provider song up: {provider_asked:?}");
+    relay.close();
+}
+
+#[test]
+fn a_jam_opened_while_a_poll_is_held_hears_its_first_request() {
+    let relay = Relay::new();
+    let host = Device::account(&relay, DeviceKind::Phone, "Host");
+    host.playing(&["s1"], 0);
+    // The devices sheet is open: a poll of the account's room is held when the jam opens from it.
+    host.remote.clone().watch(true);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while relay.waiting.lock().is_empty() {
+        assert!(Instant::now() < deadline, "the held poll");
+        std::thread::yield_now();
+    }
+    let link = block_on(host.remote.clone().jam_open()).unwrap();
+
+    // A guest asks at once, before anything else happens in the account's room.
+    let pass = block_on(jam_join(relay.clone(), link, "Gus".into())).unwrap();
+    let gus = Device::new(&relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, "Gus");
+    gus.remote.clone().watch(true);
+    gus.until("the host's state", |r| r.jam_view().filter(|v| v.queue.is_some()));
+    gus.remote.clone().jam_act(Op::Request { song: Song { id: "s2".into(), title: "S2".into(), ..Default::default() } });
+    let asked = host.until("Gus's request", |r| r.jam_view().and_then(|v| v.pending.first().cloned()));
+    assert_eq!((asked.from_name.as_str(), asked.song.id.as_str()), ("Gus", "s2"));
     relay.close();
 }
 

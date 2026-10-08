@@ -8,7 +8,7 @@
 #   tools/feature-e2e.sh [--only <section>,...] [--list]     NORI_E2E_SERVER=local for tools/dev-server.sh
 #   (the real server's credentials come from ~/.music.pass: url, blank, user, password)
 source "$(dirname "$0")/e2e-lib.sh"
-SECTIONS="lyrics motion notification album-page bridge download-notification downloads foryou dac device-sound remote"
+SECTIONS="lyrics motion notification album-page bridge download-notification downloads foryou dac device-sound remote jam"
 OPT_IN="lyrics-services"
 list_sections
 json() { python3 -c "import sys,json;d=json.load(sys.stdin)['subsonic-response'];print(eval('d$1',{'d':d}))" 2>/dev/null; }
@@ -17,17 +17,21 @@ json() { python3 -c "import sys,json;d=json.load(sys.stdin)['subsonic-response']
 ui() { adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1; adb shell cat /sdcard/ui.xml 2>/dev/null; }
 pill() { ui | grep -oE 'text="(Play|Pause)"' | head -1 | cut -d'"' -f2; }
 pill_is() { [ "$(pill)" = "$1" ]; }
-tapnode() { # $1 = text|content-desc, $2 = that value
+tapnode() { # $1 = text|content-desc, $2 = that value, $3 = which of several (the first by default)
   local c; c=$(ui | python3 -c "
 import sys,re
+found=[]
 for m in re.finditer(r'<node[^>]*>', sys.stdin.read()):
     a=re.search('$1=\"([^\"]*)\"', m.group(0))
     if a and a.group(1)=='$2':
         b=[int(v) for v in re.findall(r'\d+', re.search(r'bounds=\"([^\"]*)\"', m.group(0)).group(1))]
-        print((b[0]+b[2])//2, (b[1]+b[3])//2); break")
+        found.append('%d %d' % ((b[0]+b[2])//2, (b[1]+b[3])//2))
+if len(found) >= ${3:-1}: print(found[${3:-1}-1])")
   [ -n "$c" ] || return 1
   adb shell input tap $c
 }
+on_screen() { ui | grep -q -- "$1"; }
+off_screen() { ! on_screen "$1"; }
 starred_on_server() { api getStarred2 | python3 -c "
 import sys,json
 d=json.load(sys.stdin)['subsonic-response'].get('starred2',{})
@@ -402,6 +406,61 @@ if want remote; then section "playing on another device: the terminal client on 
     check "the Mac paused" wait_until 10 bash -c "tmux capture-pane -p -t $peer | grep -q '▶'"
     "$app" set remoteControl false >/dev/null
     tmux kill-session -t "$peer"
+  fi
+fi
+
+if want jam; then section "a jam hosted here: started from the devices sheet, guests ask, the host decides by tapping"
+  # The jam's roles, requests, who added what, and that a provider's song is not looked up before it is
+  # accepted are the core's (crates/core tests/remote.rs). Here: the jam in the player, its queue and the
+  # devices sheet, the invite's link, requests arriving live and decided by tapping, and the accepted song
+  # playing, against octo-fiesta's real relay (NORI_E2E_JAM, the local one on 5274) with two guests on this
+  # Mac (tools/jam-guest.py).
+  jam_server=${NORI_E2E_JAM:-http://localhost:5274}
+  if [ "$NORI_E2E_SERVER" != local ] || ! curl -sf "$jam_server/rest/noriRemote.poll?u=admin&p=admin&v=1.16.1&c=e2e&f=json&dev=e2e-probe" | grep -q seq; then
+    echo "  NOTE  needs the local server, and octo-fiesta with the relay in front of it at $jam_server"
+  else
+    app_jam=$(echo "$jam_server" | sed 's#localhost#10.0.2.2#')
+    lib_song=$(song_id "Far Song Two"); first=$(song_id "Long Track 04")
+    # A provider's song for Dee to ask for: only its id and words travel, nothing streams it.
+    provider=$(curl -s "$jam_server/rest/search3?u=admin&p=admin&v=1.16.1&c=e2e&f=json&songCount=20&albumCount=0&artistCount=0&query=love" | python3 -c "
+import sys,json
+print(next(json.dumps({'id':s['id'],'title':s['title'],'artist':s['artist'],'coverArt':s.get('coverArt'),'duration':s['duration'],'isExternal':True}) for s in json.load(sys.stdin)['subsonic-response']['searchResult3']['song'] if s['id'].startswith('ext-')))")
+    "$app" login "$app_jam|admin|admin" >/dev/null; wait_for server "$app_jam" 30 >/dev/null
+    "$app" set jam true >/dev/null
+    "$app" play "song:$first" >/dev/null; sounds 20
+    "$app" open devices >/dev/null
+    check "the devices sheet offers to start a jam" wait_until 10 on_screen 'text="Start a Jam"'
+    tapnode text "Start a Jam"
+    check "the player opens on the queue, the jam over it" wait_until 15 on_screen 'text="End Jam"'
+    check "nobody listens yet" on_screen 'text="no one yet"'
+    tapnode text Invite
+    check "Invite shows the code and the link" wait_until 10 on_screen 'text="Copy link"'
+    link=$(ui | grep -oE 'text="nori://jam[^"]*"' | head -1 | cut -d'"' -f2 | sed 's/&amp;/\&/g')
+    echo "     the invite: $link"
+    adb shell input keyevent KEYCODE_BACK
+    guests="$here/../build/e2e-jam"; mkdir -p "$guests"
+    python3 "$here/jam-guest.py" "$link" Gus "{\"id\":\"$lib_song\",\"title\":\"Far Song Two\",\"artist\":\"Nori E2E Two\",\"duration\":170}" > "$guests/gus.log" 2>&1 & gus=$!
+    check "Gus's request comes in by itself" wait_until 20 on_screen 'text="Asked by Gus"'
+    python3 "$here/jam-guest.py" "$link" Dee "$provider" > "$guests/dee.log" 2>&1 & dee=$!
+    check "and Dee's under it" wait_until 20 on_screen 'text="Asked by Dee"'
+    check "the provider's song says accepting downloads it" on_screen 'text="Downloaded to your server if accepted"'
+    check "the header counts both" on_screen 'text="2 listening"'
+    tapnode content-desc Refuse 2
+    check "Refuse takes Dee's request away" wait_until 10 off_screen 'text="Asked by Dee"'
+    tapnode content-desc Accept
+    queued() { [[ "$(field upNext)" == *"$lib_song"* ]]; }
+    check "Accept queues Gus's song" wait_until 15 queued
+    check "nothing of the provider's was queued" bash -c "! '$app' state | grep -q 'ext-'"
+    check "its row says Gus added it" wait_until 10 on_screen 'content-desc="Added by Gus"'
+    check "Gus sees it in the host's queue, by him" wait_until 15 grep -q "Far Song Two by Gus" "$guests/gus.log"
+    tapnode text "Far Song Two"
+    check "and it plays" wait_for title "Far Song Two" 15
+    tapnode text "End Jam"
+    check "End Jam ends it for the guests" wait_until 15 grep -q "the jam is over" "$guests/gus.log"
+    check "and here" wait_until 10 bash -c "'$app' remote view | grep -q 'no jam'"
+    kill $gus $dee 2>/dev/null
+    "$app" set jam false >/dev/null
+    "$app" login "$APP_URL|$USER|$PASS" >/dev/null; wait_for server "$APP_URL" 30 >/dev/null
   fi
 fi
 

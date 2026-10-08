@@ -173,6 +173,10 @@ is Android glue and stays on the device. 50 moved, 60 stay.
   system can show. `tools/feature-e2e.sh --only remote` checks that with the terminal client on this Mac as the
   other device (local server only): the emulator cannot hear the Mac's mDNS, so the door is handed to the app
   (`app.sh remote "found" "<host>|<port>|<txt>"`, read with `dns-sd`), then `remote pick`, `remote mirror`.
+  `--only jam` hosts a jam on the emulator against octo-fiesta's real relay (the local one on 5274,
+  `NORI_E2E_JAM`) with two guests on this Mac (`tools/jam-guest.py`, the relay's frames in Python): what only
+  the device shows is the jam in the player, its queue and the devices sheet, requests arriving live and
+  decided by tapping (the accessibility tree's Accept and Refuse), and the accepted song playing.
 - The car: the tree, the rows a pick plays, search and spoken requests are nori-core's (car.rs, tested there);
   media3's session, the items Android Auto reads and the pictures the car opens through CarArtProvider are
   Android's. A debug build walks it as a car connects, through a media browser: `app.sh do "car tree home"`,

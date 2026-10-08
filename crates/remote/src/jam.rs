@@ -127,6 +127,11 @@ impl Jam {
         self.added.get(id).cloned()
     }
 
+    /// Who asked for each song that came in through the jam, by song id.
+    pub fn added(&self) -> &HashMap<String, String> {
+        &self.added
+    }
+
     pub fn state(&self) -> JamState {
         JamState {
             members: std::iter::once(&self.host).chain(&self.members).cloned().collect(),

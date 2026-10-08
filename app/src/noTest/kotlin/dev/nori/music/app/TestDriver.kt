@@ -26,4 +26,4 @@ const val traceLyrics: Boolean = false
 @Suppress("UNUSED_PARAMETER")
 @Composable
 @NonRestartableComposable
-fun TestDriver(controller: NavHostController, nav: Nav, sheet: PlayerSheet, settings: SettingsViewModel, actions: ActionsViewModel, player: PlayerViewModel) {}
+fun TestDriver(controller: NavHostController, nav: Nav, sheet: PlayerSheet, settings: SettingsViewModel, actions: ActionsViewModel, player: PlayerViewModel, devices: () -> Unit) {}

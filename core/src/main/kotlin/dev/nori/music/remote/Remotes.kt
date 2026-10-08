@@ -11,8 +11,10 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.SettableFuture
 import dev.nori.music.Nori
 import dev.nori.music.ffi.Client
+import dev.nori.music.ffi.JamView
 import dev.nori.music.ffi.Mirror
 import dev.nori.music.ffi.Playing
+import dev.nori.music.ffi.RelaySupport
 import dev.nori.music.ffi.Remote
 import dev.nori.music.ffi.RemoteMe
 import dev.nori.music.ffi.RemotePlayer
@@ -46,6 +48,21 @@ class Remotes(private val context: Context, private val nori: Nori) {
      */
     val mirror: StateFlow<Mirror?> = _mirror.asStateFlow()
 
+    private val _jam = MutableStateFlow<JamView?>(null)
+
+    /** The jam this phone hosts or is a guest in, as of the core's last change; null without one. */
+    val jam: StateFlow<JamView?> = _jam.asStateFlow()
+
+    private val _jamAdded = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    /** Who asked for each song of the hosted jam's queue, by song id (the core's `jam_added`). */
+    val jamAdded: StateFlow<Map<String, String>> = _jamAdded.asStateFlow()
+
+    private val _relay = MutableStateFlow(RelaySupport.UNKNOWN)
+
+    /** Whether the server relays: jams and devices elsewhere only then. */
+    val relay: StateFlow<RelaySupport> = _relay.asStateFlow()
+
     /** The playback service's player while it runs; ops go to it, starting the service when it is not. */
     @Volatile var service: RemotePlayer? = null
 
@@ -67,7 +84,7 @@ class Remotes(private val context: Context, private val nori: Nori) {
     private val shown = object : RemoteShown {
         override fun changed() {
             _changes.update { it + 1 }
-            work { mirrorNow() }
+            work { mirrorNow(); jamNow() }
         }
     }
 
@@ -75,6 +92,15 @@ class Remotes(private val context: Context, private val nori: Nori) {
     private fun mirrorNow(then: () -> Unit = {}) {
         val m = remote?.active()
         main.post { _mirror.value = m; then() }
+    }
+
+    /** Reads the jam and the relay again (on the worker) and shows them. */
+    private fun jamNow() {
+        val r = remote
+        val j = r?.jamView()
+        val added = if (j?.hosting == true) r.jamAdded() else emptyMap()
+        val relay = r?.relay() ?: RelaySupport.UNKNOWN
+        main.post { _jam.value = j; _jamAdded.value = added; _relay.value = relay }
     }
 
     /**
@@ -124,7 +150,7 @@ class Remotes(private val context: Context, private val nori: Nori) {
         remote?.stop()
         remote = null
         client = null
-        main.post { _mirror.value = null }
+        main.post { _mirror.value = null; _jam.value = null; _jamAdded.value = emptyMap(); _relay.value = RelaySupport.UNKNOWN }
     }
 
     /** Whether the playback service is up: the device is controllable then, while remote control is on. */
