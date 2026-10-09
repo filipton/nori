@@ -380,19 +380,111 @@ impl Feed {
     }
 }
 
-/// Where a written stretch ends: ring frames and sink frames since the flush, and song time.
+/// Where a written stretch ends: ring frames and sink frames since the flush, song time, the ring
+/// frames slipped in (less those left out, [`Slipper`]), and how far they put the place back, song ms.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct Stretch {
     ring: u64,
     sink: u64,
     media: f64,
+    slipped: f64,
+    back_ms: f64,
 }
 
 /// The point at ring frame `ring` between stretch ends `a` and `b`.
 fn between(a: Stretch, b: Stretch, ring: u64) -> Stretch {
     let span = b.ring.saturating_sub(a.ring);
     let k = if span > 0 { (ring.clamp(a.ring, b.ring) - a.ring) as f64 / span as f64 } else { 0.0 };
-    Stretch { ring, sink: a.sink + ((b.sink - a.sink) as f64 * k).round() as u64, media: a.media + (b.media - a.media) * k }
+    let on = |a: f64, b: f64| a + (b - a) * k;
+    Stretch { ring, sink: a.sink + ((b.sink - a.sink) as f64 * k).round() as u64, media: on(a.media, b.media), slipped: on(a.slipped, b.slipped), back_ms: on(a.back_ms, b.back_ms) }
+}
+
+/// Plays a little slower or faster than the music written without touching it otherwise: one frame in
+/// so many is slipped in (the midpoint of its neighbours) or left out (merged into the next), spread
+/// evenly. A frame in a thousand is a millisecond a second, which no ear hears. The song's time stays
+/// exact: the frames slipped count in the ring's map ([`Stretch::slipped`]).
+#[derive(Default)]
+struct Slipper {
+    /// Frames slipped in per frame written (left out when below zero).
+    rate: f64,
+    /// Frames to slip in besides (left out when below zero), at most `close` more per frame.
+    owed: f64,
+    close: f64,
+    due: f64,
+    /// The last frame put in the ring, and a frame left out to merge into the next.
+    last: Vec<f32>,
+    left: Vec<f32>,
+    leaving: bool,
+    out: Vec<f32>,
+}
+
+impl Slipper {
+    fn active(&self) -> bool {
+        self.rate != 0.0 || self.owed != 0.0 || self.leaving
+    }
+
+    /// What decides how often frames are slipped: written at one pattern, the ring's map is a line.
+    fn pattern(&self) -> (f64, bool) {
+        (self.rate, self.owed != 0.0)
+    }
+
+    fn restart(&mut self) {
+        self.due = 0.0;
+        self.leaving = false;
+        self.last.fill(0.0);
+    }
+
+    /// Runs `samples` (whole frames of `ch`, each sample's float by `value`) into `self.out`; the frames
+    /// slipped in less those left out.
+    fn run<T: Copy>(&mut self, samples: &[T], ch: usize, value: impl Fn(T) -> f32) -> i64 {
+        self.out.clear();
+        self.last.resize(ch, 0.0);
+        self.left.resize(ch, 0.0);
+        let mut slipped = 0;
+        for frame in samples.chunks_exact(ch) {
+            let paid = self.owed.clamp(-self.close, self.close);
+            self.owed -= paid;
+            self.due += self.rate + paid;
+            if self.due <= -1.0 && !self.leaving {
+                self.due += 1.0;
+                slipped -= 1;
+                for (l, &v) in self.left.iter_mut().zip(frame) {
+                    *l = value(v);
+                }
+                self.leaving = true;
+                continue;
+            }
+            let slip = self.due >= 1.0;
+            if slip {
+                self.due -= 1.0;
+                slipped += 1;
+            }
+            let leaving = std::mem::take(&mut self.leaving);
+            let (left, last) = (&self.left, &mut self.last);
+            let v = |c: usize| if leaving { (left[c] + value(frame[c])) / 2.0 } else { value(frame[c]) };
+            if slip {
+                for (c, l) in last.iter().enumerate() {
+                    self.out.push((l + v(c)) / 2.0);
+                }
+            }
+            for (c, l) in last.iter_mut().enumerate() {
+                *l = v(c);
+                self.out.push(*l);
+            }
+        }
+        slipped
+    }
+}
+
+/// How far [`Slipper`] put the place back (on when below zero), song ms ([`RingTrack::slipped`]): in
+/// what the device played since the flush, in what is written and not heard yet, and still owed to
+/// what is written next; and how long until what is written now is heard, ms.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Slipped {
+    pub heard_ms: f64,
+    pub ahead_ms: f64,
+    pub owed_ms: f64,
+    pub written_ms: f64,
 }
 
 /// The [`Track`] under the engine's sink: the ring, the device, and the map from ring frames to sink
@@ -417,6 +509,11 @@ pub(crate) struct RingTrack {
     written: Stretch,
     /// After a cut: ring frames blended so far from what was there into what is written, of how many.
     blend: Option<(u64, u64)>,
+    slipper: Slipper,
+    /// How the last mark's stretch was slipped ([`Slipper::pattern`]).
+    marked_slip: (f64, bool),
+    /// Song ms a ring frame carried in what was last written.
+    frame_ms: f64,
     /// Where the last cut's blend starts (ring frames since the flush), and what the slots held there
     /// before it: a cut at the same frame blends from that, not from the blend.
     blend_at: Option<u64>,
@@ -472,6 +569,9 @@ impl RingTrack {
             blend: None,
             blend_at: None,
             blended_from: Vec::new(),
+            slipper: Slipper::default(),
+            marked_slip: (0.0, false),
+            frame_ms: 0.0,
             playing: false,
             float: None,
             failed: None,
@@ -522,11 +622,31 @@ impl RingTrack {
         self.blend_at = None;
     }
 
-    /// Starts the resampler afresh (after a flush or cut).
+    /// Starts the resampler and the slipper afresh (after a flush or cut).
     fn restart_resampler(&mut self) {
         if let Some(r) = self.resampler.as_mut() {
             r.reset();
         }
+        self.slipper.restart();
+    }
+
+    /// Frames slipped in per frame written from now on (left out when below zero), and as many more as
+    /// put the place back by `owed_ms` (song ms), at most `close` more per frame: the music plays that
+    /// much slower, its song time kept exact. What is written already keeps its own.
+    pub(crate) fn set_slip(&mut self, rate: f64, owed_ms: f64, close: f64) {
+        self.slipper.rate = rate;
+        // Nothing written yet, nothing is owed to it.
+        self.slipper.owed = if self.frame_ms > 0.0 { owed_ms / self.frame_ms } else { 0.0 };
+        self.slipper.close = close;
+    }
+
+    /// What is slipped in (less what is left out), ms: of what the device has played since the flush, and
+    /// of what is written and not heard yet; and how long until all that is written is heard, ms.
+    pub(crate) fn slipped(&mut self) -> Slipped {
+        let Some(d) = self.device else { return Slipped::default() };
+        let now = self.played_at();
+        let ms = |frames: f64| frames * 1000.0 / d.rate as f64;
+        Slipped { heard_ms: now.back_ms, ahead_ms: self.written.back_ms - now.back_ms, owed_ms: self.slipper.owed * self.frame_ms, written_ms: ms(self.written.ring.saturating_sub(now.ring) as f64) }
     }
 
     /// Tells the device of a pending flush, with the fade asked for since.
@@ -732,7 +852,7 @@ fn slots_from(r: &Ring, at: u64, from: &[f32]) {
 
 /// Writes `samples` (whole frames, each sample's float by `value`) into `r` from frame `at`, the first
 /// frames of a `blend` (done, of) blended into what the slots held; returns the frames written.
-fn put<const W: usize>(r: &Ring, at: u64, blend: Option<(u64, u64)>, samples: &[[u8; W]], value: impl Fn([u8; W]) -> f32) -> u64 {
+fn put<T: Copy>(r: &Ring, at: u64, blend: Option<(u64, u64)>, samples: &[T], value: impl Fn(T) -> f32) -> u64 {
     let ch = r.channels;
     let frames = (samples.len() / ch) as u64;
     debug_assert!(at + frames <= r.read_at() + r.frames, "the ring overruns its reader");
@@ -811,9 +931,14 @@ impl Track for RingTrack {
         let (Some(r), Some(d), Some(f)) = (self.ring.clone(), self.device, self.format) else { return };
         let w = r.write.load(Ordering::Relaxed);
         let ch = d.channels;
-        let frames = match (self.resampler.as_mut(), f.encoding) {
-            (None, Encoding::Pcm16) => put(&r, w, self.blend, data.as_chunks::<2>().0, |b| i16::from_le_bytes(b) as f32 / 32768.0),
-            (None, Encoding::Float) => put(&r, w, self.blend, data.as_chunks::<4>().0, f32::from_le_bytes),
+        let pcm16 = |b: [u8; 2]| i16::from_le_bytes(b) as f32 / 32768.0;
+        let slipping = self.slipper.active();
+        let pattern = self.slipper.pattern();
+        let (frames, slipped) = match (self.resampler.as_mut(), f.encoding) {
+            (None, Encoding::Pcm16) if slipping => (0, self.slipper.run(data.as_chunks::<2>().0, ch, pcm16)),
+            (None, Encoding::Pcm16) => (put(&r, w, self.blend, data.as_chunks::<2>().0, pcm16), 0),
+            (None, Encoding::Float) if slipping => (0, self.slipper.run(data.as_chunks::<4>().0, ch, f32::from_le_bytes)),
+            (None, Encoding::Float) => (put(&r, w, self.blend, data.as_chunks::<4>().0, f32::from_le_bytes), 0),
             (Some(rs), _) => {
                 let in_frames = data.len() / f.frame_bytes();
                 let need = ((in_frames as u64 * d.rate as u64 / f.rate as u64) as usize + 4) * ch * 4;
@@ -821,24 +946,38 @@ impl Track for RingTrack {
                     self.converted.resize(need, 0);
                 }
                 let Some((_, made)) = rs.process(data, f.encoding.media3(), &mut self.converted, Encoding::FLOAT) else { return };
-                put(&r, w, self.blend, self.converted[..made].as_chunks::<4>().0, f32::from_le_bytes)
+                let samples = self.converted[..made].as_chunks::<4>().0;
+                if slipping {
+                    (0, self.slipper.run(samples, ch, f32::from_le_bytes))
+                } else {
+                    (put(&r, w, self.blend, samples, f32::from_le_bytes), 0)
+                }
             }
         };
+        let frames = if slipping { put(&r, w, self.blend, &self.slipper.out, |v| v) } else { frames };
         self.blend = self.blend.and_then(|(done, of)| (done + frames < of).then_some((done + frames, of)));
         r.write.store(w + frames, Ordering::Release);
         let before = self.written;
-        self.written = Stretch { ring: before.ring + frames, sink: before.sink + (data.len() / f.frame_bytes()) as u64, media: before.media + media };
+        let sink = before.sink + (data.len() / f.frame_bytes()) as u64;
+        // Song time per ring frame carrying it.
+        let carried = frames as i64 - slipped;
+        if carried > 0 && media > 0.0 {
+            self.frame_ms = media * 1000.0 / f.rate as f64 / carried as f64;
+        }
+        let back_ms = before.back_ms + slipped as f64 * self.frame_ms;
+        self.written = Stretch { ring: before.ring + frames, sink, media: before.media + media, slipped: before.slipped + slipped as f64, back_ms };
         if let Some(u) = self.untold.as_mut() {
             u.written += frames;
             if u.written as i64 >= d.rate as i64 * TELL_FLUSH_US / 1_000_000 {
                 self.tell_flush();
             }
         }
-        // Merge stretches at the same pace (at 1x without resampling a song is one mark).
-        let pace = |a: Stretch, b: Stretch| (b.media - a.media) / (b.ring - a.ring).max(1) as f64;
+        // Merge stretches at the same pace and slip (at 1x without resampling a song is one mark).
+        let pace = |a: Stretch, b: Stretch| (b.media - a.media) / ((b.ring - a.ring) as f64 - (b.slipped - a.slipped)).max(1.0);
         let start = self.marks.len().checked_sub(2).map_or(self.from, |i| self.marks[i]);
+        let same = pattern == self.slipper.pattern() && pattern == std::mem::replace(&mut self.marked_slip, pattern);
         match self.marks.back_mut() {
-            Some(last) if frames > 0 && (pace(start, *last) - media / frames as f64).abs() < 1e-3 => *last = self.written,
+            Some(last) if frames > 0 && same && (pace(start, *last) - pace(before, self.written)).abs() < 1e-3 => *last = self.written,
             _ => self.marks.push_back(self.written),
         }
     }
@@ -1041,6 +1180,32 @@ mod tests {
         let mut out = vec![1f32; 10];
         assert_eq!(f.pull(&mut out), 0);
         assert!(out.iter().all(|&v| v == 0.0), "silence when there is nothing");
+    }
+
+    /// Frames slipped in or left out play the music slower or faster, and the place heard is the song
+    /// frame the device plays, to the frame.
+    #[test]
+    fn slips_keep_the_place_heard_exact() {
+        // (frames slipped per frame, ms owed, frames written for 3000 of song).
+        for (rate, owed_ms, written) in [(0.01, 0.0, 3030), (-0.01, 0.0, 2970), (0.0, 50.0, 3050), (0.0, -50.0, 2950)] {
+            let (mut t, mut f, _) = by_hand();
+            t.write(&pcm(&[0; 1]), 1.0);
+            t.set_slip(rate, owed_ms, 0.02);
+            // Each sample says which song frame it is.
+            let song: Vec<i16> = (1..3001).collect();
+            for chunk in song.chunks(100) {
+                t.write(&pcm(chunk), 100.0);
+            }
+            assert!(t.written.ring.abs_diff(written + 1) <= 1, "{rate} {owed_ms}: {} written", t.written.ring);
+            let mut out = vec![0f32; 37];
+            while f.pull(&mut out) == out.len() {
+                let heard = out[out.len() - 1] * 32768.0;
+                let off = t.played_media() - 1.0 - heard as f64;
+                assert!(off.abs() <= 1.0, "{rate} {owed_ms}: at {heard} the place is {off} frames off");
+            }
+            let slipped = t.written.ring as f64 - 3001.0;
+            assert!((t.slipped().heard_ms - slipped).abs() < 1e-6, "{rate} {owed_ms}: {:?}", t.slipped());
+        }
     }
 
     #[test]

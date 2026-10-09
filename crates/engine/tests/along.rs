@@ -126,8 +126,8 @@ fn mix(at_ms: i64, secs: f64, tempo: f32, ramp_s: f64) -> Plan {
     }
 }
 
-/// The simulated app, planning a fixed mix out of `a` (or none).
-struct Planned(sim::App, Option<Plan>);
+/// The simulated app, planning a fixed mix out of `a` (or none), keeping the engine's log lines.
+struct Planned(sim::App, Option<Plan>, Arc<Mutex<Vec<String>>>);
 
 impl Host for Planned {
     fn plan_for(&mut self, id: &str) -> Option<Plan> {
@@ -140,6 +140,7 @@ impl Host for Planned {
         self.0.analysed(id, a, channels, frames, rate)
     }
     fn log(&mut self, message: &str) {
+        self.2.lock().push(message.to_string());
         self.0.log(message)
     }
     fn now_ms(&self) -> i64 {
@@ -184,6 +185,15 @@ struct Pull {
     resumes: usize,
     /// When each block was pulled, ns.
     pulled_at: Option<i64>,
+    /// How much faster than the clock the card plays (its own crystal), parts per million.
+    ppm: f64,
+}
+
+impl Pull {
+    /// How long the card takes to play a block, ns.
+    fn block_ns(&self) -> i64 {
+        (BLOCK as f64 * 1e9 / RATE as f64 / (1.0 + self.ppm / 1e6)) as i64
+    }
 }
 
 impl common::Device for Pull {
@@ -192,7 +202,7 @@ impl common::Device for Pull {
     }
 
     fn tick(&mut self, now_ns: i64) -> bool {
-        self.due_ns = now_ns + BLOCK as i64 * 1_000_000_000 / RATE as i64;
+        self.due_ns = now_ns + self.block_ns();
         let Some(feed) = self.feed.as_mut() else { return false };
         if !self.playing || (feed.available() < BLOCK && !feed.ending()) {
             return false;
@@ -236,7 +246,7 @@ impl AudioOutput for Card {
         let Some(at) = p.pulled_at else { return 0 };
         let now = self.1.now_ns();
         let delay = if now < p.resumed_ns + p.unsure_ns { 0 } else { p.delay_ns };
-        let block = BLOCK as i64 * 1_000_000_000 / RATE as i64;
+        let block = p.block_ns();
         ((at + block + delay - now).clamp(0, block + delay) / 1000) as u64
     }
     fn takes_float(&mut self) -> bool {
@@ -256,7 +266,7 @@ impl Card {
         let p = self.0.lock();
         let at = p.pulls.partition_point(|&(t, _)| t <= ns).checked_sub(1)?;
         let (t, first) = p.pulls[at];
-        let frame = first + ((ns - t) as f64 * RATE as f64 / 1e9) as usize;
+        let frame = first + ((ns - t) as f64 * RATE as f64 * (1.0 + p.ppm / 1e6) / 1e9) as usize;
         let phases: Vec<(f64, f64)> = (frame.checked_sub(2 * AROUND)?..frame)
             .map(|f| p.heard.get(f * 2 + 1).map(|v| ((f as f64 - frame as f64), (*v as f64 * 32768.0 + SAW) / (2.0 * SAW) * SAW_MS as f64)))
             .collect::<Option<_>>()?;
@@ -286,6 +296,7 @@ struct Rig {
     said: Arc<Mutex<Vec<Said>>>,
     events: Arc<Mutex<Vec<(i64, Event)>>>,
     net: Arc<Net>,
+    logs: Arc<Mutex<Vec<String>>>,
 }
 
 impl Rig {
@@ -303,7 +314,8 @@ impl Rig {
         let config = Config { settings, ..Config::default() };
         let library = Songs::new(songs, clock.clone());
         let net = library.1.clone();
-        let engine = Engine::start_on(library, Planned(app, plan), queue, Box::new(card.clone()), None, config, clock.clone(), move |e| {
+        let logs: Arc<Mutex<Vec<String>>> = Arc::default();
+        let engine = Engine::start_on(library, Planned(app, plan, logs.clone()), queue, Box::new(card.clone()), None, config, clock.clone(), move |e| {
             let ns = e_clock.now_ns();
             // As a host tells its remote: the status on the events that move the place.
             if matches!(e, Event::Placed { .. } | Event::Position { .. } | Event::Song { .. } | Event::State(_)) {
@@ -326,7 +338,7 @@ impl Rig {
         let engine = Arc::new(engine);
         let _ = slot.set(engine.clone());
         engine.queue_changed();
-        Rig { engine, time: Stepper::new(clock, card.0.clone()), card, said, events, net }
+        Rig { engine, time: Stepper::new(clock, card.0.clone()), card, said, events, net, logs }
     }
 
     fn now_ns(&self) -> i64 {
@@ -772,9 +784,9 @@ fn a_guest_that_stops_following_plays_on_its_own_again() {
 
 /// An output that says it holds less than it does at first (an Android track before its first timestamp):
 /// what it says steps by its 80 ms delay a while after it starts. The guest waits for it to settle, then
-/// trims its way into step instead of starting again.
+/// slips its way into step instead of starting again.
 #[test]
-fn a_guest_whose_output_settles_late_trims_rather_than_restarts() {
+fn a_guest_whose_output_settles_late_slips_rather_than_restarts() {
     let a = song(60.0, 1, None);
     for unsure_ms in [300, 3_000] {
         let mut jam = Jam::new(&[("a", &a)], None, Settings::default(), &two_ways()[..1]);
@@ -788,5 +800,37 @@ fn a_guest_whose_output_settles_late_trims_rather_than_restarts() {
         jam.join(0);
         in_step(&mut jam, 25_000, 6_000, 2.5, 5.0);
         assert_eq!(jam.guests[0].rig.card.0.lock().resumes, 1, "unsure {unsure_ms} ms: started once");
+    }
+}
+
+/// Guests whose cards play a little fast or slow against their clocks (each its own crystal), for five
+/// minutes of steady playback: each starts once, never runs dry, and stays within a few ms of the host.
+#[test]
+fn guests_with_drifting_cards_stay_in_step_for_minutes() {
+    let a = song(330.0, 1, None);
+    let mut jam = Jam::new(&[("a", &a)], None, Settings::default(), &two_ways());
+    jam.guests[0].rig.card.0.lock().ppm = 300.0;
+    jam.guests[1].rig.card.0.lock().ppm = -150.0;
+    jam.host.engine.play_at(0, 0);
+    jam.run(1_000);
+    jam.join(0);
+    jam.join(1);
+    jam.run(10_000);
+    // Five minutes, each guest read every other five seconds.
+    let mut gaps = [Gaps::default(), Gaps::default()];
+    for _ in 0..30 {
+        for (g, gaps) in gaps.iter_mut().enumerate() {
+            gaps.0.extend(jam.gaps(g, 5_000).0);
+        }
+    }
+    for (g, gaps) in gaps.iter().enumerate() {
+        let rig = &jam.guests[g].rig;
+        let logs = rig.logs.lock();
+        let starts = logs.iter().filter(|l| l.starts_with("following: Start")).count();
+        let slips = logs.iter().filter(|l| l.starts_with("following: Slip")).count();
+        let underruns = rig.engine.status().underruns;
+        eprintln!("guest {g}: {gaps}; {starts} starts, {slips} slips, {underruns} underruns");
+        assert_eq!((starts, underruns), (1, 0), "guest {g}: started once, never ran dry");
+        assert!(gaps.within(2_500, 1.5, 3.0), "guest {g}: {gaps}");
     }
 }

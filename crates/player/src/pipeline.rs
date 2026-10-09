@@ -711,6 +711,15 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.sink.fill();
     }
 
+    /// The output made again from the first frame it can still replace, for a change in the track.
+    pub fn remake(&mut self) {
+        if let Some((input, output)) = self.sink.remake() {
+            self.app.spliced("track", Splice { input, output });
+        }
+        self.burst.restart();
+        self.sink.fill();
+    }
+
     /// Speed and pitch as set.
     pub fn speed(&self) -> (f32, f32) {
         let s = self.sink.settings();

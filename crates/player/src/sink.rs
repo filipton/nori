@@ -444,6 +444,12 @@ impl<T: Track> Sink<T> {
         at
     }
 
+    /// Makes the output again, the same, from the first frame the track can still replace: what the
+    /// track does to it from there on changed. Returns where it starts, as [`Sink::change`].
+    pub fn remake(&mut self) -> Option<(u64, u64)> {
+        self.splice()
+    }
+
     /// Scales the input kept in each timeline range by its ratio (ReplayGain changed), heard from the
     /// first frame the track can still replace.
     pub fn rescale(&mut self, ranges: &[(Range<i64>, f32)]) -> Option<(u64, u64)> {

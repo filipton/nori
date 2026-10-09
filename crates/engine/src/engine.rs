@@ -651,7 +651,7 @@ const READY_US: i64 = 100_000;
 const LOOK_AFTER_START_US: i64 = 500_000;
 /// While a start waits for its song's bytes, it looks this often, ms.
 const WAIT_FOR_START_MS: i64 = 250;
-/// A start this late (the thread woke late) still plays, its gap trimmed away; later, it starts again, µs.
+/// A start this late (the thread woke late) still plays, its gap slipped away; later, it starts again, µs.
 const START_LATE_US: i64 = 15_000;
 /// A start's fades, ms.
 const START_FADE_MS: i64 = 10;
@@ -1338,6 +1338,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         let was = self.following.is_some();
         let Some(l) = leading else {
             self.following = None;
+            self.p.sink.track.set_slip(0.0, 0.0, 0.0);
             self.p.priming = false;
             self.p.engine.plans = Plans::Own;
             if was {
@@ -1414,7 +1415,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             // To the µs where the player's own place is the one heard.
             let audible = self.p.heard().id.is_none() && !s.mixing && s.index == self.p.current();
             let ms = if audible { self.p.position_us() as f64 / 1000.0 } else { s.position_ms as f64 };
-            Here { playing, at: s.index.map(|i| (i, ms)), mixing: s.mixing, held_us: self.p.sink.track.latency_us() }
+            Here { playing, at: s.index.map(|i| (i, ms)), mixing: s.mixing, slipped: self.p.sink.track.slipped(), held_ms: self.p.sink.track.latency_us() as f64 / 1000.0 }
         };
         let step = f.step(now_us, here);
         if step != follow::Step::Stay {
@@ -1424,11 +1425,16 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         match step {
             follow::Step::Stay => {}
             follow::Step::Pause => self.pause(now, self.settings.fade_ms),
-            follow::Step::Trim(t) => {
-                f.trim = t;
-                self.apply(self.settings.clone());
+            follow::Step::Slip { rate, owed_ms, remake } => {
+                f.slip = rate;
+                self.p.sink.track.set_slip(rate, owed_ms, follow::CLOSE_MAX);
+                if remake {
+                    self.p.remake();
+                }
             }
             follow::Step::Start { index, ms, at_us } => {
+                // What was owed was owed to the music before.
+                self.p.sink.track.set_slip(f.slip, 0.0, follow::CLOSE_MAX);
                 let playing = here.playing;
                 f.starting = Some(follow::Starting { at_us, jump: playing.then_some((index, ms, now_us + START_FADE_MS * 1000)) });
                 if playing {
@@ -1451,7 +1457,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         self.ramp(Some(0.0), 0.0, 0);
     }
 
-    /// Until a start's next moment, or a trim has closed its gap, ms.
+    /// Until a start's next moment, or the next look at the place heard, ms.
     fn wake_to_start(&self) -> Option<i64> {
         let f = self.following.as_ref()?;
         let at = match f.starting {
@@ -1513,9 +1519,9 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     fn apply(&mut self, s: Settings) {
         let hi_res = s.hi_res && self.p.sink.track.takes_float();
         let bit_perfect = self.facts.bit_perfect;
-        // Following, the leader's speed (trimmed) plays, its jumps skip silence, and nothing is offloaded.
+        // Following, the leader's speed plays, its jumps skip silence, and nothing is offloaded.
         let (speed, pitch, skip_silence) = match &self.following {
-            Some(f) => (self.led_speed.0 * (1.0 + f.trim) as f32, self.led_speed.1 * (1.0 + f.trim) as f32, false),
+            Some(_) => (self.led_speed.0, self.led_speed.1, false),
             None => (s.speed, s.pitch, s.skip_silence),
         };
         let offload = s.offload && self.off.is_some() && self.following.is_none();
