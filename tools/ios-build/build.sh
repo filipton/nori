@@ -30,7 +30,10 @@ fetch() {
 if [ ! -d "$sdk" ]; then
   echo "sdk: $sdk_name from theos/sdks …"
   fetch "https://github.com/theos/sdks/releases/download/master-146e41f/$sdk_name.tar.xz" sdk.tar.xz "$sdk_sha256"
-  tar -xJf "$cache/sdk.tar.xz" -C "$cache"
+  # Unpacked aside and moved in whole: an unpacking that failed leaves no SDK that later runs would trust.
+  rm -rf "$sdk.part" && mkdir -p "$sdk.part"
+  tar -xJf "$cache/sdk.tar.xz" -C "$sdk.part"
+  mv "$sdk.part/$sdk_name" "$sdk" && rmdir "$sdk.part"
   rm "$cache/sdk.tar.xz"
 fi
 
@@ -69,8 +72,11 @@ clang -target arm64-apple-ios$target_os -isysroot "$sdk" -fobjc-arc -O2 -I ios/S
   -c ios/Sound/NoriAudio.m -o "$obj/NoriAudio.o"
 
 # lld, not Apple's new linker, whose binaries crash on iOS 12.5 (docs/ipod.md): dyld info, no chained fixups.
+# No retain sinking or release hoisting: a compiler that is not Apple's moves the releases of the empty array
+# singleton ahead of its retains, which only an immortal one survives, and iOS 12's is not (abort in malloc).
 swiftc \
   -target arm64-apple-ios$target_os -sdk "$sdk" -resource-dir "$obj/swift" -O -wmo \
+  -Xllvm -sil-disable-pass=retain-sinking -Xllvm -sil-disable-pass=release-hoisting \
   -module-name nori \
   -import-objc-header ios/Sources/nori_ios.h \
   ios/Sources/*.swift \
