@@ -58,11 +58,13 @@ pub struct Settings {
     /// Most ReplayGain may turn a song up, dB (`nori_player::gain`): above 0 songs are read as floats
     /// with the limiter behind them, and a song turned up stays off offload.
     pub gain_boost_db: f32,
+    /// Previous goes to the song before even well into this one (`nori_player::queue::previous_restarts`).
+    pub previous_always_skips: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { sound: Sound::default(), speed: 1.0, pitch: 1.0, skip_silence: false, fade_ms: 0, hi_res: false, max_rate: 0, offload: false, crossfade_s: 0, auto_mix: false, gain_boost_db: 0.0 }
+        Settings { sound: Sound::default(), speed: 1.0, pitch: 1.0, skip_silence: false, fade_ms: 0, hi_res: false, max_rate: 0, offload: false, crossfade_s: 0, auto_mix: false, gain_boost_db: 0.0, previous_always_skips: false }
     }
 }
 
@@ -1841,7 +1843,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             },
             Switched::Previous => {
                 let before = self.p.queue.read(|q| q.previous_of(at, q.repeat()));
-                (if previous_restarts(ms, before.is_some(), false) { at } else { before.unwrap_or(at) }, 0)
+                (if previous_restarts(ms, before.is_some(), self.settings.previous_always_skips) { at } else { before.unwrap_or(at) }, 0)
             }
             // Paused, the music is made again on play.
             Switched::ToChip | Switched::ToCpu => return,
@@ -1918,7 +1920,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             }
             Switched::Previous => {
                 let has_previous = self.p.queue.read(|q| q.previous().is_some());
-                if previous_restarts(self.position_ms(), has_previous, false) {
+                if previous_restarts(self.position_ms(), has_previous, self.settings.previous_always_skips) {
                     self.seek(0);
                 } else if let Some(n) = self.p.queue.read(Playlist::previous) {
                     self.jump(n, 0);

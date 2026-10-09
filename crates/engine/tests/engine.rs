@@ -550,6 +550,28 @@ fn paused_jump_fetches_nothing() {
     assert!(rig.wait_for(5, |r| { let s = r.engine.status(); s.state == State::Playing && s.index == Some(2) }), "{:?}", rig.engine.status());
 }
 
+/// Well into a song, previous restarts it, or goes to the song before with "previous always skips";
+/// playing or paused.
+#[test]
+fn previous_follows_the_setting() {
+    let (a, b) = (music(20.0, 97), music(20.0, 98));
+    let mut wrong = Vec::new();
+    for (always_skips, paused, want) in [(false, false, 1), (true, false, 0), (false, true, 1), (true, true, 0)] {
+        let rig = Rig::new(&[("a", &a), ("b", &b)], prefs_off(), Settings { previous_always_skips: always_skips, ..Settings::default() });
+        rig.engine.play_at(1, 0);
+        assert!(rig.wait_for(10, |r| r.engine.status().position_ms > 5_000));
+        if paused {
+            rig.engine.pause();
+            assert!(rig.wait_for(5, |r| r.engine.status().state == State::Paused));
+        }
+        rig.engine.previous();
+        if !rig.wait_for(5, |r| { let s = r.engine.status(); s.index == Some(want) && s.position_ms < 3_000 }) {
+            wrong.push(format!("always skips {always_skips}, paused {paused}: {:?}", rig.engine.status()));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
 #[test]
 fn pause_at_end_waits_on_next_song() {
     let (a, b) = (music(30.0, 95), music(4.0, 96));

@@ -1285,6 +1285,7 @@ pub fn settings(s: &StoredPrefs, volume_db: f64) -> Settings {
         crossfade_s: s.crossfade_sec,
         auto_mix: s.auto_mix,
         gain_boost_db: if s.gain_prefs().boosts() { s.gain_boost_db } else { 0.0 },
+        previous_always_skips: s.previous_always_skips,
     }
 }
 
