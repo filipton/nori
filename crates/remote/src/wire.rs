@@ -75,6 +75,8 @@ pub struct Answer {
     pub events: Vec<Event>,
     /// The relay lets a jam's members stream the songs of its host's queue: they may listen along.
     pub along: bool,
+    /// The relay tells its time ([`crate::clock`], `nori/time`): a jam's members can share its clock.
+    pub time: bool,
 }
 
 /// The events this version reads; one from a newer client (an op it does not know) is passed over
@@ -266,6 +268,9 @@ pub struct DeviceState {
     /// When the listener heard `position_ms`, on the device's clock ([`crate::clock::now_us`]); None from
     /// an older device, whose reader takes the position as of when the state arrived.
     pub at_us: Option<i64>,
+    /// The relay's clock less the device's, µs, as the device learned it: a jam's guest who knows the
+    /// relay's clock too reads `at_us` on its own without learning the host's.
+    pub server_us: Option<i64>,
     /// Song ms per real ms at `at_us`: the speed times a mix's tempo; None from an older device (1).
     pub rate: Option<f32>,
     /// The current list index.

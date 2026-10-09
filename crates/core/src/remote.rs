@@ -63,6 +63,9 @@ const POLL_TIMEOUT_MS: u32 = HOLD_MS + 15_000;
 /// A published position this close to where the last one runs on to is not sent again.
 const POSITION_SLACK_MS: i64 = 5;
 
+/// The relay's clock learned this close to as last published is not sent again, µs.
+const SERVER_SLACK_US: i64 = 1_000;
+
 /// Time exchanges of a burst go out this far apart: more than most round trips through a relay, so an
 /// answer does not wait behind the one before.
 const BURST_GAP_MS: u64 = 250;
@@ -311,6 +314,15 @@ enum Via {
     Door,
     /// The door of a nearby device this one watches.
     Peer(String),
+}
+
+/// Whose clock the time keeper learns.
+#[derive(Debug, Clone, PartialEq)]
+enum Timed {
+    /// Another device's, reached through the jam room `room` (None: the account's, or its door).
+    Device { id: String, room: Option<String> },
+    /// The relay's (`nori/time`).
+    Server,
 }
 
 /// Where a send goes: the relay, or a nearby door's address.
@@ -681,6 +693,9 @@ struct Inner {
     waiting: HashMap<ThreadId, Waker>,
     /// The relay lets jam guests stream the host's queue ([`Answer::along`]).
     relay_along: bool,
+    /// The relay tells its time ([`Answer::time`]), and how its clock stands to this one's.
+    relay_time: bool,
+    server_clock: ClockSync,
     /// This guest listens along.
     listen: Option<Listen>,
 }
@@ -760,15 +775,33 @@ impl Inner {
         Some((room, room.members.iter().find(|m| m.state.as_ref().is_some_and(|s| s.jam.is_some()))))
     }
 
-    /// The device whose clock is learned, and the jam room to reach it through: the one mirrored, or the
-    /// host of the jam this guest listens along to.
-    fn timed_device(&self) -> Option<(String, Option<String>)> {
+    /// Whose clock is learned now: the mirrored device's; the relay's while hosting a jam whose guests
+    /// listen along, or listening along to a host that knows it; else that host's, through the jam's room.
+    fn timed(&self) -> Option<Timed> {
         if let Some(m) = &self.mirror {
-            return Some((m.id.clone(), None));
+            return Some(Timed::Device { id: m.id.clone(), room: None });
+        }
+        if self.hosts_along() {
+            return self.relay_time.then_some(Timed::Server);
         }
         self.listen.as_ref()?;
         let (room, host) = self.joined()?;
-        Some((host?.id.clone(), Some(room.room.clone())))
+        let host = host?;
+        if self.relay_time && host.state.as_ref().is_some_and(|s| s.server_us.is_some()) {
+            return Some(Timed::Server);
+        }
+        Some(Timed::Device { id: host.id.clone(), room: Some(room.room.clone()) })
+    }
+
+    /// Whether another clock is to be learned now: a guest listening along plays by its host's, the
+    /// screen on or off; a host by the relay's for its guests.
+    fn wants_time(&self) -> bool {
+        self.listen.is_some() || (self.sight == Sight::Screen && self.mirror.as_ref().is_some_and(Mirrored::playing)) || (self.hosts_along() && self.relay_time)
+    }
+
+    /// This device hosts a jam whose guests may listen along.
+    fn hosts_along(&self) -> bool {
+        self.hosted.as_ref().is_some_and(|h| h.along)
     }
 
     /// Where this guest's listening along stands.
@@ -783,9 +816,12 @@ impl Inner {
     }
 
     /// When the jam's host heard `st`'s place, on this device's clock, once its clock is known here
-    /// (listening along).
+    /// (listening along): through the relay's clock when both know it, else as learned from the host.
     fn heard_at(&self, st: &DeviceState) -> Option<i64> {
-        Some(st.at_us? - self.listen.as_ref()?.clock.offset_at(clock::now_us())?)
+        let l = self.listen.as_ref()?;
+        let now = clock::now_us();
+        let server = st.server_us.zip(self.server_clock.offset_at(now)).map(|(host, here)| host - here);
+        Some(st.at_us? + server.or_else(|| l.clock.offset_at(now).map(|o| -o))?)
     }
 
     /// The host's playback as this guest plays along with it; None while it should not, or the host's
@@ -1176,6 +1212,7 @@ impl Remote {
             // A poll held from before listens to the account's room only: polled again, now with the jam's.
             i.end_relay_poll();
         }
+        self.retime();
         self.publish();
         self.keep_polling();
         self.hear_plans();
@@ -1189,26 +1226,21 @@ impl Remote {
             let Some(h) = i.hosted.as_mut() else { return };
             h.along = on;
         }
+        self.retime();
         self.hear_plans();
         self.publish();
     }
 
     /// Listens along with the jam this guest is in (plays its host's music here, in step), or only shows it.
     pub fn listen(self: Arc<Self>, on: bool) {
-        let keeper = {
+        {
             let mut i = self.inner.lock();
             if i.listen.is_some() == on {
                 return;
             }
             i.listen = on.then(Listen::default);
-            i.timing += 1;
-            on.then_some(i.timing)
-        };
-        self.timing.notify_all();
-        if let Some(generation) = keeper {
-            let me = self.clone();
-            self.spawn("nori-remote-clock", move || me.keep_time(generation));
         }
+        self.retime();
         self.keep_polling();
         self.follow_lead();
     }
@@ -1222,6 +1254,7 @@ impl Remote {
             i.rooms.retain(|r| r.room != h.jam.room);
             h.jam.room
         };
+        self.retime();
         self.hear_plans();
         self.out(Out::Get(self.relay_url("noriRemote.close", &[("room", room)])));
         self.keep_polling();
@@ -1833,6 +1866,10 @@ impl Remote {
             i.relay_down = false;
             i.you = a.you;
             i.relay_along = a.along;
+            // The time keeper may wait for it.
+            if std::mem::replace(&mut i.relay_time, a.time) != a.time {
+                self.timing.notify_all();
+            }
             for m in a.rooms.iter().flat_map(|r| &r.members) {
                 let before = i.rooms.iter().flat_map(|r| &r.members).find(|o| o.id == m.id).map(|o| &o.state);
                 let played = before.into_iter().chain([&m.state]).flatten().any(|s| s.playing);
@@ -1873,32 +1910,43 @@ impl Remote {
 
     /// Makes `to` the active device (None: this one), and follows it while it is another.
     fn set_active(self: &Arc<Self>, to: Option<String>) {
-        let keeper = {
+        {
             let mut i = self.inner.lock();
             if i.mirror.as_ref().map(|m| &m.id) == to.as_ref() {
                 return;
             }
             i.mirror = to.map(Mirrored::new);
-            i.timing += 1;
-            i.mirror.is_some().then_some(i.timing)
-        };
-        self.timing.notify_all();
-        if let Some(generation) = keeper {
-            let me = self.clone();
-            self.spawn("nori-remote-clock", move || me.keep_time(generation));
         }
+        self.retime();
         self.follow_active();
         self.keep_polling();
     }
 
-    /// While the device mirrored stays the same (`generation`), learns how its clock stands to this one's:
-    /// a burst of time exchanges, then one every [`clock::EVERY_US`], only while it plays on screen
-    /// (paused its playhead stands still, and off screen nothing shows it to the millisecond: nothing wakes
-    /// for it). Through its door when it is near, else through the relay, whose answer comes with a poll.
+    /// What needs another clock changed: the time keeper starts again for it, or ends.
+    fn retime(self: &Arc<Self>) {
+        let generation = {
+            let mut i = self.inner.lock();
+            i.timing += 1;
+            (i.mirror.is_some() || i.listen.is_some() || i.hosts_along()).then_some(i.timing)
+        };
+        self.timing.notify_all();
+        if let Some(generation) = generation {
+            let me = self.clone();
+            self.spawn("nori-remote-clock", move || me.keep_time(generation));
+        }
+    }
+
+    /// While what needs another clock stays the same (`generation`), learns how that clock stands to this
+    /// one's: a burst of time exchanges, then one every [`clock::EVERY_US`]. The mirrored device's only
+    /// while it plays on screen (paused its playhead stands still, and off screen nothing shows it to the
+    /// millisecond: nothing wakes for it), through its door when it is near, else through the relay,
+    /// whose answer comes with a poll. A jam's host and its guests listening along each learn the relay's
+    /// clock when it tells it, the guests the host's otherwise.
     fn keep_time(self: Arc<Self>, generation: u64) {
         let mut sent = 0;
+        let mut last = None;
         loop {
-            let (id, room, link) = {
+            let (target, link) = {
                 let mut i = self.inner.lock();
                 let mut wait = |gap: Duration| {
                     let until = Instant::now() + gap;
@@ -1907,15 +1955,14 @@ impl Remote {
                 if sent > 0 {
                     wait(if sent < clock::BURST { Duration::from_millis(BURST_GAP_MS) } else { Duration::from_micros(clock::EVERY_US as u64) });
                 }
-                // A guest listening along plays by the host's clock, the screen on or off.
-                while i.timing == generation && i.listen.is_none() && !(i.sight == Sight::Screen && i.mirror.as_ref().is_some_and(Mirrored::playing)) {
+                while i.timing == generation && !i.wants_time() {
                     self.timing.wait(&mut i);
                 }
                 if i.timing != generation {
                     return;
                 }
                 // A jam's host is known once the relay has answered.
-                let Some((id, room)) = i.timed_device() else {
+                let Some(target) = i.timed() else {
                     if i.listen.is_none() {
                         return;
                     }
@@ -1923,15 +1970,31 @@ impl Remote {
                     while i.timing == generation && !self.timing.wait_until(&mut i, until).timed_out() {}
                     continue;
                 };
-                let link = match i.peers.iter().find(|p| p.member.id == id).filter(|_| room.is_none()) {
-                    Some(p) => Some(Link::Lan(p.base())),
-                    None => (i.relay != RelaySupport::Unsupported).then_some(Link::Relay),
+                let door = match &target {
+                    Timed::Device { id, room: None } => i.peers.iter().find(|p| p.member.id == *id).map(|p| Link::Lan(p.base())),
+                    _ => None,
                 };
-                (id, room, link)
+                (target, door.or((i.relay != RelaySupport::Unsupported).then_some(Link::Relay)))
             };
+            // Another clock: its burst again.
+            if last.as_ref() != Some(&target) {
+                sent = 0;
+                last = Some(target.clone());
+            }
             sent += 1;
-            match link {
-                Some(Link::Lan(base)) => {
+            match (target, link) {
+                (Timed::Server, _) => {
+                    let base = self.client.profile.read().url.trim_end_matches('/').to_string();
+                    let Some(got) = self.get(format!("{base}/nori/time?t1={}", clock::now_us()), 5_000, |_| true) else { return };
+                    let t4 = clock::now_us();
+                    if let Some(Body::Clock { t1, t2, t3 }) = got.ok().and_then(|b| serde_json::from_slice(&b).ok()) {
+                        self.inner.lock().server_clock.add(clock::Exchange { t1, t2, t3, t4 });
+                        self.follow_lead();
+                        self.publish();
+                        self.shown.changed();
+                    }
+                }
+                (Timed::Device { id, .. }, Some(Link::Lan(base))) => {
                     let Some((_, secret)) = self.client.core.account.read().clone() else { return };
                     let t1 = clock::now_us();
                     let url = format!("{base}{}", lan::signed(&secret, "GET", &format!("/rest/noriRemote.time?dev={}&t1={t1}", self.id), b"", db::now_ms()));
@@ -1943,11 +2006,11 @@ impl Remote {
                         self.shown.changed();
                     }
                 }
-                Some(Link::Relay) => {
+                (Timed::Device { id, room }, Some(Link::Relay)) => {
                     let command = Body::Command { id: self.next_id(), op: Box::new(Op::Clock { t1: clock::now_us() }) };
                     self.out(Out::send(Link::Relay, Outgoing { room, to: Some(id), body: Some(command), ..Default::default() }));
                 }
-                None => {}
+                (Timed::Device { .. }, None) => {}
             }
         }
     }
@@ -1961,9 +2024,8 @@ impl Remote {
             let Some(id) = i.mirror.as_ref().map(|m| m.id.clone()) else { return };
             if !i.listed(&id) {
                 i.mirror = None;
-                i.timing += 1;
                 drop(i);
-                self.timing.notify_all();
+                self.retime();
                 self.keep_polling();
                 return;
             }
@@ -2149,11 +2211,13 @@ impl Remote {
             handed_to: i.handed_to.clone(),
             obeyed: i.obeyed.clone(),
             at_us: None,
+            server_us: None,
             rate: Some(p.rate),
         };
         let now = clock::now_us();
         st.position_ms = i.position_at_of(&st, now);
         st.at_us = Some(now);
+        st.server_us = i.server_clock.offset_at(now).filter(|_| i.hosts_along());
         st
     }
 
@@ -2244,7 +2308,11 @@ fn note(i: &mut Inner, from: &str, id: u64, refusal: Option<Refusal>) {
 fn same_but_time(last: &DeviceState, now: &DeviceState) -> bool {
     let elapsed_ms = now.at_us.zip(last.at_us).map_or(0, |(now, last)| (now - last) / 1000);
     let expected = nori_remote::position_now(last, elapsed_ms);
-    (expected - now.position_ms).abs() <= POSITION_SLACK_MS && DeviceState { position_ms: now.position_ms, seq: now.seq, at_us: now.at_us, ..last.clone() } == *now
+    let server_same = match (last.server_us, now.server_us) {
+        (Some(a), Some(b)) => (a - b).abs() <= SERVER_SLACK_US,
+        (a, b) => a == b,
+    };
+    (expected - now.position_ms).abs() <= POSITION_SLACK_MS && server_same && DeviceState { position_ms: now.position_ms, seq: now.seq, at_us: now.at_us, server_us: now.server_us, ..last.clone() } == *now
 }
 
 #[cfg(test)]

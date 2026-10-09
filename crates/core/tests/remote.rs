@@ -95,7 +95,13 @@ struct Relay {
     down: std::sync::atomic::AtomicBool,
     /// Lets jam guests stream the host's queue (listening along).
     along: std::sync::atomic::AtomicBool,
+    /// Tells its time at `nori/time`; its clock reads [`SERVER_SKEW_US`] ahead.
+    time: std::sync::atomic::AtomicBool,
+    /// The lagging device's answers to time exchanges reach the relay this late, ms (0: as its other sends).
+    answers_late: AtomicU64,
 }
+
+const SERVER_SKEW_US: i64 = 9_000_000;
 
 fn decode(v: &str) -> String {
     let b = v.as_bytes();
@@ -126,7 +132,7 @@ const GUEST_ENDPOINTS: &[&str] = &["ping", "search3", "getCoverArt", "getSong", 
 
 impl Relay {
     fn new() -> Arc<Relay> {
-        Arc::new(Relay { hub: Mutex::default(), waiting: Mutex::default(), next: AtomicU64::new(1), absent: Default::default(), lagging: Mutex::new(None), lagged: AtomicU64::new(0), door_late: Default::default(), leave_late: Default::default(), down: Default::default(), along: std::sync::atomic::AtomicBool::new(true) })
+        Arc::new(Relay { hub: Mutex::default(), waiting: Mutex::default(), next: AtomicU64::new(1), absent: Default::default(), lagging: Mutex::new(None), lagged: AtomicU64::new(0), door_late: Default::default(), leave_late: Default::default(), down: Default::default(), along: std::sync::atomic::AtomicBool::new(true), time: Default::default(), answers_late: AtomicU64::new(0) })
     }
 
     fn absent() -> Arc<Relay> {
@@ -149,12 +155,22 @@ impl Relay {
         let Some((skew, slow)) = self.lagging.lock().as_ref().filter(|(d, ..)| d == dev).map(|(_, s, l)| (*s, *l)) else { return body };
         let mut out: Outgoing = serde_json::from_str(body.as_deref()?).unwrap();
         let k = self.lagged.fetch_add(1, Ordering::Relaxed);
-        let late = if out.state.is_some() { 250 } else if k % 2 == 1 { 0 } else { 60 + k * 53 % 110 };
+        let answers = self.answers_late.load(Ordering::Relaxed);
+        let late = match &out.body {
+            _ if out.state.is_some() => 250,
+            Some(Body::Clock { .. }) if answers > 0 => answers,
+            _ if k % 2 == 1 => 0,
+            _ => 60 + k * 53 % 110,
+        };
         if slow {
             std::thread::sleep(Duration::from_millis(late));
         }
         if let Some(at) = out.state.as_mut().and_then(|s| s.at_us.as_mut()) {
             *at += skew;
+        }
+        // The relay's clock less the device's, as its own clock reads.
+        if let Some(server) = out.state.as_mut().and_then(|s| s.server_us.as_mut()) {
+            *server -= skew;
         }
         if let Some(Body::Clock { t2, t3, .. }) = &mut out.body {
             *t2 += skew;
@@ -279,6 +295,7 @@ impl Relay {
                     rooms: rooms.iter().filter_map(|r| hub.rooms.get(r).map(|s| Room { room: r.clone(), jam: s.jam, members: s.members.clone() })).collect(),
                     events: mine(&hub),
                     along: self.along.load(Ordering::Relaxed),
+                    time: self.time.load(Ordering::Relaxed),
                 };
                 json(answer)
             }
@@ -356,6 +373,12 @@ impl Transport for Relay {
             .await;
         }
         let unreachable = || Err(TransportError::Failed { kind: FailureKind::Connect, detail: Some("unreachable".into()) });
+        if let Some(t1) = request.url.strip_prefix(&format!("{SERVER}/nori/time?t1=")).filter(|_| self.time.load(Ordering::Relaxed)) {
+            self.hub.lock().asked.push("nori/time".into());
+            let now = clock::now_us() + SERVER_SKEW_US;
+            let body = Body::Clock { t1: t1.parse().unwrap(), t2: now, t3: now };
+            return Ok(TransportResponse { status: 200, body: json(body) });
+        }
         let Some(rest) = request.url.strip_prefix(&format!("{SERVER}/rest/")).filter(|_| !self.down.load(Ordering::Relaxed)) else {
             return unreachable();
         };
@@ -1286,6 +1309,43 @@ fn picking_a_device_moves_the_active_ones_playback() {
         }
         relay.close();
     }
+}
+
+/// A relay that tells its time: a jam's host and its guests each learn its clock, and a guest plays the
+/// host's place by it, however late the host's words and answers reach it (a guest's own exchanges with
+/// the host come out as lopsided as those delays).
+#[test]
+fn jam_guests_listen_along_by_the_relays_clock() {
+    let relay = Relay::new();
+    relay.time.store(true, Ordering::Relaxed);
+    let host = Device::account(&relay, DeviceKind::Phone, "Host");
+    // The host's clock reads four seconds behind the guest's; its words reach the relay late, and its
+    // answers to the guest's time exchanges all a fifth of a second late.
+    relay.lag(&host.remote.id(), -4_000_000);
+    relay.answers_late.store(200, Ordering::Relaxed);
+    host.playing(&["s1", "s2"], 0);
+    let link = block_on(host.remote.clone().jam_open()).unwrap();
+    host.remote.clone().jam_along(true);
+    let pass = block_on(jam_join(relay.clone(), link, "Gus".into())).unwrap();
+    let gus = Device::new(&relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, "Gus");
+    let leads = Arc::new(Leads::default());
+    gus.remote.follow_with(Some(leads.clone()));
+    gus.remote.clone().listen(true);
+
+    let said = clock::now_us();
+    host.remote.clone().played(Playing { playing: true, position_ms: 30_000, rate: 1.25, index: Some(0), volume: None, ..Default::default() });
+    gus.until("the host's place", |_| leads.last().flatten().filter(|l| l.ms >= 30_000.0));
+    // Both bursts of time exchanges are over within three seconds.
+    let settled = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < settled {
+        let _ = gus.news.recv_timeout(Duration::from_millis(100));
+    }
+    let l = leads.last().flatten().expect("a lead");
+    let now = clock::now_us();
+    let off = l.ms + (now - l.at_us) as f64 / 1000.0 * l.rate - (30_000.0 + (now - said) as f64 / 1000.0 * 1.25);
+    assert!(off.abs() <= 5.0, "the guest plays {off:.1} ms off the host");
+    assert!(relay.asked().iter().filter(|a| *a == "nori/time").count() >= 2 * nori_remote::clock::BURST, "each learned the relay's clock");
+    relay.close();
 }
 
 /// The relay still lists a device from before it restarted, by its own id: it neither lists nor follows
