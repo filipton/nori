@@ -32,7 +32,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -129,7 +128,7 @@ fun DevicesSheet(open: Boolean, onDismiss: () -> Unit, onOutput: () -> Unit, jam
     }
 }
 
-/** The devices sheet, opened from the player's output button and the "Playing on" strips ([LocalDevices]). */
+/** The devices sheet, opened from the player's output button and the bar's speaker ([LocalDevices]). */
 @Composable
 fun DevicesHost(open: Boolean, onDismiss: () -> Unit) {
     val settings: dev.nori.music.app.vm.SettingsViewModel = viewModel()
@@ -168,24 +167,4 @@ private fun DeviceRow(name: String, icon: ImageVector, subtitle: String?, active
         leading = { Icon(icon, null, tint = if (active) accent else MaterialTheme.colorScheme.onSurface) },
         action = if (active) ({ Icon(Icons.Filled.Check, words(R.string.devices_playing_here), Modifier.padding(start = 8.dp).size(20.dp), tint = accent) }) else null,
     )
-}
-
-/**
- * "Playing on" another device, under the now playing bar and in the player: a tap opens the devices.
- * Nothing while this phone plays.
- */
-@Composable
-fun PlayingOnStrip(device: String?, color: Color, modifier: Modifier = Modifier) {
-    device ?: return
-    val open = LocalDevices.current
-    Row(
-        modifier.clickable(onClick = open).padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(Icons.Filled.Speaker, null, Modifier.size(15.dp), tint = color)
-        Text(
-            words(R.string.devices_playing_on, device), Modifier.padding(start = 6.dp),
-            style = MaterialTheme.typography.labelMedium, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis,
-        )
-    }
 }

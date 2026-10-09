@@ -56,10 +56,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.Speaker
-import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.outlined.Speaker
+import dev.nori.music.app.R
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
@@ -728,18 +727,33 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                 // Nothing sounds on a jam guest's phone to set the volume of.
                 if (!state.jamGuest) Box(kept("volume")) { VolumeRow(vm) }
                 val jam by vm.jamStrip.collectAsStateWithLifecycle()
-                if (state.playingOn != null || jam != null) Box(Modifier.fillMaxWidth().padding(top = if (state.jamGuest) 16.dp else 0.dp), contentAlignment = Alignment.Center) {
-                    if (state.playingOn != null && !state.jamGuest) PlayingOnStrip(state.playingOn, live.color(CoverLook.ACCENT))
-                    else JamStrip(jam, live.color(CoverLook.ACCENT))
+                if (jam != null) Box(Modifier.fillMaxWidth().padding(top = if (state.jamGuest) 16.dp else 0.dp), contentAlignment = Alignment.Center) {
+                    JamStrip(jam, live.color(CoverLook.ACCENT))
                 }
 
-                Row(kept("icons").fillMaxWidth().padding(top = 2.dp, bottom = 4.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
-                    PanelButton(Icons.Filled.Lyrics, say.lyrics, page == Panel.LYRICS, nudge = (-1.5).dp) { choose(Panel.LYRICS) }
+                // Three slots of fixed shares, so the middle one's words, however long a device's name, never
+                // move the lyrics and queue buttons; each keeps the line under its glyph whether it has words or not.
+                Row(kept("icons").fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 2.dp, bottom = 4.dp), verticalAlignment = Alignment.Top) {
+                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                        PanelButton(Icons.Filled.Lyrics, say.lyrics, page == Panel.LYRICS, nudge = (-1.5).dp) { choose(Panel.LYRICS) }
+                        Spacer(Modifier.height(OUTPUT_LINE))
+                    }
                     // Apple's middle glyph is AirPlay, not a sleep timer: on this screen the thing worth
                     // one tap is where the sound is going. The sleep timer moved to the ⋯ on the title row,
                     // which is where a setting for the evening belongs.
-                    if (!state.jamGuest) OutputButton(state.playingOn != null)
-                    PanelButton(Icons.AutoMirrored.Filled.QueueMusic, say.queue, page == Panel.QUEUE, size = 30.dp, nudge = 0.5.dp) { choose(Panel.QUEUE) }
+                    Column(Modifier.weight(1.6f), horizontalAlignment = Alignment.CenterHorizontally) {
+                        if (!state.jamGuest) {
+                            OutputButton(state.playingOn != null, state.playing)
+                            Text(
+                                state.playingOn?.let { words(R.string.devices_playing_on, it) }.orEmpty(), Modifier.height(OUTPUT_LINE),
+                                style = MaterialTheme.typography.labelSmall, color = live.color(CoverLook.ACCENT), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                        PanelButton(Icons.AutoMirrored.Filled.QueueMusic, say.queue, page == Panel.QUEUE, size = 30.dp, nudge = 0.5.dp) { choose(Panel.QUEUE) }
+                        Spacer(Modifier.height(OUTPUT_LINE))
+                    }
                 }
                 if (page == Panel.ART && !across) Spacer(Modifier.weight(0.19f))
             })
@@ -749,6 +763,9 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
       }
     }
 }
+
+/** The line under the lyrics, output and queue glyphs: the output's "Playing on", or nothing, the same height. */
+private val OUTPUT_LINE = 14.dp
 
 /** The larger of the status bar's and the gesture bar's heights, for room kept alike above and below. */
 @Composable
@@ -827,19 +844,15 @@ private fun playerTitleMeta(song: dev.nori.music.ffi.model.Song?, radio: String?
  * through rather than being left with a button that does nothing.
  */
 @Composable
-private fun OutputButton(otherDevice: Boolean) {
+private fun OutputButton(otherDevice: Boolean, playing: Boolean) {
     val settings: SettingsViewModel = viewModel()
     val output by settings.currentOutput.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val look = LocalLook.current
-    // Which glyph, and whether the sound has gone elsewhere, are the core's (`output_look`).
+    // Whether the sound has gone elsewhere is the core's (`output_look`).
     val o = remember(output) { dev.nori.music.ffi.devices.outputLook(output) }
-    val icon = when {
-        otherDevice -> Icons.Filled.Speaker
-        o.glyph == dev.nori.music.ffi.devices.OutputGlyph.HEADPHONES -> Icons.Filled.Headphones
-        o.glyph == dev.nori.music.ffi.devices.OutputGlyph.BLUETOOTH -> Icons.Filled.Bluetooth
-        else -> Icons.Filled.Cast
-    }
+    // One speaker for every output, lit in the accent while the sound is elsewhere, filled while it sounds there.
+    val icon = if (otherDevice && playing) Icons.Filled.Speaker else Icons.Outlined.Speaker
     val description = remember(o) { say.outputDescription(o.port, o.name) }
     // With remote control or jams on, the button opens nori's own devices first (RemoteScreens); this
     // phone's outputs are one row of it.
