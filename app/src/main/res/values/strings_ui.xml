@@ -621,6 +621,7 @@
     <string name="jam_end">End Jam</string>
     <string name="jam_end_short">End</string>
     <string name="jam_people">People</string>
+    <string name="jam_people_count">People · %1$d</string>
     <string name="jam_people_none">No one has joined yet. They join with the invite’s code or link.</string>
     <string name="jam_you_host">You · Host</string>
     <string name="jam_you_role">You · %1$s</string>

@@ -433,6 +433,8 @@ print(next(json.dumps({'id':s['id'],'title':s['title'],'artist':s['artist'],'cov
     tapnode text "Start a Jam"
     check "the player opens on the queue, the jam over it" wait_until 15 on_screen 'text="End Jam"'
     check "nobody listens yet" on_screen 'text="no one yet"'
+    tapnode text People
+    check "People offers the invite" wait_until 10 on_screen 'text="Invite"'
     tapnode text Invite
     check "Invite shows the code and the link" wait_until 10 on_screen 'text="Copy link"'
     link=$(ui | grep -oE 'text="https?://[^"]*/nori/jam#[^"]*"' | head -1 | cut -d'"' -f2 | sed 's/&amp;/\&/g')
