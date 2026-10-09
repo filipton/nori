@@ -35,13 +35,13 @@ enum Theme {
     static var keyboard: UIKeyboardAppearance { light ? .light : .dark }
     static var statusBar: UIStatusBarStyle { light ? .default : .lightContent }
 
-    /// The player card, its queue and its lyrics: black in either mode, whatever the cover.
+    /// The player card, its queue and its lyrics: black, or white in the light mode, whatever the cover.
     enum Card {
-        static let background = UIColor.black
-        static let label = UIColor(rgb: 0xF5F5F5)
-        static let secondary = UIColor(rgb: 0xA8A8A8)
-        static let dim = UIColor(rgb: 0x666666)
-        static let track = UIColor(rgb: 0x363636)
+        static var background: UIColor { pick(0x000000, 0xFFFFFF) }
+        static var label: UIColor { pick(0xF5F5F5, 0x111111) }
+        static var secondary: UIColor { pick(0xA8A8A8, 0x6E6E6E) }
+        static var dim: UIColor { pick(0x666666, 0xB4B4B4) }
+        static var track: UIColor { pick(0x363636, 0xDCDCDC) }
     }
 
     static func apply(tab: UITabBar) {

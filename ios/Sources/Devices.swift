@@ -21,7 +21,7 @@ final class DevicesSheet: UIViewController, UITableViewDataSource, UITableViewDe
 
     required init?(coder: NSCoder) { fatalError() }
 
-    override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+    override var preferredStatusBarStyle: UIStatusBarStyle { Theme.statusBar }
 
     override func viewDidLoad() {
         super.viewDidLoad()

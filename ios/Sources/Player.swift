@@ -212,7 +212,7 @@ final class PlayerCard: UIViewController {
         changed()
     }
 
-    override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+    override var preferredStatusBarStyle: UIStatusBarStyle { Theme.statusBar }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
@@ -446,7 +446,7 @@ final class LyricsSheet: UIViewController {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+    override var preferredStatusBarStyle: UIStatusBarStyle { Theme.statusBar }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -945,7 +945,7 @@ final class ReadingLine: UIView {
         strip.addSubview(second)
         fade.startPoint = CGPoint(x: 0, y: 0.5)
         fade.endPoint = CGPoint(x: 1, y: 0.5)
-        fade.colors = [UIColor.black.cgColor, UIColor.black.cgColor, UIColor.clear.cgColor]
+        fade.colors = [Theme.Card.background.cgColor, Theme.Card.background.cgColor, UIColor.clear.cgColor]
     }
     required init?(coder: NSCoder) { fatalError() }
 
