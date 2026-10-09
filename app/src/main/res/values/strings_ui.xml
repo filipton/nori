@@ -597,7 +597,7 @@
     <string name="devices_nearby">On this network</string>
     <string name="devices_idle">Not playing</string>
     <string name="devices_playing_on">Playing on %1$s</string>
-    <string name="devices_jam_on">A Jam plays on this phone only. End it to play on another device.</string>
+    <string name="devices_jam_on">End the jam to play on another device</string>
     <string name="devices_playing_here">Playing here</string>
     <string name="devices_stale">The queue changed there. Try again.</string>
     <string name="devices_not_allowed">That device said no.</string>
