@@ -809,7 +809,7 @@ fn mirrored_now_json(e: &Elsewhere) -> Value {
     let mut v = json!({
         "state": state, "index": row.map_or(-1, |r| r.index as i64), "ms": e.position_ms().max(0),
         "pace": 1.0, "repeat": m.repeat, "shuffle": m.shuffle, "len": m.len, "mixing": false,
-        "eq": false, "remote": true, "device": m.name, "buffering": m.buffering,
+        "eq": false, "remote": true, "device": m.name, "buffering": m.buffering, "volume": m.volume,
     });
     if let Some(r) = row {
         v["song"] = song_json(&r.song, r.index as usize);

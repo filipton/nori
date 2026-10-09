@@ -98,6 +98,9 @@ int32_t nori_ios_is_open(void);
 /// The system volume moved (0 to 1): loudness compensation follows it, and the other devices see it.
 void nori_ios_volume(float fraction);
 
+/// Sets the volume (0 to 1) of the device playing: another device's while the music plays there.
+void nori_ios_set_volume(float fraction);
+
 /// Remote control's mDNS. `announce`: this device's door (`name`, `port`, TXT record as a JSON object
 /// of strings), or withdrawn (`name` NULL). `browse`: look for other doors while `on` is 1.
 typedef void (*NoriAnnounceFn)(const char *name, uint16_t port, const char *txt);

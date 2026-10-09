@@ -364,6 +364,7 @@ enum Say {
     // Remote control, from Android's strings_ui.xml (devices_*).
     static let playOn = "Play on"
     static let thisIPod = "This iPod"
+    static let volume = "Volume"
     static let devicesNone = "No other devices yet. Turn on “Control from other devices” in nori on them."
     static let deviceIdle = "Not playing"
     static func playingOn(_ device: String) -> String { "Playing on \(device)" }
