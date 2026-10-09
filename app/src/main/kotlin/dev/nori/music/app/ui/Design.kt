@@ -539,6 +539,9 @@ fun MessagePill(
     }
 }
 
+/** The app's own scheme under a page's [TintedTheme] (null outside one): sheets wear it wherever they open. */
+val LocalAppScheme = androidx.compose.runtime.staticCompositionLocalOf<androidx.compose.material3.ColorScheme?> { null }
+
 /**
  * Dresses everything inside in the colours of one cover: the page colour becomes the surface, the
  * cover's accent becomes the primary, and text colours are chosen to read on it. Screens keep using
@@ -550,6 +553,7 @@ fun TintedTheme(palette: PagePalette?, content: @Composable () -> Unit) {
     val scheme = androidx.compose.runtime.remember(palette, base) { palette?.let { base.dressedIn(it.fixed) } ?: base }
     MaterialTheme(colorScheme = scheme) {
         androidx.compose.runtime.CompositionLocalProvider(
+            LocalAppScheme provides (LocalAppScheme.current ?: base),
             LocalContentColor provides scheme.onSurface,
             LocalPalette provides palette,
             LocalLook provides (palette?.fixed ?: LocalLook.current),

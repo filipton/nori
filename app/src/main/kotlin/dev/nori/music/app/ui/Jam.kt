@@ -323,20 +323,10 @@ private fun Request(p: Pending, coverUrl: String?, decides: Boolean, ink: ColorP
     }
 }
 
-/** A sheet in the colours of the theme it is shown in, wherever it was opened from (the player wears a cover's). */
-@Composable
-private fun SheetLook(content: @Composable () -> Unit) {
-    val scheme = MaterialTheme.colorScheme
-    val look = remember(scheme) { FixedLook(plainLook(scheme)) }
-    androidx.compose.runtime.CompositionLocalProvider(LocalLook provides look, content = content)
-}
-
 /** The invite: a large QR code, the link, Copy and Share. */
 @Composable
 private fun InviteSheet(link: String?, onDismiss: () -> Unit) {
-    NoriSheet(link, onDismiss) { l ->
-        SheetLook { InviteBody(l) }
-    }
+    NoriSheet(link, onDismiss) { l -> InviteBody(l) }
 }
 
 @Composable
@@ -411,44 +401,42 @@ private fun roleName(role: Role): String = words(
 @Composable
 private fun PeopleSheet(open: Boolean, j: JamView, onInvite: () -> Unit, onDismiss: () -> Unit) {
     NoriSheet(open, onDismiss) {
-        SheetLook {
-            val vm: RemoteViewModel = viewModel()
-            val guests = j.members.filter { it.role != Role.HOST }
-            Column(Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding().padding(bottom = 16.dp)) {
-                if (j.hosting) {
-                    PillButton(
-                        words(R.string.jam_invite_button), Icons.Filled.PersonAdd, onInvite,
-                        Modifier.fillMaxWidth().padding(horizontal = Space.gutter, vertical = 8.dp), prominent = true,
-                    )
-                    Row(Modifier.fillMaxWidth().padding(start = Space.gutter, end = Space.gutter, top = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text(words(R.string.jam_let_listen), style = MaterialTheme.typography.bodyLarge)
-                            Text(words(R.string.jam_let_listen_line), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        NoriSwitch(j.along, { vm.jamAlong(it) })
+        val vm: RemoteViewModel = viewModel()
+        val guests = j.members.filter { it.role != Role.HOST }
+        Column(Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding().padding(bottom = 16.dp)) {
+            if (j.hosting) {
+                PillButton(
+                    words(R.string.jam_invite_button), Icons.Filled.PersonAdd, onInvite,
+                    Modifier.fillMaxWidth().padding(horizontal = Space.gutter, vertical = 8.dp), prominent = true,
+                )
+                Row(Modifier.fillMaxWidth().padding(start = Space.gutter, end = Space.gutter, top = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                        Text(words(R.string.jam_let_listen), style = MaterialTheme.typography.bodyLarge)
+                        Text(words(R.string.jam_let_listen_line), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                    NoriSwitch(j.along, { vm.jamAlong(it) })
                 }
-                SectionTitle(words(R.string.jam_people))
-                j.members.firstOrNull { it.role == Role.HOST }?.let { h -> Person(h, if (j.hosting) words(R.string.jam_you_host) else roleName(Role.HOST)) {} }
-                guests.forEach { m ->
-                    key(m.id) {
-                        val role = roleName(m.role)
-                        Person(m, if (m.id == j.you) words(R.string.jam_you_role, role) else role) {
-                            if (j.hosting) {
-                                Chip(words(if (m.role == Role.ADMIN) R.string.jam_make_guest else R.string.jam_make_admin), false) { vm.promote(m.id, m.role != Role.ADMIN) }
-                                IconButton({ vm.remove(m.id) }) {
-                                    Icon(Icons.Filled.Close, words(R.string.jam_send_out), Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
+            }
+            SectionTitle(words(R.string.jam_people))
+            j.members.firstOrNull { it.role == Role.HOST }?.let { h -> Person(h, if (j.hosting) words(R.string.jam_you_host) else roleName(Role.HOST)) {} }
+            guests.forEach { m ->
+                key(m.id) {
+                    val role = roleName(m.role)
+                    Person(m, if (m.id == j.you) words(R.string.jam_you_role, role) else role) {
+                        if (j.hosting) {
+                            Chip(words(if (m.role == Role.ADMIN) R.string.jam_make_guest else R.string.jam_make_admin), false) { vm.promote(m.id, m.role != Role.ADMIN) }
+                            IconButton({ vm.remove(m.id) }) {
+                                Icon(Icons.Filled.Close, words(R.string.jam_send_out), Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     }
                 }
-                if (guests.isEmpty() && j.hosting) {
-                    Text(
-                        words(R.string.jam_people_none), Modifier.padding(horizontal = Space.gutter, vertical = 12.dp),
-                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+            }
+            if (guests.isEmpty() && j.hosting) {
+                Text(
+                    words(R.string.jam_people_none), Modifier.padding(horizontal = Space.gutter, vertical = 12.dp),
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
