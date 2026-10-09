@@ -66,6 +66,7 @@ fun HomeScreen(actions: ActionsViewModel, vm: HomeViewModel = viewModel()) {
     // The mixes, the favourites and the page's own settings are the account's: a jam guest's Home is the
     // host's shelves.
     val account = LocalRules.current.account
+    val closed by vm.closedToGuests.collectAsStateWithLifecycle()
     LoadBox(load) { ui ->
         val arrival = rememberArrival()
         val rise = with(LocalDensity.current) { Arrival.RISE.toPx() }
@@ -94,6 +95,9 @@ fun HomeScreen(actions: ActionsViewModel, vm: HomeViewModel = viewModel()) {
                         }
                     }
                 }
+            }
+            if (closed && ui.rows.all { it.isEmpty }) item(key = "closed") {
+                Text(say.homeClosedToGuests, Modifier.padding(vertical = 12.dp), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             // Favourites are always here; the mixes join them when the taste model is on (MixesViewModel).
             if (account) item(key = "mixes") { Column(Modifier.arriving(arrival, 1, rise)) { SectionTitle(say.forYou); MixTiles() } }

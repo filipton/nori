@@ -83,6 +83,18 @@ class HomeViewModel(app: Application) : NoriViewModel(app) {
     /** True while a manual refresh is running, so the page can show that it is and then stop. */
     val refreshing: StateFlow<Boolean> = _refreshing
 
+    private val _closedToGuests = MutableStateFlow(false)
+    /**
+     * The jam host's server refused a shelf to this guest (an octo-fiesta from before it shared the
+     * library with guests): the page says so instead of standing empty.
+     */
+    val closedToGuests: StateFlow<Boolean> = _closedToGuests
+
+    private fun failed(e: Throwable) {
+        val code = (e as? dev.nori.music.ffi.model.CoreException.Api)?.code ?: (e as? dev.nori.music.ffi.net.NetException.Api)?.code
+        if (code == 50 && !nori.rules.account) _closedToGuests.value = true
+    }
+
     /** What each shelf is and where it comes from is the core's (browse.rs); this only makes the requests. */
     private fun source(r: HomeRow, shelf: HomeShelf): kotlinx.coroutines.flow.Flow<Shelf> = when (shelf) {
         is HomeShelf.Albums -> {
@@ -93,13 +105,13 @@ class HomeViewModel(app: Application) : NoriViewModel(app) {
                 .map { Shelf.Albums(r, it) }
                 .catch { emit(Shelf.Albums(r, emptyList())) }.onStart { emit(Shelf.Albums(r, emptyList())) }
             else refreshes.flatMapLatest { nori.library.albums(sort, size = size) }
-                .catch { emit(emptyList()) }.onStart { emit(emptyList()) }.map { Shelf.Albums(r, it) }
+                .catch { failed(it); emit(emptyList()) }.onStart { emit(emptyList()) }.map { Shelf.Albums(r, it) }
         }
         is HomeShelf.Playlists -> refreshes.flatMapLatest { nori.library.playlists() }.map { Shelf.Playlists(r, it.take(shelf.take.toInt())) }
             .catch { emit(Shelf.Playlists(r, emptyList())) }.onStart { emit(Shelf.Playlists(r, emptyList())) }
         // Worth reading again after a refresh, which is the one thing that changes what the index holds.
         is HomeShelf.Songs -> refreshes.flatMapLatest {
-            flow { emit(Shelf.Songs(r, runCatching { nori.library.browseSongs(shelf.sort, shelf.descending, false, null, 0, shelf.limit.toInt()) }.getOrDefault(emptyList()))) }
+            flow { emit(Shelf.Songs(r, runCatching { nori.library.browseSongs(shelf.sort, shelf.descending, false, null, 0, shelf.limit.toInt()) }.onFailure(::failed).getOrDefault(emptyList()))) }
         }.onStart { emit(Shelf.Songs(r, emptyList())) }
         HomeShelf.Pinned -> flowOf(Shelf.Playlists(r, emptyList()))
     }
