@@ -993,3 +993,87 @@ fn a_stopped_remote_lets_go_of_everything() {
     assert_eq!(asked(), before, "no poll or time exchange after the stop");
     relay.close();
 }
+
+#[derive(Clone, Copy, Debug)]
+enum Did {
+    /// Plays a queue of its own.
+    Played,
+    Paused,
+    /// Has a queue it has not played.
+    Queued,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Picked {
+    /// The desk hands its queue over and pauses.
+    Transfers,
+    /// The desk only follows the phone.
+    Mirrors,
+}
+
+impl Device {
+    /// Has songs `ids` queued, paused at the first.
+    fn queued(&self, ids: &[&str]) {
+        self.core.session.register(ids.iter().map(|id| Song { id: id.to_string(), duration: 200, ..Default::default() }).collect());
+        self.core.session.set(ids.iter().map(|s| s.to_string()).collect(), Some(0), false, None);
+        self.remote.clone().played(Playing { playing: false, position_ms: 6_000, ..Default::default() });
+    }
+}
+
+/// Picking the phone from the desk moves the active device's playback there: the desk's when the desk
+/// is the active device, none when the phone is.
+#[test]
+fn picking_a_device_moves_the_active_ones_playback() {
+    use Did::*;
+    /// (on the desk, what it did), in order.
+    type Steps = &'static [(bool, Did)];
+    let cases: &[(&str, Steps, Picked)] = &[
+        ("the phone plays", &[(true, Played), (true, Paused), (false, Played)], Picked::Mirrors),
+        ("the desk plays", &[(false, Played), (false, Paused), (true, Played)], Picked::Transfers),
+        ("the desk played last", &[(false, Played), (false, Paused), (true, Played), (true, Paused)], Picked::Transfers),
+        ("the phone played last", &[(true, Played), (true, Paused), (false, Played), (false, Paused)], Picked::Mirrors),
+        ("the phone is idle", &[(true, Played), (true, Paused)], Picked::Transfers),
+        ("neither played", &[(true, Queued), (false, Queued)], Picked::Mirrors),
+    ];
+    for (case, steps, want) in cases {
+        let relay = Relay::new();
+        let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
+        let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+        phone.remote.clone().serve(true);
+        desk.remote.clone().serve(true);
+        let phone_id = phone.remote.id();
+        let heard = |what: &str, ok: &dyn Fn(&nori_remote::wire::DeviceState) -> bool| {
+            desk.until(&format!("{case}: {what}"), |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state).filter(|s| ok(s)));
+        };
+        for &(on_desk, did) in steps.iter() {
+            let (d, ids) = if on_desk { (&desk, ["d1", "d2"]) } else { (&phone, ["p1", "p2"]) };
+            match did {
+                Played => d.playing(&ids, 0),
+                Paused => d.remote.clone().played(Playing { playing: false, position_ms: 6_000, ..Default::default() }),
+                Queued => d.queued(&ids),
+            }
+            if !on_desk {
+                // The desk hears each of the phone's states.
+                let playing = matches!(did, Played);
+                heard("the phone's state", &|s| s.playing == playing && s.index.is_some());
+            }
+        }
+        heard("the phone", &|_| true);
+        desk.remote.clone().pick(Some(phone_id.clone()));
+        let picked = if desk.ops.try_recv() == Ok(Op::Pause) { Picked::Transfers } else { Picked::Mirrors };
+        assert_eq!(picked, *want, "{case}");
+        assert_eq!(desk.until(case, |r| r.active()).id, phone_id, "{case}: followed");
+        match want {
+            Picked::Transfers => {
+                assert!(matches!(phone.told(), Op::Replace { songs, .. } if songs[0].id == "d1"), "{case}: the desk's queue goes");
+                phone.queued(&["d1", "d2"]);
+                heard("the queue there", &|s| s.entries.first().is_some_and(|e| e.id == "d1"));
+                // Picked back, the queue comes here again.
+                desk.remote.clone().pick(None);
+                assert!(matches!(desk.told(), Op::Replace { songs, .. } if songs[0].id == "d1"), "{case}: pulled back");
+            }
+            Picked::Mirrors => assert!(phone.ops.recv_timeout(Duration::from_millis(300)).is_err(), "{case}: the phone's queue stays"),
+        }
+        relay.close();
+    }
+}

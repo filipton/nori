@@ -467,6 +467,10 @@ struct Inner {
     rooms: Vec<Room>,
     /// When each other member's state last changed here, on this device's clock.
     received: HashMap<String, i64>,
+    /// When each other device was last heard playing, on this device's clock.
+    heard_playing: HashMap<String, i64>,
+    /// When music last played here, on this device's clock.
+    played_last: Option<i64>,
     peers: Vec<Peer>,
     hosted: Option<Hosted>,
     playing: Playing,
@@ -519,6 +523,22 @@ impl Inner {
     /// Whether device `id` is still there to be followed (it serves, nearby or through the relay).
     fn listed(&self, id: &str) -> bool {
         self.peers.iter().any(|p| p.member.id == id) || self.rooms.iter().filter(|r| !r.jam).flat_map(|r| &r.members).any(|m| m.id == id)
+    }
+
+    /// Whether device `id` plays, as last heard.
+    fn plays(&self, id: &str) -> bool {
+        self.state_of(id).is_some_and(|(s, _)| s.playing)
+    }
+
+    /// Whether device `id`, picked while this one is the active device, is the active one rather than
+    /// this one: this one does not play, and it plays, or it has a song and was heard playing since this
+    /// one last played (or neither played since this one started).
+    fn leads(&self, id: &str) -> bool {
+        if self.playing.playing {
+            return false;
+        }
+        let has_song = self.state_of(id).is_some_and(|(s, _)| s.index.is_some());
+        self.plays(id) || (has_song && self.heard_playing.get(id).copied() >= self.played_last)
     }
 
     /// Device `id`'s name and kind, as it is listed.
@@ -689,8 +709,12 @@ impl Remote {
             if started {
                 i.handed_to = None;
             }
+            let now = clock::now_us();
+            if playing.playing || i.playing.playing {
+                i.played_last = Some(now);
+            }
             i.playing = playing;
-            i.playing_at = Some(clock::now_us());
+            i.playing_at = Some(now);
             (i.serving || i.hosted.is_some(), started && i.mirror.is_some())
         };
         if started {
@@ -726,12 +750,14 @@ impl Remote {
     }
 
     /// Moves the playback to `device`, or here (None): the active device hands its queue over and
-    /// pauses. With nothing queued here, the device is only followed.
+    /// pauses. A device that is the active one already (it plays, or played since this one did) is only
+    /// followed, as is any device while nothing is queued here.
     pub fn pick(self: Arc<Self>, device: Option<String>) {
-        let (active, idle) = {
+        let (active, idle, plays, leads) = {
             let i = self.inner.lock();
             let m = i.mirror.as_ref();
-            (m.map(|m| m.id.clone()), m.and_then(|m| m.shown.as_ref()).is_some_and(|s| s.index.is_none()))
+            let (plays, leads) = device.as_deref().map_or((false, false), |d| (i.plays(d), i.leads(d)));
+            (m.map(|m| m.id.clone()), m.and_then(|m| m.shown.as_ref()).is_some_and(|s| s.index.is_none()), plays, leads)
         };
         let here = self.client.core.session.playlist(|p| p.current().is_some());
         match (active, device) {
@@ -739,9 +765,10 @@ impl Remote {
             (Some(_), None) if idle => self.set_active(None),
             // Followed until the queue arrives (its transfer replaces the queue here).
             (Some(a), None) => self.send(a, Op::Transfer { to: self.id.clone() }),
-            (None, Some(d)) if here => self.hand_over(d),
+            (None, Some(d)) if here && !leads => self.hand_over(d),
             (None, Some(d)) => self.set_active(Some(d)),
             (Some(a), Some(d)) if a == d => {}
+            (Some(_), Some(d)) if plays => self.set_active(Some(d)),
             (Some(a), Some(d)) => {
                 self.send(a, Op::Transfer { to: d.clone() });
                 self.set_active(Some(d));
@@ -1235,14 +1262,19 @@ impl Remote {
                 let mut i = self.inner.lock();
                 let Some(p) = i.peers.iter_mut().find(|p| p.service == service) else { return };
                 p.since = Some(a.seq);
+                let mut played = false;
                 if let Some(m) = a.rooms.into_iter().flat_map(|r| r.members).next() {
                     if m.state != p.member.state {
                         p.received = received;
                     }
+                    played = p.member.state.iter().chain(&m.state).any(|s| s.playing);
                     p.member.state = m.state;
                 }
                 p.failed = 0;
                 let (from, base) = (p.member.id.clone(), p.base());
+                if played {
+                    i.heard_playing.insert(from.clone(), received);
+                }
                 for e in a.events {
                     match e.body {
                         Body::Command { id, op } => commands.push((id, *op)),
@@ -1277,8 +1309,13 @@ impl Remote {
             i.you = a.you;
             for m in a.rooms.iter().flat_map(|r| &r.members).filter(|m| m.id != self.id) {
                 let before = i.rooms.iter().flat_map(|r| &r.members).find(|o| o.id == m.id).map(|o| &o.state);
+                let played = before.into_iter().chain([&m.state]).flatten().any(|s| s.playing);
                 if before != Some(&m.state) {
                     i.received.insert(m.id.clone(), received);
+                }
+                // It played until this answer if it plays, or did as last heard.
+                if played {
+                    i.heard_playing.insert(m.id.clone(), received);
                 }
             }
             if let Some(h) = &mut i.hosted {
