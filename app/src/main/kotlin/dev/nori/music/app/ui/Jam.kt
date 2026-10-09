@@ -157,46 +157,23 @@ internal fun AddedBy(name: String, ink: ColorProducer, plate: ColorProducer, mod
 }
 
 /**
- * The jam this phone hosts, over its queue: People (who listens, and Invite), the listeners, End, and what
- * guests asked for, to accept or refuse. Drawn in the player's own colours.
+ * The songs guests asked for in the jam this phone hosts, over its queue, to accept or refuse; nothing while
+ * there are none. Who is in the jam, Invite and End are in the devices sheet. Drawn in the player's own colours.
  */
 @Composable
-internal fun JamHeader(j: JamView, cover: (String?) -> String?) {
+internal fun JamRequests(j: JamView, cover: (String?) -> String?) {
+    if (j.pending.isEmpty()) return
     val vm: RemoteViewModel = viewModel()
     val look = LocalLook.current
     val ink = ColorProducer { look.color(CoverLook.ON) }
     val quiet = ColorProducer { look.color(CoverLook.ON_VARIANT) }
-    val accent = ColorProducer { look.color(CoverLook.ACCENT) }
-    var inviting by remember { mutableStateOf(false) }
-    var people by remember { mutableStateOf(false) }
-    val listeners = remember(j.members) { j.members.filter { it.role != Role.HOST } }
     Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
-        Row(Modifier.fillMaxWidth().padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-            LookIcon(Icons.Filled.Groups, null, Modifier.size(22.dp), accent)
-            LookText(
-                words(R.string.jam_title), ink, Modifier.weight(1f).padding(start = 8.dp),
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold), maxLines = 1,
-            )
-            PeopleButton(listeners.size, prominent = true) { people = true }
-        }
-        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Listeners(remember(listeners) { listeners.map { it.name } }, listeners.size, quiet, Modifier.weight(1f)) { look.color(CoverLook.BACKGROUND) }
-            LookText(
-                words(R.string.jam_end), accent,
-                Modifier.clip(RoundedCornerShape(50)).clickable(onClick = { vm.jamEnd() }).padding(horizontal = 8.dp, vertical = 6.dp),
-                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold), maxLines = 1,
-            )
-        }
-        if (j.pending.isNotEmpty()) {
-            Caption(words(R.string.jam_requests), Modifier.padding(top = 12.dp, bottom = 2.dp))
-            // A long line of requests scrolls within its own room, and the queue keeps the rest.
-            Column(Modifier.heightIn(max = 232.dp).verticalScroll(rememberScrollState())) {
-                j.pending.forEach { p -> key(p.request) { Request(p, cover(p.song.coverArt), decides = true, ink, quiet, vm) } }
-            }
+        Caption(words(R.string.jam_requests), Modifier.padding(top = 4.dp, bottom = 2.dp))
+        // A long line of requests scrolls within its own room, and the queue keeps the rest.
+        Column(Modifier.heightIn(max = 232.dp).verticalScroll(rememberScrollState())) {
+            j.pending.forEach { p -> key(p.request) { Request(p, cover(p.song.coverArt), decides = true, ink, quiet, vm) } }
         }
     }
-    InviteSheet(j.link.takeIf { inviting }) { inviting = false }
-    PeopleSheet(people, j, { people = false; inviting = true }) { people = false }
 }
 
 /** People, with the listeners' count when there are any: opens who is in the jam (and, hosting, Invite). */
@@ -293,7 +270,7 @@ internal fun GuestJamHeader(j: JamView, cover: (String?) -> String?) {
             }
         }
     }
-    PeopleSheet(people, j, {}) { people = false }
+    PeopleSheet(people, j) { people = false }
 }
 
 /**
@@ -392,50 +369,59 @@ private fun roleName(role: Role): String = words(
 )
 
 /**
- * Who is in the jam: the host invites more ([onInvite]: the invite's code and link), makes a guest an
- * admin (or a guest again) and sends people out; a guest sees who is in.
+ * Who is in the jam: the host invites more (the invite's code and link), lets guests listen along, makes a
+ * guest an admin (or a guest again) and sends people out; a guest sees who is in. In the devices sheet for
+ * the host, in [PeopleSheet] for a guest.
  */
 @Composable
-private fun PeopleSheet(open: Boolean, j: JamView, onInvite: () -> Unit, onDismiss: () -> Unit) {
-    NoriSheet(open, onDismiss) {
-        val vm: RemoteViewModel = viewModel()
-        val guests = j.members.filter { it.role != Role.HOST }
-        Column(Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding().padding(bottom = 16.dp)) {
-            if (j.hosting) {
-                PillButton(
-                    words(R.string.jam_invite_button), Icons.Filled.PersonAdd, onInvite,
-                    Modifier.fillMaxWidth().padding(horizontal = Space.gutter, vertical = 8.dp), prominent = true,
-                )
-                Row(Modifier.fillMaxWidth().padding(start = Space.gutter, end = Space.gutter, top = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                        Text(words(R.string.jam_let_listen), style = MaterialTheme.typography.bodyLarge)
-                        Text(words(R.string.jam_let_listen_line), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    NoriSwitch(j.along, { vm.jamAlong(it) })
+internal fun JamControls(j: JamView) {
+    val vm: RemoteViewModel = viewModel()
+    var inviting by remember { mutableStateOf(false) }
+    val guests = j.members.filter { it.role != Role.HOST }
+    Column {
+        if (j.hosting) {
+            PillButton(
+                words(R.string.jam_invite_button), Icons.Filled.PersonAdd, { inviting = true },
+                Modifier.fillMaxWidth().padding(horizontal = Space.gutter, vertical = 8.dp), prominent = true,
+            )
+            Row(Modifier.fillMaxWidth().padding(start = Space.gutter, end = Space.gutter, top = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text(words(R.string.jam_let_listen), style = MaterialTheme.typography.bodyLarge)
+                    Text(words(R.string.jam_let_listen_line), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                NoriSwitch(j.along, { vm.jamAlong(it) })
             }
-            SectionTitle(words(R.string.jam_people))
-            j.members.firstOrNull { it.role == Role.HOST }?.let { h -> Person(h, if (j.hosting) words(R.string.jam_you_host) else roleName(Role.HOST)) {} }
-            guests.forEach { m ->
-                key(m.id) {
-                    val role = roleName(m.role)
-                    Person(m, if (m.id == j.you) words(R.string.jam_you_role, role) else role) {
-                        if (j.hosting) {
-                            Chip(words(if (m.role == Role.ADMIN) R.string.jam_make_guest else R.string.jam_make_admin), false) { vm.promote(m.id, m.role != Role.ADMIN) }
-                            IconButton({ vm.remove(m.id) }) {
-                                Icon(Icons.Filled.Close, words(R.string.jam_send_out), Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
+        }
+        SectionTitle(words(R.string.jam_people))
+        j.members.firstOrNull { it.role == Role.HOST }?.let { h -> Person(h, if (j.hosting) words(R.string.jam_you_host) else roleName(Role.HOST)) {} }
+        guests.forEach { m ->
+            key(m.id) {
+                val role = roleName(m.role)
+                Person(m, if (m.id == j.you) words(R.string.jam_you_role, role) else role) {
+                    if (j.hosting) {
+                        Chip(words(if (m.role == Role.ADMIN) R.string.jam_make_guest else R.string.jam_make_admin), false) { vm.promote(m.id, m.role != Role.ADMIN) }
+                        IconButton({ vm.remove(m.id) }) {
+                            Icon(Icons.Filled.Close, words(R.string.jam_send_out), Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
             }
-            if (guests.isEmpty() && j.hosting) {
-                Text(
-                    words(R.string.jam_people_none), Modifier.padding(horizontal = Space.gutter, vertical = 12.dp),
-                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
         }
+        if (guests.isEmpty() && j.hosting) {
+            Text(
+                words(R.string.jam_people_none), Modifier.padding(horizontal = Space.gutter, vertical = 12.dp),
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+    InviteSheet(j.link.takeIf { inviting }) { inviting = false }
+}
+
+/** Who is in the jam, for a guest. */
+@Composable
+private fun PeopleSheet(open: Boolean, j: JamView, onDismiss: () -> Unit) {
+    NoriSheet(open, onDismiss) {
+        Column(Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding().padding(bottom = 16.dp)) { JamControls(j) }
     }
 }
 

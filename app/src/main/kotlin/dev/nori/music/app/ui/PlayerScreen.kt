@@ -2718,7 +2718,7 @@ private fun Queue(vm: PlayerViewModel) {
     Column(Modifier.fillMaxSize()) {
         val j = jam
         val start by remote.jamStarting.collectAsStateWithLifecycle()
-        if (j?.hosting == true) JamHeader(j) { vm.cover(it, CoverSize.ROW) }
+        if (j?.hosting == true) JamRequests(j) { vm.cover(it, CoverSize.ROW) }
         else if (state.jamGuest) {
             if (j != null) GuestJamHeader(j) { vm.cover(it, CoverSize.ROW) } else GuestLeaveHeader()
         } else if (start == dev.nori.music.ffi.JamStart.STARTING) Text(
