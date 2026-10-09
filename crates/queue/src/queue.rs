@@ -75,8 +75,8 @@ impl Session {
         self.store(|s| s.songs.get(id).map(|(song, _)| song.clone()))
     }
 
-    /// The songs for `ids` in order (unknown ones as id only). Prunes the store to `ids`, the queue, and
-    /// songs registered within [`KEEP_MS`].
+    /// The songs for `ids` in order (unknown ones as id only). Prunes the store to `ids`, the queue, the
+    /// song an undo would put back, and songs registered within [`KEEP_MS`].
     pub fn songs(&self, ids: Vec<String>) -> Vec<Song> {
         self.songs_at(ids, db::now_ms())
     }
@@ -84,7 +84,7 @@ impl Session {
     fn songs_at(&self, ids: Vec<String>, now: i64) -> Vec<Song> {
         // The queue's ids are looked at in place (the playlist's lock, then the store's, as elsewhere).
         self.playlist(|p| {
-            let kept: std::collections::HashSet<&str> = ids.iter().chain(p.ids()).map(String::as_str).collect();
+            let kept: std::collections::HashSet<&str> = ids.iter().chain(p.ids()).map(String::as_str).chain(p.undoable()).collect();
             self.store(|s| {
                 s.songs.retain(|id, (_, at)| kept.contains(id.as_str()) || now - *at < KEEP_MS);
                 ids.iter().map(|id| s.songs.get(id).map_or_else(|| Song::only_id(id.clone()), |(song, _)| song.clone())).collect()
@@ -186,11 +186,13 @@ mod tests {
         // Songs lookup keeps queued songs.
         let s = crate::playlist::tests::session(&["keep1", "keep2", "keep3"], 0);
         let song = |id: &str| Song { duration: 200, ..Song::only_id(id.to_string()) };
-        s.register(vec![song("keep1"), song("keep2"), song("keep3"), song("gone")]);
+        s.register(vec![song("keep1"), song("keep2"), song("keep3"), song("taken"), song("gone")]);
+        s.take(3, vec!["taken".into()], vec![crate::playlist::Hand::No]);
+        s.remove(3, 4);
         // Asking for one song keeps the rest of the queue.
         let later = db::now_ms() + 2 * KEEP_MS;
         assert_eq!(s.songs_at(vec!["keep1".into()], later)[0].duration, 200);
-        for id in ["keep2", "keep3"] {
+        for id in ["keep2", "keep3", "taken"] {
             assert_eq!(s.song(id).map(|s| s.duration), Some(200), "{id}");
         }
         assert!(s.song("gone").is_none());

@@ -403,6 +403,11 @@ impl Playlist {
     }
 
     /// Undoes the last [`Playlist::remove_undoably`] if it removed `id`; returns the list index.
+    /// The song an undo would put back ([`Playlist::restore_taken`]), if any.
+    pub fn undoable(&self) -> Option<&str> {
+        self.taken.as_ref().map(|t| t.id.as_str())
+    }
+
     pub fn restore_taken(&mut self, id: &str) -> Option<usize> {
         let t = self.taken.take_if(|t| t.id == id)?;
         Some(self.restore(&t))
