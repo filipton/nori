@@ -362,7 +362,7 @@ fn downloads_read_back(core: &Arc<Core>, store: &Arc<Store>, analyses: &Arc<Anal
     // Already analysed: nothing to read back.
     assert!(!core.download_unanalysed(false).unwrap().iter().any(|id| id.starts_with("rb-")));
     // Analysis gone: read back again.
-    core.analysis_clear().unwrap();
+    core.measure_again().unwrap();
     let again: Vec<String> = core.download_unanalysed(false).unwrap().into_iter().filter(|id| id.starts_with("rb-")).collect();
     assert_eq!(again.len(), 2);
     assert_eq!(analyses.analyse(again), 2);
@@ -496,13 +496,14 @@ fn listens_with_a_real_model(core: &Arc<Core>, current: &Mutex<Arc<Client>>, dir
 #[test]
 fn a_guest_queues_the_host_songs_once() {
     let dir = nori_testdir::TempDir::new("guest");
-    let (core, _client) = common::own_core(&dir, |_| {});
+    let (core, _client) = common::own_core(&dir, |p| p.auto_fill = true);
     let song = |id: &str| Song { id: id.into(), title: id.into(), ..Default::default() };
     let lead = |ids: &[&str], index: usize| nori_core::remote::Lead {
         songs: ids.iter().map(|id| song(id)).collect(),
         index,
         ms: 0.0,
         at_us: 0,
+        there_us: 0,
         rate: 1.0,
         playing: true,
         speed: 1.0,
@@ -516,4 +517,7 @@ fn a_guest_queues_the_host_songs_once() {
     // A song put next there: queued anew.
     assert_eq!(nori_engine::core::queued_for(s, &lead(&["b", "x", "c"], 0)), (0, true));
     assert_eq!(s.playlist(|p| p.ids().to_vec()), ["b", "x", "c"]);
+    // Near its end, autofill on here: the host's queue is the host's to fill.
+    s.moved_to(1);
+    assert!(!s.song_arrived().fill, "nothing fetched for it here");
 }

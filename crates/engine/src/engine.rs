@@ -58,11 +58,13 @@ pub struct Settings {
     /// Most ReplayGain may turn a song up, dB (`nori_player::gain`): above 0 songs are read as floats
     /// with the limiter behind them, and a song turned up stays off offload.
     pub gain_boost_db: f32,
+    /// Previous goes to the song before even well into this one (`nori_player::queue::previous_restarts`).
+    pub previous_always_skips: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { sound: Sound::default(), speed: 1.0, pitch: 1.0, skip_silence: false, fade_ms: 0, hi_res: false, max_rate: 0, offload: false, crossfade_s: 0, auto_mix: false, gain_boost_db: 0.0 }
+        Settings { sound: Sound::default(), speed: 1.0, pitch: 1.0, skip_silence: false, fade_ms: 0, hi_res: false, max_rate: 0, offload: false, crossfade_s: 0, auto_mix: false, gain_boost_db: 0.0, previous_always_skips: false }
     }
 }
 
@@ -125,6 +127,17 @@ pub enum Event {
     Placed { index: usize, ms: i64 },
     /// Whether the CPU must be kept awake while playing; said before the work it is for.
     Awake(bool),
+    /// Following another device ([`Engine::follow`]), or not any more (None).
+    Following(Option<Followed>),
+}
+
+/// How this engine follows another device's playback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Followed {
+    /// The music plays there.
+    pub playing: bool,
+    /// This device's own pause holds its listening here; play joins again where the music is then.
+    pub held: bool,
 }
 
 /// Another device's playback this engine follows place for place (a jam guest listening along): its
@@ -136,6 +149,9 @@ pub struct Lead {
     /// Where it was heard there `ago_us` before the call, ms.
     pub ms: f64,
     pub ago_us: i64,
+    /// That moment on the leader's own clock, µs: a jump there is told apart from its clock read better
+    /// here.
+    pub there_us: i64,
     /// Song ms per real ms there: its speed times a mix's tempo.
     pub rate: f64,
     pub playing: bool,
@@ -532,7 +548,7 @@ impl Engine {
     /// replace the settings', skipped silence comes as its jumps, and nothing is offloaded meanwhile.
     pub fn follow(&self, lead: Option<Lead>) {
         let leading = lead.map(|l| {
-            let led = Led { index: l.index, ms: l.ms, at_us: (self.now_us)() - l.ago_us, rate: l.rate, playing: l.playing };
+            let led = Led { index: l.index, ms: l.ms, at_us: (self.now_us)() - l.ago_us, there_us: l.there_us, rate: l.rate, playing: l.playing };
             Box::new(Leading { led, speed: l.speed, pitch: l.pitch, mix: l.mix })
         });
         self.send(Command::Follow(leading));
@@ -612,6 +628,8 @@ struct Told {
     due: Option<i64>,
     /// The place last read (song, ms).
     read: Option<(usize, i64)>,
+    /// How another device was followed, as last said.
+    followed: Option<Followed>,
 }
 
 /// Where the position stood still since `since` (engine ms), and whether it did at the last look.
@@ -833,6 +851,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         self.announce(now);
         self.report(now);
         self.follow_lead(now);
+        self.say_followed();
         self.follow_why();
         self.restart_if_stalled(now);
         self.watch(now);
@@ -1261,15 +1280,36 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
 
     fn command(&mut self, c: Command) {
         let now = self.now();
-        // Following another device, its place rules: this one's own controls do nothing (counted still).
-        if self.following.is_some() {
-            match c {
+        // Following another device, its place rules: this one's own skips and seeks do nothing (counted
+        // still); its pause holds the listening here, and play joins the leader again where it is.
+        if let Some(f) = self.following.as_mut() {
+            let hold = match c {
                 Command::PlayAt(..) | Command::GoTo(..) | Command::Next | Command::Previous => return self.jumps += 1,
-                Command::Play => return self.plays += 1,
-                Command::Pause(_) | Command::Toggle | Command::Seek(_) => return,
+                Command::Seek(_) => return,
+                Command::Play => {
+                    self.plays += 1;
+                    false
+                }
+                Command::Toggle => self.state == State::Playing && !f.held,
+                Command::Pause(_) | Command::Release => true,
+                _ => {
+                    return self.obey(c, now);
+                }
+            };
+            f.hold(hold);
+            match c {
+                Command::Pause(fade) => self.pause(now, fade.unwrap_or(self.settings.fade_ms)),
+                Command::Toggle if hold => self.pause(now, self.settings.fade_ms),
+                Command::Release => self.obey(c, now),
                 _ => {}
             }
+            return;
         }
+        self.obey(c, now);
+    }
+
+    /// Carries out `c` as this engine's own command.
+    fn obey(&mut self, c: Command, now: i64) {
         match c {
             Command::PlayAt(i, ms) => {
                 self.jumps += 1;
@@ -1404,18 +1444,26 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             }
         }
         let len = self.p.queue.read(|q| q.len());
+        self.following.as_mut().expect("following").look_at.take_if(|at| *at <= now_us + 500);
         // The leader's place run on past the end of its song (its word on the next one not here yet) is
-        // in the next one, as it is heard there.
+        // in the next one, as it is heard there; past the end of the last, there is nothing to play until
+        // its word that it stopped.
         loop {
             let led = &self.following.as_ref().expect("following").led;
-            let length = (led.index + 1 < len).then(|| self.p.tracks.about(&self.p.id_at(led.index)).duration_ms).filter(|&l| l > 0);
-            let Some(length) = length.filter(|&l| led.playing && led.place_at(now_us) >= l as f64) else { break };
+            let length = (led.index < len).then(|| self.p.tracks.about(&self.p.id_at(led.index)).duration_ms).filter(|&l| l > 0);
+            let Some(length) = length.filter(|_| led.playing) else { break };
+            // Over by when a start would be heard: nothing to start.
+            if led.index + 1 >= len && led.place_at(now_us + follow::START_LEAD_US) >= length as f64 {
+                return;
+            }
+            if led.place_at(now_us) < length as f64 {
+                break;
+            }
             let led = &mut self.following.as_mut().expect("following").led;
             led.index += 1;
             led.ms -= length as f64;
         }
         let f = self.following.as_mut().expect("following");
-        f.look_at.take_if(|at| *at <= now_us + 500);
         if f.led.index >= len {
             return;
         }
@@ -1425,7 +1473,9 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             // To the µs where the player's own place is the one heard.
             let audible = self.p.heard().id.is_none() && !s.mixing && s.index == self.p.current();
             let ms = if audible { self.p.position_us() as f64 / 1000.0 } else { s.position_ms as f64 };
-            Here { playing, at: s.index.map(|i| (i, ms)), mixing: s.mixing, slipped: self.p.sink.track.slipped(), held_ms: self.p.sink.track.latency_us() as f64 / 1000.0 }
+            let length = s.index.map_or(0, |i| self.p.tracks.about(&self.p.id_at(i)).duration_ms);
+            let left_ms = if length > 0 { length as f64 - ms } else { f64::INFINITY };
+            Here { playing, at: s.index.map(|i| (i, ms)), mixing: s.mixing, left_ms, slipped: self.p.sink.track.slipped(), held_ms: self.p.sink.track.latency_us() as f64 / 1000.0 }
         };
         let step = f.step(now_us, here);
         if step != follow::Step::Stay {
@@ -1454,6 +1504,15 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                     self.prime(index, ms);
                 }
             }
+        }
+    }
+
+    /// Says how another device is followed when that changed.
+    fn say_followed(&mut self) {
+        let now = self.following.as_ref().map(|f| Followed { playing: f.led.playing, held: f.held });
+        if now != self.told.followed {
+            self.told.followed = now;
+            (self.events)(Event::Following(now));
         }
     }
 
@@ -1784,7 +1843,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             },
             Switched::Previous => {
                 let before = self.p.queue.read(|q| q.previous_of(at, q.repeat()));
-                (if previous_restarts(ms, before.is_some(), false) { at } else { before.unwrap_or(at) }, 0)
+                (if previous_restarts(ms, before.is_some(), self.settings.previous_always_skips) { at } else { before.unwrap_or(at) }, 0)
             }
             // Paused, the music is made again on play.
             Switched::ToChip | Switched::ToCpu => return,
@@ -1861,7 +1920,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             }
             Switched::Previous => {
                 let has_previous = self.p.queue.read(|q| q.previous().is_some());
-                if previous_restarts(self.position_ms(), has_previous, false) {
+                if previous_restarts(self.position_ms(), has_previous, self.settings.previous_always_skips) {
                     self.seek(0);
                 } else if let Some(n) = self.p.queue.read(Playlist::previous) {
                     self.jump(n, 0);

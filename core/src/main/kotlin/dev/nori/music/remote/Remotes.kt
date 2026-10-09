@@ -11,6 +11,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.SettableFuture
 import dev.nori.music.Nori
 import dev.nori.music.ffi.Client
+import dev.nori.music.ffi.JamControls
 import dev.nori.music.ffi.JamView
 import dev.nori.music.ffi.Mirror
 import dev.nori.music.ffi.Playing
@@ -22,11 +23,13 @@ import dev.nori.music.ffi.RemoteShown
 import dev.nori.music.ffi.Sight
 import dev.nori.music.ffi.remote.DeviceKind
 import dev.nori.music.ffi.remote.Op
+import dev.nori.music.ffi.remote.Reach
 import dev.nori.music.ffi.remote.isGuestKey
 import dev.nori.music.settings.server
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import java.util.concurrent.Executors
 
@@ -67,6 +70,11 @@ class Remotes(private val context: Context, private val nori: Nori) {
      */
     val jamPlaying: StateFlow<Mirror?> = _jamPlaying.asStateFlow()
 
+    private val _jamStart = MutableStateFlow(dev.nori.music.ffi.JamStart.UNAVAILABLE)
+
+    /** Where starting a jam here stands (the core's `jam_start`): every screen that offers it reads this. */
+    val jamStart: StateFlow<dev.nori.music.ffi.JamStart> = _jamStart.asStateFlow()
+
     private val _relay = MutableStateFlow(RelaySupport.UNKNOWN)
 
     /** Whether the server relays: jams and devices elsewhere only then. */
@@ -75,11 +83,24 @@ class Remotes(private val context: Context, private val nori: Nori) {
     /** The playback service's player while it runs; ops go to it, starting the service when it is not. */
     @Volatile var service: RemotePlayer? = null
 
+    private val _jamControls = MutableStateFlow<JamControls?>(null)
+
+    /**
+     * What this jam guest's player controls reach by its role, and what its play button shows (the core's
+     * `jam_controls`); null while hosting or in no jam.
+     */
+    val jamControls: StateFlow<JamControls?> = _jamControls.asStateFlow()
+
     /**
      * The playback service's: the queue the core set for a jam guest listening along (its host's songs)
-     * becomes the player's.
+     * becomes the player's; `true` when the listening just began, and the player starts.
      */
-    @Volatile var onGuestQueue: (() -> Unit)? = null
+    @Volatile var onGuestQueue: ((Boolean) -> Unit)? = null
+        set(f) {
+            field = f
+            // A service come up after the listening began takes the queue now.
+            if (f != null) work { guestQueue = null; jamNow() }
+        }
     /** The queue's songs the player was last given for listening along. */
     private var guestQueue: List<String>? = null
 
@@ -113,7 +134,17 @@ class Remotes(private val context: Context, private val nori: Nori) {
             _changes.update { it + 1 }
             work { mirrorNow(); jamNow() }
         }
+
+        override fun jamEnded(host: String?) {
+            dev.nori.music.NoriLog.i("jam: ended (host ${host ?: "unseen"}); back to the profile before")
+            main.post { nori.jamEnded(); _ended.trySend(host) }
+        }
     }
+
+    private val _ended = kotlinx.coroutines.channels.Channel<String?>(kotlinx.coroutines.channels.Channel.CONFLATED)
+
+    /** The jam this phone was a guest in ended, by its host's name if seen; the guest profile is gone by then. */
+    val ended = _ended.receiveAsFlow()
 
     /** Reads the mirrored device again (on the worker) and shows it; [then] once it is shown. */
     private fun mirrorNow(then: () -> Unit = {}) {
@@ -127,14 +158,27 @@ class Remotes(private val context: Context, private val nori: Nori) {
         val j = r?.jamView()
         val added = if (j != null) r.jamAdded() else emptyMap()
         val playing = if (j?.hosting == false) r.jamPlaying() else null
+        val controls = if (j?.hosting == false) r.jamControls() else null
         val relay = r?.relay() ?: RelaySupport.UNKNOWN
-        main.post { _jam.value = j; _jamAdded.value = added; _jamPlaying.value = playing; _relay.value = relay }
+        val start = r?.jamStart() ?: dev.nori.music.ffi.JamStart.UNAVAILABLE
+        main.post { _jam.value = j; _jamAdded.value = added; _jamPlaying.value = playing; _jamControls.value = controls; _relay.value = relay; _jamStart.value = start }
         if (j?.listening == dev.nori.music.ffi.Listening.PLAYING) {
-            val ids = runCatching { nori.core.loadQueue()?.songs?.map { it.id } }.getOrNull()
-            if (ids != null && ids != guestQueue) { guestQueue = ids; main.post { onGuestQueue?.invoke() } }
+            // The queue as the follower set it in the session, not as last saved.
+            val ids = nori.session.playlistNow().songs.map { it.id }
+            val began = guestQueue == null
+            val take = onGuestQueue
+            if (ids.isNotEmpty() && ids != guestQueue && take != null) { guestQueue = ids; main.post { take(began) } }
         } else {
             guestQueue = null
         }
+    }
+
+    /**
+     * This jam guest's player control [op], by its role (the core's `jam_press`): sent to the host when it
+     * reaches the jam; [here] runs (on the main thread) when it acts on this phone's own listening.
+     */
+    fun jamPress(op: Op, here: () -> Unit) = work {
+        if (remote?.jamPress(op) == Reach.HERE) main.post(here)
     }
 
     /**
@@ -187,7 +231,7 @@ class Remotes(private val context: Context, private val nori: Nori) {
         remote?.stop()
         remote = null
         client = null
-        main.post { _mirror.value = null; _jam.value = null; _jamAdded.value = emptyMap(); _jamPlaying.value = null; _relay.value = RelaySupport.UNKNOWN }
+        main.post { _mirror.value = null; _jam.value = null; _jamAdded.value = emptyMap(); _jamPlaying.value = null; _relay.value = RelaySupport.UNKNOWN; _jamStart.value = dev.nori.music.ffi.JamStart.UNAVAILABLE }
     }
 
     /** Whether the playback service is up: the device is controllable then, while remote control is on. */
@@ -260,7 +304,8 @@ class Remotes(private val context: Context, private val nori: Nori) {
      * playback service starts for it.
      */
     fun listen(on: Boolean) {
-        if (on) main.post { nori.player.listenAlong() }
+        // The service up: it takes the host's songs as its player's and plays (onGuestQueue).
+        if (on) main.post { nori.player.connected {} }
         work { current()?.listen(on) }
     }
 
@@ -318,22 +363,21 @@ class Remotes(private val context: Context, private val nori: Nori) {
     /** What the screens read: the remote if there is one, without building it. */
     fun peek(): Remote? = remote
 
-    /** Opens a jam; its invite link. */
-    suspend fun jamOpen(): String = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+    /** Opens a jam; its invite link, or null when one is open or being opened already, or it was ended first. */
+    suspend fun jamOpen(): String? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         val r = synchronized(this@Remotes) { current() } ?: error("jams are off")
         dev.nori.music.net.lifted { r.jamOpen() }
     }
 
     /** Leaves the jam this guest profile is in; its music stops here at once (the core's `jam_leave`). */
-    suspend fun leave() = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-        runCatching { remote?.jamLeave() }
-    }
+    fun leave() = work { remote?.jamLeave() }
 
     /**
-     * The profile in use changed: the remote of the one before goes (a jam guest's with its jam, so the
-     * player is this phone's own again), and one is built for this one if it asks for it.
+     * The remote for the profile in use as it asks now: one of a profile no longer in use goes (a jam
+     * guest's with its jam, so the player is this phone's own again), and one is built if asked for. Called
+     * when the profile changes, and by the screens that offer jams, so what the core offers is known.
      */
-    fun profileChanged() = work { current() }
+    fun refresh() = work { current() }
 
     companion object {
         fun deviceName(context: Context): String =

@@ -12,6 +12,7 @@ use nori_core::cache_policy::{Page, Read};
 use nori_core::client::{Client, Starrable};
 use nori_core::covers::CoverNet;
 use nori_core::library::StarsShown;
+use nori_core::profiles::{CurveNotice, DeviceCurve, DeviceEffect};
 use nori_core::playlist::{Hand, QueueEdit};
 use nori_core::race::{LyricsPick, LyricsShown};
 use nori_core::rules::{queue_keep, BridgeStep, QueueMoment};
@@ -30,6 +31,7 @@ use nori_look::cover::CoverColours;
 #[cfg(feature = "desktop")]
 use crate::Controls;
 use crate::remote::Press;
+use nori_core::remote::Reach;
 use crate::{config, db_path, derive, net, save, spawn, Fetch, Keeper, Level};
 use nori_remote::wire::Op;
 
@@ -44,8 +46,14 @@ pub enum Said {
     Reachable(Result<(), NetError>),
     /// The other devices or the jam changed (remote control): read them again.
     Remote,
+    /// The jam this guest is in ended (`host`: its host's name, if seen): the client leaves it as on
+    /// Leave, and says so.
+    JamEnded { host: Option<String> },
     /// Another device set the volume (0 to 1).
     Volume(f32),
+    /// The AutoEQ curve of the device music moved to was offered or applied; the client says so, and
+    /// answers through [`Session::curve_answer`].
+    Curve(CurveNotice),
     /// A heart changed (pressed here, or by another device): hearts are read again ([`Session::starred`]), or drawn from the core's marks
     /// carried here.
     Starred(nori_core::stars::StarMarks),
@@ -67,6 +75,8 @@ pub enum Note {
     Done(Chore),
     /// Forgot this many songs' measurements.
     Forgot(u32),
+    /// An AutoEQ curve could not be fetched.
+    CurveFailed(NetError),
 }
 
 /// Maintenance a settings page runs.
@@ -222,6 +232,8 @@ pub struct Session {
     /// What the app offers over the profile (a guest's: the host's library, read only).
     pub rules: ProfileRules,
     discovery: Option<Arc<dyn nori_core::remote::Discovery>>,
+    /// The AutoEQ notice said last, waiting for an answer.
+    curve: Arc<parking_lot::Mutex<Option<CurveNotice>>>,
     out: Out,
 }
 
@@ -260,7 +272,7 @@ impl Session {
         let keeper = Keeper::start(core.clone(), engine.clone());
         // A jam guest is no device of the account's: the jam lists it as a guest.
         let device = if guest { nori_core::remote::RemoteMe { kind: nori_remote::wire::DeviceKind::Guest, ..o.device } } else { o.device };
-        let s = Session { core, client, engine, store, downloader, covers, level, search: SearchSession::new(), offline: o.offline, #[cfg(feature = "desktop")] mpris: o.mpris, keeper, db: PathBuf::from(db), remotes, device, guest, rules, discovery: o.discovery, out: o.out };
+        let s = Session { core, client, engine, store, downloader, covers, level, search: SearchSession::new(), offline: o.offline, #[cfg(feature = "desktop")] mpris: o.mpris, keeper, db: PathBuf::from(db), remotes, device, guest, rules, discovery: o.discovery, curve: Arc::default(), out: o.out };
         #[cfg(feature = "desktop")]
         if let Some(m) = &s.mpris {
             let cover = crate::remote::NowCover::new(s.covers.clone(), s.core.clone(), Arc::downgrade(m));
@@ -428,16 +440,21 @@ impl Session {
     }
 
     /// Sends `press` to the active device while it is another one; false while this one plays. A jam
-    /// guest's presses go nowhere but its own volume.
+    /// guest's go by its role ([`nori_core::remote::Remote::jam_press`]): to the host, carried out here
+    /// (false), or nowhere; its volume is its own.
     fn there(&self, press: Press) -> bool {
-        if self.guest && !matches!(press, Press::Volume(_)) {
-            return true;
+        if self.guest {
+            let jam = self.jam_playing();
+            return match jam.as_ref().and_then(|j| Some((j, j.op(press)?))) {
+                Some((j, op)) => j.jam_press(op) != Reach::Here,
+                None => !matches!(press, Press::Volume(_)),
+            };
         }
         self.elsewhere().map(|e| e.press(press)).is_some()
     }
 
     fn handle(&self) -> Handle {
-        Handle { engine: self.engine.clone(), queue: self.core.session.clone(), client: self.client.clone(), keeper: self.keeper.clone(), remotes: self.remotes.clone(), level: self.level.clone(), guest: self.guest, out: self.out.clone() }
+        Handle { engine: self.engine.clone(), queue: self.core.session.clone(), client: self.client.clone(), keeper: self.keeper.clone(), remotes: self.remotes.clone(), level: self.level.clone(), guest: self.guest, curve: self.curve.clone(), out: self.out.clone() }
     }
 
     /// The remote control and jams, while switched on: other devices to control, the jam hosted.
@@ -606,14 +623,29 @@ impl Session {
 
     /// Applies a settings change's `effect` bits to the engine.
     pub fn apply(&self, effect: u32, prefs: &StoredPrefs) {
-        if effect & (APPLY_AUDIO | SOUND | PLAYER) != 0 {
-            self.engine.set_settings(settings(prefs, self.level.loudness.db()));
-        }
-        if effect & APPLY_GAIN != 0 {
-            self.engine.gain_changed();
-        }
-        if effect & REPLAN != 0 {
-            self.engine.replan();
+        self.handle().apply_settings(effect, prefs);
+    }
+
+    /// Does what a device step said (`DeviceEffect`): loads the sound it gives and, when it asks, has the
+    /// device arrive again.
+    pub fn device_effect(&self, output: &str, effect: DeviceEffect) {
+        self.handle().device_effect(output, effect);
+    }
+
+    /// The answer to the last [`Said::Curve`]: an offered curve applied, or one applied without asking
+    /// undone.
+    pub fn curve_answer(&self) {
+        let Some(notice) = self.curve.lock().take() else { return };
+        let me = self.handle();
+        match notice {
+            CurveNotice::Offer { output, entry } => spawn("nori-autoeq", move || match block_on(me.client.device_accept(output.clone(), entry)) {
+                Ok(c) => me.device_curve_done(&output, c),
+                Err(e) => me.note(Note::CurveFailed(e)),
+            }),
+            CurveNotice::Applied { output, curve, before, created } => {
+                let effect = self.core.device_undo(output.clone(), curve, created, before);
+                me.device_effect(&output, effect);
+            }
         }
     }
 
@@ -724,10 +756,9 @@ impl Session {
                 }
             }
             Chore::MeasureAgain => {
-                let n = self.core.analysis_clear().unwrap_or(0);
-                self.core.session.planner.analyses_changed();
-                self.engine.replan();
-                return self.note(Note::Forgot(n));
+                let Ok(m) = self.core.measure_again() else { return };
+                self.applied(m.effect);
+                return self.note(Note::Forgot(m.forgot));
             }
         }
         self.note(Note::Done(chore));
@@ -766,6 +797,7 @@ impl Session {
             Event::Song { .. } => self.arrived(),
             Event::State(State::Paused) => self.keep(QueueMoment::Paused),
             Event::Bridge { .. } => self.bridge(),
+            Event::Output { name } => self.handle().device_curve(name.clone()),
             _ => {}
         }
         if let Event::Buffering(on) = e {
@@ -785,10 +817,9 @@ impl Session {
         }
         if steps.bridge == BridgeStep::Parked {
             // Back to the parked song if the server answers, else bridged further.
-            let (client, core, me) = (self.client.clone(), self.core.clone(), self.handle());
+            let (client, me) = (self.client.clone(), self.handle());
             spawn("nori-bridge", move || {
-                let up = block_on(client.read_now(Read::Ping)).is_ok();
-                if let Some(edit) = core.bridge_parked(up) {
+                if let Some(edit) = block_on(client.bridge_parked()) {
                     me.apply(&edit);
                 }
             });
@@ -863,6 +894,7 @@ impl Session {
 }
 
 /// The parts of a session worker threads (and the remote control) use.
+#[derive(Clone)]
 pub(crate) struct Handle {
     pub(crate) engine: Arc<Engine>,
     queue: Arc<nori_core::queue::Session>,
@@ -871,12 +903,58 @@ pub(crate) struct Handle {
     pub(crate) remotes: Arc<crate::remote::Remotes>,
     level: Arc<Level>,
     guest: bool,
+    curve: Arc<parking_lot::Mutex<Option<CurveNotice>>>,
     out: Out,
 }
 
 impl Handle {
     fn note(&self, n: Note) {
         (self.out)(Said::Note(n));
+    }
+
+    /// Applies a settings change's `effect` bits to the engine.
+    fn apply_settings(&self, effect: u32, prefs: &StoredPrefs) {
+        if effect & (APPLY_AUDIO | SOUND | PLAYER) != 0 {
+            self.engine.set_settings(settings(prefs, self.level.loudness.db()));
+        }
+        if effect & APPLY_GAIN != 0 {
+            self.engine.gain_changed();
+        }
+        if effect & REPLAN != 0 {
+            self.engine.replan();
+        }
+    }
+
+    /// As [`Session::device_effect`].
+    fn device_effect(&self, output: &str, effect: DeviceEffect) {
+        let settings = &self.queue.settings;
+        if let Some(prefs) = effect.apply.and_then(|s| Some(settings.current()?.with_sound(s))) {
+            let bits = settings.put(prefs.clone());
+            self.apply_settings(bits, &prefs);
+        }
+        if effect.arrive {
+            self.device_effect(output, self.client.core().device_arrive(output.to_string()));
+            self.device_curve(output.to_string());
+        }
+    }
+
+    /// The AutoEQ step of `output`'s arrival (`Client::device_curve`), on a thread of its own.
+    fn device_curve(&self, output: String) {
+        let me = self.clone();
+        // Unmetered: the AutoEQ list waits for no network these clients can tell apart.
+        spawn("nori-autoeq", move || {
+            let c = block_on(me.client.device_curve(output.clone(), false));
+            me.device_curve_done(&output, c);
+        });
+    }
+
+    /// Performs an AutoEQ step's effect and says its notice, kept for [`Session::curve_answer`].
+    fn device_curve_done(&self, output: &str, c: DeviceCurve) {
+        self.device_effect(output, c.effect);
+        *self.curve.lock() = c.notice.clone();
+        if let Some(n) = c.notice {
+            (self.out)(Said::Curve(n));
+        }
     }
 
     /// Sets the volume; the account's other devices see it.

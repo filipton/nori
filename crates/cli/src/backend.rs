@@ -58,8 +58,8 @@ pub enum Msg {
     Jam(Result<(), String>),
     /// Someone's jam joined (what the guest profile signs in with), or why not.
     Joined(Result<nori_core::remote::JamPass, String>),
-    /// This guest left its jam.
-    Left,
+    /// This guest left its jam, or the jam ended: what to say.
+    Left(String),
     /// A message from the session with this id; dropped once another session is open.
     From(u64, Box<Msg>),
 }
@@ -86,7 +86,7 @@ impl Msg {
             Msg::Remote => "remote".into(),
             Msg::Jam(r) => format!("jam opened: {}", r.is_ok()),
             Msg::Joined(r) => format!("jam joined: {}", r.is_ok()),
-            Msg::Left => "jam left".into(),
+            Msg::Left(said) => format!("jam left: {said}"),
             Msg::From(id, m) => format!("session {id}: {}", m.brief()),
         }
     }
@@ -345,15 +345,12 @@ impl Session {
         });
     }
 
-    /// Leaves the jam this guest is in; [`Msg::Left`] once the relay was told (or could not be).
+    /// Leaves the jam this guest is in, at once ([`Msg::Left`]); the relay is told on the way.
     pub fn jam_leave(&self) {
-        let (remote, tx) = (self.remote(), self.tx.clone());
-        nori_host::spawn("nori-jam-leave", move || {
-            if let Some(r) = remote {
-                let _ = block_on(r.jam_leave());
-            }
-            let _ = tx.send(Msg::Left);
-        });
+        if let Some(r) = self.remote() {
+            r.jam_leave();
+        }
+        let _ = self.tx.send(Msg::Left(crate::text::JAM_LEFT.into()));
     }
 }
 
@@ -362,8 +359,10 @@ fn worded(s: Said) -> Msg {
     let note = |text: String, error: bool| Msg::Note { text, error };
     match s {
         Said::Remote => Msg::Remote,
+        Said::JamEnded { host } => Msg::Left(crate::text::jam_ended(host.as_deref())),
         Said::Starred(marks) => Msg::Starred(marks),
         Said::Volume(v) => Msg::Volume(v),
+        Said::Curve(n) => note(crate::text::curve_notice(&n), false),
         Said::Engine(e) => Msg::Engine(e),
         Said::Lyrics { song, pick } => Msg::Lyrics { song, pick },
         Said::Search(v) => Msg::Search(v),
@@ -381,6 +380,7 @@ fn worded(s: Said) -> Msg {
             Note::Indexed(t) => note(format!("Offline index: {} songs, {} albums, {} artists", t.songs, t.albums, t.artists), false),
             Note::IndexStopped(e) => note(format!("The offline index stopped: {}", net_error(&e)), true),
             Note::Forgot(n) => note(format!("Forgot {n} measured songs"), false),
+            Note::CurveFailed(e) => note(format!("Could not fetch the AutoEQ curve: {}", net_error(&e)), true),
             Note::Done(chore) => note(
                 match chore {
                     Chore::ClearStream => "Cleared the streamed music",
@@ -425,5 +425,6 @@ fn facts(core: &nori_core::Core, client: &nori_core::client::Client, store: &nor
         },
         folders,
         devices: CpalOutput::devices(),
+        rules: core.rules(),
     }
 }

@@ -37,7 +37,7 @@ fn finish_stores_row_and_voice() {
     let secs = x.len() as f64 / s.rate as f64;
     assert!((voice.seconds() - secs).abs() < 0.5, "{} s of curve for {secs} s", voice.seconds());
     assert_eq!(core.analysis_voice("none").unwrap(), None);
-    core.analysis_clear().unwrap();
+    core.measure_again().unwrap();
     assert_eq!(core.analysis_voice("x").unwrap(), None);
 }
 

@@ -1,7 +1,9 @@
 package dev.nori.music.app.vm
 
+import dev.nori.music.text.Fmt
 import android.content.res.Resources
 import dev.nori.music.app.R
+import dev.nori.music.ffi.library.SettingsPart
 import dev.nori.music.ffi.library.TextIndex
 import dev.nori.music.ffi.model.MusicFolder
 import dev.nori.music.ffi.settings.BeatModel
@@ -107,20 +109,21 @@ fun settingKey(title: String): String {
 private val OPTIONS: Map<String, List<String>> by lazy { settingSpecs().associate { it.name to it.options } }
 private val ACCENTS: List<Long> by lazy { settingSpecs().first { it.kind == SettingKind.COLOUR }.options.map { it.toLong() } }
 
-/** "850 B", "38 MB", "2.1 GB". */
-fun formatBytes(res: Resources, bytes: Long): String = when {
-    bytes < 1024 -> res.getString(R.string.settings_bytes, bytes.toInt())
-    bytes < 1_048_576 -> res.getString(R.string.settings_kilobytes_size, "%.0f".format(bytes / 1024.0))
-    bytes < 10_485_760 -> res.getString(R.string.settings_megabytes_size, "%.1f".format(bytes / 1_048_576.0))
-    bytes < 1_073_741_824 -> res.getString(R.string.settings_megabytes_size, "%.0f".format(bytes / 1_048_576.0))
-    else -> res.getString(R.string.settings_gigabytes_size, "%.1f".format(bytes / 1_073_741_824.0))
+/** The groups the root of Settings lists: connect first, then what plays, how it sounds, how it looks; those the profile opens ([parts]). */
+fun settingsGroups(res: Resources, parts: List<SettingsPart>): List<SettingsGroup> =
+    GROUPS.filter { opens(it.first, parts) }.map { (id, title, summary) -> SettingsGroup(id, res.getString(title), res.getString(summary)) }
+
+/** Whether a profile that opens [parts] of the settings opens group or page [id]. */
+private fun opens(id: String, parts: List<SettingsPart>): Boolean = when (id) {
+    "servers" -> SettingsPart.PROFILES in parts
+    "playing" -> SettingsPart.PLAYBACK in parts
+    "sound" -> SettingsPart.SOUND in parts
+    "look" -> SettingsPart.LOOK in parts
+    "lyrics", "lyrics-sources" -> SettingsPart.LYRICS in parts
+    "library" -> SettingsPart.LIBRARY in parts
+    "data" -> listOf(SettingsPart.STREAMING, SettingsPart.DOWNLOADS, SettingsPart.STORAGE).any { it in parts }
+    else -> SettingsPart.ABOUT in parts
 }
-
-/** A decibel figure with its sign, one decimal: "+3.5", "-1.0", and "+0.0" for nothing at all (never "-0.0"). */
-fun signedDb(db: Float): String = "%+.1f".format(if (db == 0f) 0f else db)
-
-/** The groups the root of Settings lists: connect first, then what plays, how it sounds, how it looks. */
-fun settingsGroups(res: Resources): List<SettingsGroup> = GROUPS.map { (id, title, summary) -> SettingsGroup(id, res.getString(title), res.getString(summary)) }
 
 private val GROUPS = listOf(
     Triple("servers", R.string.settings_group_servers, R.string.settings_group_servers_summary),
@@ -306,7 +309,7 @@ class SettingsSearch(private val res: Resources, private val beatModel: Boolean)
     private val entries = INDEX.filter { beatModel || it.second !in BEAT_MODEL_ROWS }
     private val text: TextIndex by lazy { TextIndex(entries.map { (_, t, h) -> listOf(res.getString(t), if (h == 0) "" else res.getString(h)) }) }
 
-    fun find(query: String): List<SettingsHit> = text.ranked(query.trim()).map { i ->
+    fun find(query: String, parts: List<SettingsPart>): List<SettingsHit> = text.ranked(query.trim()).filter { opens(entries[it.toInt()].first, parts) }.map { i ->
         val (group, t, h) = entries[i.toInt()]
         val title = res.getString(t)
         val page = pageTitle(group)?.let(res::getString).orEmpty()
@@ -316,10 +319,10 @@ class SettingsSearch(private val res: Resources, private val beatModel: Boolean)
 
 // ---- the pages ----
 
-/** One group's page for these settings, facts and the core's state; null for a group there is not. */
-fun settingsPage(res: Resources, id: String, p: StoredPrefs, f: SettingsFacts, s: SettingsState): SettingsPage? {
-    val title = pageTitle(id) ?: return null
-    val b = PageBuilder(res, p, f, s)
+/** One group's page for these settings, facts and the core's state; null for a group there is not, or one the profile does not open ([parts]). */
+fun settingsPage(res: Resources, id: String, p: StoredPrefs, f: SettingsFacts, s: SettingsState, parts: List<SettingsPart>): SettingsPage? {
+    val title = pageTitle(id)?.takeIf { opens(id, parts) } ?: return null
+    val b = PageBuilder(res, p, f, s, parts)
     val sections = when (id) {
         "playing" -> b.playing()
         "sound" -> b.sound()
@@ -362,7 +365,7 @@ fun settingsActionAsks(res: Resources, action: String, f: SettingsFacts): Action
     // What is gone is fetched again from somebody else's services, song by song.
     "clear-lyrics" -> ActionAsk(
         res.getString(R.string.settings_clear_lyrics_title),
-        res.getString(R.string.settings_clear_lyrics_text, formatBytes(res, f.storage.lyricsBytes)),
+        res.getString(R.string.settings_clear_lyrics_text, Fmt.bytes(f.storage.lyricsBytes)),
         res.getString(R.string.settings_clear),
     )
     else -> null
@@ -377,16 +380,16 @@ fun updateWords(res: Resources, s: Updates.State, current: String, installs: Boo
     Updates.State.Checking -> res.getString(R.string.update_checking)
     is Updates.State.UpToDate -> res.getString(R.string.update_latest, current)
     is Updates.State.Available ->
-        if (installs) res.getString(R.string.update_available, s.update.version, formatBytes(res, s.update.apkBytes.toLong()))
+        if (installs) res.getString(R.string.update_available, s.update.version, Fmt.bytes(s.update.apkBytes.toLong()))
         else res.getString(R.string.update_available_elsewhere, s.update.version)
     is Updates.State.NoApk -> res.getString(R.string.update_no_apk, s.version)
     is Updates.State.CheckFailed -> res.getString(R.string.update_check_failed, s.error.said.orEmpty())
-    is Updates.State.Downloading -> res.getString(R.string.update_downloading, formatBytes(res, s.done), formatBytes(res, s.total))
+    is Updates.State.Downloading -> res.getString(R.string.update_downloading, Fmt.bytes(s.done), Fmt.bytes(s.total))
     is Updates.State.Installing -> res.getString(R.string.update_installing)
     is Updates.State.NeedsPermission -> res.getString(R.string.update_needs_permission)
     is Updates.State.Failed -> when (val why = s.why) {
         is Updates.Failure.Download -> res.getString(R.string.update_failed_download, why.error.said.orEmpty())
-        is Updates.Failure.Size -> res.getString(R.string.update_failed_size, formatBytes(res, why.got), formatBytes(res, why.expected))
+        is Updates.Failure.Size -> res.getString(R.string.update_failed_size, Fmt.bytes(why.got), Fmt.bytes(why.expected))
         Updates.Failure.NotThisApp -> res.getString(R.string.update_failed_not_nori)
         // Android's own message is for the log (it says INSTALL_FAILED_... in capitals): each kind is worded here.
         is Updates.Failure.Install -> res.getString(
@@ -413,7 +416,7 @@ fun updateButton(res: Resources, s: Updates.State, installs: Boolean): String? =
     else -> res.getString(R.string.update_check)
 }
 
-private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: SettingsFacts, val s: SettingsState) {
+private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: SettingsFacts, val s: SettingsState, val parts: List<SettingsPart>) {
     fun str(id: Int) = res.getString(id)
     fun str(id: Int, vararg args: Any) = res.getString(id, *args)
     fun value(name: String) = s.values[name].orEmpty()
@@ -587,7 +590,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
         )
         if (p.replayGain != dev.nori.music.ffi.model.GainMode.OFF) {
             val r = dev.nori.music.settings.EQ.eqRanges.replayGainPreamp
-            volume += SettingRow.Slider("preampDb", str(R.string.settings_overall_level, signedDb(p.preampDb)), p.preampDb, r.min, r.max, true, EqLevel.REPLAY_GAIN_PREAMP)
+            volume += SettingRow.Slider("preampDb", str(R.string.settings_overall_level, Fmt.signedDb(p.preampDb)), p.preampDb, r.min, r.max, true, EqLevel.REPLAY_GAIN_PREAMP)
             volume += choice("loudnessTarget", R.string.settings_loudness_target, fallback = { str(R.string.settings_lufs, minus(float(it))) }) {
                 val words = when (it) {
                     "-18" -> R.string.settings_lufs_replay_gain
@@ -620,7 +623,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
 
     /** Bass boost, virtualizer, volume boost and the compressor: sliders edited in place in the core. */
     fun effects(): List<SettingRow> {
-        fun boost(db: Float) = if (db <= 0f) str(R.string.settings_off) else str(R.string.settings_db, signedDb(db))
+        fun boost(db: Float) = if (db <= 0f) str(R.string.settings_off) else str(R.string.settings_db, Fmt.signedDb(db))
         fun one(v: Float) = "%.1f".format(v)
         val rows = mutableListOf<SettingRow>(
             SettingRow.Slider("bassBoostDb", str(R.string.settings_bass_boost, boost(p.bassBoostDb)), p.bassBoostDb, 0f, 12f, false, EqLevel.BASS_BOOST),
@@ -644,7 +647,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             rows += SettingRow.Slider("compRatio", str(R.string.settings_comp_ratio, one(p.compRatio)), p.compRatio.coerceIn(1f, 10f), 1f, 10f, false, EqLevel.COMP_RATIO)
             rows += SettingRow.Slider("compAttackMs", str(R.string.settings_comp_attack, one(p.compAttackMs)), p.compAttackMs.coerceIn(0.1f, 100f), 0.1f, 100f, false, EqLevel.COMP_ATTACK)
             rows += SettingRow.Slider("compReleaseMs", str(R.string.settings_comp_release, p.compReleaseMs.roundToInt().toString()), p.compReleaseMs.coerceIn(10f, 1000f), 10f, 1000f, false, EqLevel.COMP_RELEASE)
-            rows += SettingRow.Slider("compMakeupDb", str(R.string.settings_comp_makeup, signedDb(p.compMakeupDb)), p.compMakeupDb.coerceIn(0f, 12f), 0f, 12f, false, EqLevel.COMP_MAKEUP)
+            rows += SettingRow.Slider("compMakeupDb", str(R.string.settings_comp_makeup, Fmt.signedDb(p.compMakeupDb)), p.compMakeupDb.coerceIn(0f, 12f), 0f, 12f, false, EqLevel.COMP_MAKEUP)
             rows += SettingRow.Slider("compKneeDb", str(R.string.settings_comp_knee, one(p.compKneeDb)), p.compKneeDb.coerceIn(0f, 12f), 0f, 12f, false, EqLevel.COMP_KNEE)
         }
         // Loudness compensation that follows the volume (ISO 226): off unless asked for.
@@ -865,7 +868,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
         // What lives on this device, and a way to throw the throwaway parts out. Downloads are the permanent
         // copy and are removed where they are listed; the streamed music and the covers rebuild themselves.
         val st = f.storage
-        val bytes = { n: Long -> formatBytes(res, n) }
+        val bytes = Fmt::bytes
         val clearing = str(if (st.busy) R.string.settings_clearing else R.string.settings_clear)
         val stored = str(R.string.settings_stored)
         val storage = listOf(
@@ -885,9 +888,11 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             action(R.string.settings_lyrics_cache, str(R.string.settings_lyrics_cache_detail, bytes(st.lyricsBytes)), clearing, !st.busy && st.lyricsBytes > 0, "clear-lyrics"),
             action(R.string.settings_downloads, str(R.string.settings_downloads_detail), str(R.string.settings_show), true, "downloads"),
         )
-        return listOf(
-            section(R.string.settings_section_streaming, streaming), section(R.string.settings_section_downloads, downloads),
-            section(R.string.settings_section_ahead, ahead), section(R.string.settings_section_storage, storage),
+        return listOfNotNull(
+            section(R.string.settings_section_streaming, streaming).takeIf { SettingsPart.STREAMING in parts },
+            section(R.string.settings_section_downloads, downloads).takeIf { SettingsPart.DOWNLOADS in parts },
+            section(R.string.settings_section_ahead, ahead).takeIf { SettingsPart.STREAMING in parts },
+            section(R.string.settings_section_storage, storage).takeIf { SettingsPart.STORAGE in parts },
         )
     }
 
@@ -925,6 +930,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             val active = sv.id == p.activeServerId
             SettingRow.Server(sv.id, sv.label, serverDetail(sv.user, active, sv.wifiOnly, sv.altUrl.isNotBlank()), active)
         }.toMutableList<SettingRow>()
+        if (SettingsPart.SERVER_OPTIONS !in parts) return listOf(section(R.string.settings_section_accounts, accounts))
         accounts += SettingRow.Button(str(R.string.settings_add_server), "add-server")
         val out = mutableListOf(section(R.string.settings_section_accounts, accounts))
         val server = p.server

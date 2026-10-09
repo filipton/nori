@@ -495,8 +495,11 @@ private fun SettingsSectionRows(vm: SettingsViewModel, section: SettingsSection,
                             Text(row.label, color = if (row.active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
                             Text(row.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        TextButton({ editing = p.servers.firstOrNull { it.id == row.id } }) { Text(say.edit) }
-                        TextButton({ vm.removeServer(row.id) }) { Text(say.remove) }
+                        // A jam guest switches between the profiles; changing them is the account's.
+                        if (LocalRules.current.account) {
+                            TextButton({ editing = p.servers.firstOrNull { it.id == row.id } }) { Text(say.edit) }
+                            TextButton({ vm.removeServer(row.id) }) { Text(say.remove) }
+                        }
                     }
                     Hairline(startIndent = 16.dp)
                 }

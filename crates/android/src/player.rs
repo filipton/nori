@@ -1260,6 +1260,7 @@ const EVENT_BRIDGE: i32 = 8;
 const EVENT_MIXING: i32 = 9;
 const EVENT_PLACED: i32 = 10;
 const EVENT_LANDED: i32 = 11;
+const EVENT_FOLLOWING: i32 = 12;
 
 impl Events {
     fn push(&self, e: Event) {
@@ -1276,6 +1277,7 @@ impl Events {
             Event::Looped { index, .. } => log(&format!("song {index} again (repeat one)")),
             Event::Bridge { plays } => log(&format!("the network would not bring the song: the offline bridge takes over, after play {plays}")),
             Event::Placed { index, ms } => log(&format!("song {index} goes on at {ms} ms on another path")),
+            Event::Following(f) => log(&format!("following: {f:?}")),
             _ => {}
         }
         let jumps = match &e {
@@ -1304,6 +1306,8 @@ impl Events {
             // A seek or jump landed (Android asks for no periodic positions).
             Event::Position { index, .. } => (EVENT_LANDED, index as i32, String::new()),
             Event::Awake(_) => return,
+            // -1: not following; else bit 0 the music plays there, bit 1 held here.
+            Event::Following(f) => (EVENT_FOLLOWING, f.map_or(-1, |f| f.playing as i32 | (f.held as i32) << 1), String::new()),
         };
         let first = {
             let mut q = self.queue.lock();

@@ -1,6 +1,8 @@
 //! Settings pages, following Android's SettingsPages.kt minus phone-only settings. Settings, options and
 //! values come from the core's `settings_model`; rows report back the setting name and the picked value.
 
+use nori_core::browse::SettingsPart;
+use nori_core::numbers::{self, POINT};
 use nori_core::settings::{EqLevel, GainMode, StoredPrefs, EQ_RANGES};
 use nori_core::settings_model::{self, BeatModel, SettingsState};
 use slint::{Color, ModelRc, SharedString, VecModel};
@@ -37,6 +39,8 @@ pub struct Facts {
     pub devices: Vec<String>,
     pub device: String,
     pub syncing: bool,
+    /// What the open profile offers: a jam guest's settings are this computer's own.
+    pub rules: nori_core::browse::ProfileRules,
 }
 
 /// Row name of the output device choice (a desktop setting, not the core's).
@@ -133,7 +137,7 @@ fn minus(v: &str) -> String {
 }
 
 fn one(v: f32) -> String {
-    format!("{v:.1}")
+    numbers::fixed(v as f64, 1, false, POINT)
 }
 
 fn percent(v: &str) -> String {
@@ -148,22 +152,6 @@ fn seconds(v: &str) -> String {
 pub fn accent_shown(argb: u32) -> u32 {
     let default = StoredPrefs::default().accent as u32;
     if argb == default { 0xFFFA2D48 } else { argb }
-}
-
-/// "850 B", "38 MB", "2.1 GB".
-pub fn bytes(n: u64) -> String {
-    let n = n as f64;
-    if n < 1024.0 {
-        format!("{n:.0} B")
-    } else if n < 1_048_576.0 {
-        format!("{:.0} KB", n / 1024.0)
-    } else if n < 10_485_760.0 {
-        format!("{:.1} MB", n / 1_048_576.0)
-    } else if n < 1_073_741_824.0 {
-        format!("{:.0} MB", n / 1_048_576.0)
-    } else {
-        format!("{:.1} GB", n / 1_073_741_824.0)
-    }
 }
 
 impl Build<'_> {
@@ -500,12 +488,12 @@ impl Build<'_> {
         ];
         let stored = format!(
             "{} streamed · {} covers · {} lyrics · {} in {} · {} library",
-            bytes(f.stream_bytes),
-            bytes(f.cover_bytes),
-            bytes(f.lyrics_bytes),
-            bytes(f.download_bytes),
+            numbers::bytes(f.stream_bytes as i64, POINT),
+            numbers::bytes(f.cover_bytes as i64, POINT),
+            numbers::bytes(f.lyrics_bytes as i64, POINT),
+            numbers::bytes(f.download_bytes as i64, POINT),
             words::count(f.download_songs, "download", "downloads"),
-            bytes(f.database_bytes)
+            numbers::bytes(f.database_bytes as i64, POINT)
         );
         let storage = vec![
             self.choice("cacheMb", "Space for streamed music", |v| match v.parse::<u32>() {
@@ -515,7 +503,7 @@ impl Build<'_> {
             self.info("Stored on this Mac", stored),
             self.action("Streamed music", "Oldest goes first. Downloads stay.".into(), "Clear", f.stream_bytes > 0, Chore::ClearStream),
             self.action("Covers", "Fetched again when needed.".into(), "Clear", f.cover_bytes > 0, Chore::ClearCovers),
-            self.action("Lyrics", format!("{} found online. Looked up again when needed.", bytes(f.lyrics_bytes)), "Clear", f.lyrics_bytes > 0, Chore::ClearLyrics),
+            self.action("Lyrics", format!("{} found online. Looked up again when needed.", numbers::bytes(f.lyrics_bytes as i64, POINT)), "Clear", f.lyrics_bytes > 0, Chore::ClearLyrics),
         ];
         vec![("Streaming quality", streaming), ("Downloads", downloads), ("Loading ahead", ahead), ("Storage", storage)]
     }
@@ -535,7 +523,9 @@ impl Build<'_> {
                 Row { kind: SERVER, name: sv.id.clone(), title: nori_core::settings::label(&sv.name, &sv.url), detail, on: active, enabled: true, ..Default::default() }
             })
             .collect();
-        accounts.push(Row { kind: BUTTON, name: ADD_SERVER.into(), title: "Add server".into(), enabled: true, ..Default::default() });
+        if self.f.rules.settings.contains(&SettingsPart::ServerOptions) {
+            accounts.push(Row { kind: BUTTON, name: ADD_SERVER.into(), title: "Add server".into(), enabled: true, ..Default::default() });
+        }
         let mut out = vec![("Accounts", accounts)];
         if self.f.folders.len() > 1 {
             let mut o = vec![("All".to_string(), String::new())];
@@ -573,7 +563,7 @@ fn service(id: &str) -> Option<(&'static str, &'static str)> {
 pub fn rows(p: &StoredPrefs, f: &Facts, tab: i32) -> ModelRc<SettingRow> {
     let s = settings_model::state(p, settings_model::Output::default(), &crate::session::app().settings.model);
     let b = Build { p, s: &s, f };
-    let groups = match tab {
+    let mut groups = match tab {
         1 => b.playing(),
         2 => b.sound(),
         3 => b.lyrics(),
@@ -582,6 +572,7 @@ pub fn rows(p: &StoredPrefs, f: &Facts, tab: i32) -> ModelRc<SettingRow> {
         6 => b.servers(),
         _ => b.general(),
     };
+    groups.retain(|(title, _)| f.rules.settings.contains(&part(tab, title)));
     let mut out = Vec::new();
     for (title, rows) in groups {
         out.push(SettingRow { kind: HEADING, title: title.into(), ..Default::default() });
@@ -616,6 +607,22 @@ pub fn rows(p: &StoredPrefs, f: &Facts, tab: i32) -> ModelRc<SettingRow> {
         }
     }
     ModelRc::new(VecModel::from(out))
+}
+
+/// The part of the settings section `title` of tab `tab` is.
+fn part(tab: i32, title: &str) -> SettingsPart {
+    match (tab, title) {
+        (1, _) => SettingsPart::Playback,
+        (2, _) => SettingsPart::Sound,
+        (3, _) => SettingsPart::Lyrics,
+        (4, _) => SettingsPart::Library,
+        (5, "Downloads") => SettingsPart::Downloads,
+        (5, "Storage") => SettingsPart::Storage,
+        (5, _) => SettingsPart::Streaming,
+        (6, "This server") => SettingsPart::ServerOptions,
+        (6, _) => SettingsPart::Profiles,
+        _ => SettingsPart::Look,
+    }
 }
 
 /// The value of option `index` of `target`.

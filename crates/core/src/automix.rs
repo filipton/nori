@@ -11,18 +11,32 @@ pub use nori_automix::*;
 #[cfg(test)]
 mod tests;
 
+/// What "Measure again" did: the songs forgotten, and what it asks of the player, as a settings change's
+/// effect bits (`settings_store::REPLAN`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct MeasuredAgain {
+    pub forgot: u32,
+    pub effect: u32,
+}
+
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
     pub fn analysis_get(&self, song_id: String) -> Result<Option<TrackAnalysis>> {
         Ok(get(&self.db.lock(), &song_id)?)
     }
 
-    /// Deletes every analysis and vocal curve, so songs are re-analysed; returns the count deleted.
-    pub fn analysis_clear(&self) -> Result<u32> {
-        let c = self.db.lock();
-        let n = c.execute("DELETE FROM track_analysis WHERE server=sid()", [])? as u32;
-        c.execute("DELETE FROM vocal_curve WHERE server=sid()", [])?;
-        Ok(n)
+    /// "Measure again": deletes every analysis and vocal curve, so songs are measured anew, and has the
+    /// transition coming up planned again without them.
+    pub fn measure_again(&self) -> Result<MeasuredAgain> {
+        let forgot = {
+            let c = self.db.lock();
+            let n = c.execute("DELETE FROM track_analysis WHERE server=sid()", [])? as u32;
+            c.execute("DELETE FROM vocal_curve WHERE server=sid()", [])?;
+            n
+        };
+        self.session.planner.analyses_changed();
+        Ok(MeasuredAgain { forgot, effect: crate::settings_store::REPLAN })
     }
 
     /// Number of stored analyses.

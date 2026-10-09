@@ -322,7 +322,7 @@ impl Runner {
                 app.go(View::Home);
                 return;
             }
-            Msg::Left => {
+            Msg::Left(said) => {
                 match nori_host::jam_left(&crate::backend::app().settings) {
                     Some(p) => {
                         prefs_changed(app);
@@ -337,7 +337,7 @@ impl Runner {
                         app.view = View::Login;
                     }
                 }
-                return app.say(crate::text::JAM_LEFT, false);
+                return app.say(said.clone(), false);
             }
             Msg::LoggedIn(Ok(p)) => {
                 let mut prefs = crate::backend::app().settings.current().unwrap_or_default();
@@ -374,9 +374,10 @@ impl Runner {
             let names = nori_core::remote::device_names(d.list.clone(), r.me(), crate::text::kind_words());
             d.list.iter_mut().zip(names).for_each(|(x, name)| x.name = name);
         }
-        let jam = remote.as_ref().filter(|_| jams).and_then(|r| r.jam_view().filter(|v| v.hosting || guest).map(|v| (v, r.jam_added())));
+        let jam = remote.as_ref().filter(|_| jams).and_then(|r| r.jam_view().map(|v| (v, r.jam_added())));
         (d.jam, d.added) = jam.map_or_else(Default::default, |(v, added)| (Some(v), added));
         let e = if guest { s.jam_playing() } else { s.elsewhere() };
+        d.controls = e.as_ref().filter(|_| guest).and_then(|e| e.jam_controls());
         let moved = e.is_some() != self.elsewhere.is_some();
         let device = e.as_ref().filter(|_| !guest);
         d.active = device.map(|e| (e.mirror.id.clone(), e.mirror.name.clone()));
@@ -414,7 +415,9 @@ impl Runner {
         }
         if let Some(e) = &self.elsewhere {
             let m = &e.mirror;
-            let state = match (m.playing, e.song()) {
+            // A jam guest's play button says what its controls say: paused here while the jam plays on.
+            let playing = app.devices.controls.map_or(m.playing, |c| c.playing);
+            let state = match (playing, e.song()) {
                 (true, _) => State::Playing,
                 (false, Some(_)) => State::Paused,
                 (false, None) => State::Idle,
@@ -534,10 +537,10 @@ impl Runner {
                 return;
             }
             Cmd::JoinJam(link) => {
-                let (http, tx) = (self.http.clone(), self.tx.clone());
+                let (http, tx, remote) = (self.http.clone(), self.tx.clone(), self.session.as_ref().and_then(|s| s.remote()));
                 nori_host::spawn("nori-jam-join", move || {
-                    let joined = nori_host::jam_join(http, &crate::backend::app().settings, link, &nori_host::device_name());
-                    let _ = tx.send(Msg::Joined(joined.map_err(|e| crate::text::net_error(&e))));
+                    let joined = nori_host::jam_join(http, &crate::backend::app().settings, link, &nori_host::device_name(), remote);
+                    let _ = tx.send(Msg::Joined(joined.map_err(|e| crate::text::jam_join_failed(&e))));
                 });
                 return;
             }
@@ -642,6 +645,7 @@ impl Runner {
                 sound_edited(s, app, effect);
             }
             Cmd::Action(c) => s.action(c),
+            Cmd::Curve => s.curve_answer(),
             Cmd::Tuning(on) => s.engine.set_shallow(on),
             Cmd::SearchTyped(text) => {
                 let v = s.search_typed(&text);

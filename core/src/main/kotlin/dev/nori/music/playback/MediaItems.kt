@@ -100,6 +100,10 @@ private const val KEPT = "kept"
 fun MediaItem.isKept(): Boolean = mediaMetadata.extras?.getBoolean(KEPT) == true
 fun MediaItem.kept(): MediaItem = withExtra { putBoolean(KEPT, true) }
 
+/** A jam's song, [jam] ("Jam · Filip") its subtitle: the notification says it under the song. */
+fun MediaItem.inJam(jam: String?): MediaItem =
+    if (jam == null) this else buildUpon().setMediaMetadata(mediaMetadata.buildUpon().setSubtitle(jam).build()).build()
+
 private const val ORDERED = "ordered"
 fun MediaItem.inOrder(): Boolean = mediaMetadata.extras?.getBoolean(ORDERED) == true
 fun MediaItem.ordered(): MediaItem = withExtra { putBoolean(ORDERED, true) }

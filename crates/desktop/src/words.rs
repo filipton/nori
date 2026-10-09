@@ -1,12 +1,16 @@
 //! User-facing wording for numbers and errors (mirrors the terminal's text.rs).
 
+use nori_core::numbers;
+use nori_core::profiles::CurveNotice;
 use nori_core::transport::{FailureKind, NetError};
 use nori_core::Song;
 
-/// "3:07", "1:02:03".
-pub fn duration(seconds: i64) -> String {
-    let s = seconds.max(0);
-    if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+/// What to say about a device's AutoEQ curve, and the button's word.
+pub fn curve_notice(n: &CurveNotice) -> (String, &'static str) {
+    match n {
+        CurveNotice::Offer { entry, .. } => (format!("{} connected. Use its AutoEQ curve?", entry.name), "Apply"),
+        CurveNotice::Applied { curve, .. } => (format!("Using AutoEQ for {curve}"), "Undo"),
+    }
 }
 
 pub fn count(n: impl Into<u64>, one: &str, many: &str) -> String {
@@ -24,7 +28,7 @@ pub fn albums(n: u32) -> String {
 
 /// "12 songs · 48:10".
 pub fn songs_caption(n: usize, seconds: u64) -> String {
-    format!("{} · {}", songs(n), duration(seconds as i64))
+    format!("{} · {}", songs(n), numbers::clock(seconds as i64, false))
 }
 
 /// "FLAC 24/96.0", "MP3 320 kbps".
@@ -32,7 +36,7 @@ pub fn quality(s: &Song) -> Option<String> {
     let suffix = s.suffix.to_lowercase();
     let lossless = matches!(suffix.as_str(), "flac" | "alac" | "wav" | "aiff" | "ape" | "wv" | "dsf" | "dff");
     let detail = if lossless && s.bit_depth > 0 {
-        Some(format!("{}/{:?}", s.bit_depth, s.sampling_rate as f64 / 1000.0))
+        Some(format!("{}/{}", s.bit_depth, numbers::khz(s.sampling_rate as i32)))
     } else {
         (s.bit_rate > 0).then(|| format!("{} kbps", s.bit_rate))
     };
@@ -170,9 +174,23 @@ pub const ASKED: &str = "Asked";
 pub const JAM_GUEST: &str = "Jam";
 pub const NOT_AN_INVITE: &str = "That is not a jam invite. Paste the whole link the host sent you.";
 pub const JAM_LEFT: &str = "You left the jam";
+/// Beside a jam guest's song while it paused its own listening: play joins the jam again.
+pub const JAM_PAUSED_HERE: &str = "Paused here · Jam still playing";
 
-pub fn jam_join_failed(e: &str) -> String {
-    format!("Couldn't join the jam ({e})")
+pub fn jam_ended(host: Option<&str>) -> String {
+    host.map_or("The jam ended".into(), |h| format!("{h} ended the jam"))
+}
+
+pub const JAM_OWN: &str = "That's your own jam";
+pub const JAM_INVITE_ENDED: &str = "This jam has ended";
+
+/// Why a jam was not joined.
+pub fn jam_join_failed(e: &nori_host::JoinError) -> String {
+    match e {
+        nori_host::JoinError::Own => JAM_OWN.into(),
+        nori_host::JoinError::Ended => JAM_INVITE_ENDED.into(),
+        nori_host::JoinError::Failed(e) => format!("Couldn't join the jam ({})", net_error(e)),
+    }
 }
 
 pub fn jam_asked(from: &str) -> String {
@@ -220,8 +238,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn formats_durations_and_counts() {
-        assert_eq!((duration(0), duration(187), duration(3723)), ("0:00".into(), "3:07".into(), "1:02:03".into()));
+    fn formats_counts() {
         assert_eq!((songs(1), songs_caption(2, 200)), ("1 song".into(), "2 songs · 3:20".into()));
         let s = Song { suffix: "flac".into(), bit_depth: 24, sampling_rate: 96000, ..Default::default() };
         assert_eq!(quality(&s).as_deref(), Some("FLAC 24/96.0"));

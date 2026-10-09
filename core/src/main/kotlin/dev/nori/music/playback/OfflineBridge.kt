@@ -3,7 +3,6 @@ package dev.nori.music.playback
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
-import android.os.Handler
 import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
@@ -14,6 +13,10 @@ import dev.nori.music.ffi.queue.QueueEdit
 import dev.nori.music.ffi.net.Failure
 import dev.nori.music.ffi.net.failureNetworkish
 import dev.nori.music.net.failureKind
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * When the server is gone mid-evening and the next queued song is not on the phone, keep playing from
@@ -21,16 +24,18 @@ import dev.nori.music.net.failureKind
  * this object never registers a network callback and costs nothing.
  *
  * Which downloads, where they go and what comes back is the core's (crates/queue/src/bridge.rs over its
- * queue, nori_player::playlist): this watches the network, and the service makes each change the core
- * made to its player ([apply]).
+ * queue, nori_player::playlist), and so is whether the server is back (crates/core/src/bridge.rs: it
+ * answers a ping): this reports the phone moving to another network, and the service makes each change
+ * the core made to its player ([apply]).
  */
 @androidx.media3.common.util.UnstableApi
 class OfflineBridge(
     context: Context,
     private val player: Player,
     private val core: () -> dev.nori.music.ffi.Core,
+    private val client: () -> dev.nori.music.ffi.Client,
     private val session: dev.nori.music.ffi.queue.Session,
-    private val main: Handler,
+    private val scope: CoroutineScope,
     private val apply: (QueueEdit) -> Unit,
     private val skip: () -> Unit,
 ) {
@@ -62,24 +67,24 @@ class OfflineBridge(
     /**
      * A song arrived, and the core said what it means for the bridge (rules.rs song_arrived): with none
      * playing nothing is watched; once the bridge has played up to the parked song, the queue comes back
-     * if the network has, or more downloads go in before it if it has not (`Core::bridge_parked`).
+     * if the server is, or more downloads go in before it if it is not (`Client::bridge_parked`).
      */
     fun onSong(step: BridgeStep) {
         when (step) {
             BridgeStep.OFF, BridgeStep.BRIDGING -> {}
             BridgeStep.IDLE -> stopWatching()
-            BridgeStep.PARKED -> {
-                val up = networkUp()
-                runCatching { core().bridgeParked(up) }.getOrNull()?.let(apply)
-                if (up) stopWatching()
-            }
+            BridgeStep.PARKED -> edited { client().bridgeParked() }
         }
     }
 
-    /** Network came back: the bridge's songs go and the parked song plays. */
-    fun resume() {
-        session.playlistUnbridge()?.let { apply(it); Log.i(TAG, "resumed the parked queue") }
-        stopWatching()
+    /** The core's edit, asked off the main thread and made here; once the queue is back nothing is watched. */
+    private fun edited(ask: suspend () -> QueueEdit?) = scope.launch {
+        val edit = withContext(Dispatchers.IO) { runCatching { ask() }.getOrNull() } ?: return@launch
+        apply(edit)
+        if (!session.playlistBridgeState().bridging) {
+            Log.i(TAG, "resumed the parked queue")
+            stopWatching()
+        }
     }
 
     /** A new queue replaced the bridged one (the core dropped the bridge with it): stop watching. */
@@ -87,12 +92,12 @@ class OfflineBridge(
 
     private fun watchNetwork() {
         if (networkCallback != null) return
-        // The callback is told of the network already up at once: that one did not bring the song (the
-        // server may be what is gone), so only another network ends the bridge; the parked song tries again.
+        // The callback is told of the network already up at once: that one did not bring the song, so only
+        // another network is a change worth asking the server about.
         val failedOn = connectivity.activeNetwork
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                if (network != failedOn) main.post { resume() }
+                if (network != failedOn) edited { client().bridgeNetworkChanged() }
             }
         }
         runCatching { connectivity.registerDefaultNetworkCallback(cb) }
@@ -104,10 +109,6 @@ class OfflineBridge(
         networkCallback?.let { runCatching { connectivity.unregisterNetworkCallback(it) } }
         networkCallback = null
     }
-
-    private fun networkUp(): Boolean =
-        connectivity.activeNetwork != null &&
-            connectivity.getNetworkCapabilities(connectivity.activeNetwork) != null
 
     private companion object {
         const val TAG = "nori.bridge"

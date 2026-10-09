@@ -120,12 +120,14 @@ struct Now {
 }
 
 /// What the open profile offers (`nori_ios_rules`): a jam guest's asks the host for what it plays, and has
-/// nothing of the account's (hearts, playlists, downloads, the settings).
+/// nothing of the account's (hearts, playlists, downloads, its settings).
 struct Rules {
     var asks = false
     var account = true
     /// The library's sections, as the core's LibrarySection numbers.
     var sections: Set<Int> = Set(0...11)
+    /// The parts of the settings it opens, as the core's SettingsPart numbers (1: the server's own options).
+    var settings: Set<Int> = Set(0...10)
 
     init() {}
 
@@ -133,6 +135,7 @@ struct Rules {
         asks = d["asks"] as? Bool ?? false
         account = d["account"] as? Bool ?? true
         sections = Set(d["sections"] as? [Int] ?? [])
+        settings = Set(d["settings"] as? [Int] ?? [])
     }
 }
 
@@ -145,8 +148,15 @@ struct Jam {
     let asks: [Item]
     /// 0 only shown, 1 playing here, 2 asked but the host lets no one, 3 asked but the server lets no guest.
     let listening: Int
-    /// The host closed the jam or sent this guest out: its pass no longer works.
-    let ended: Bool
+    /// What its play, skip and seek controls reach by its role: 0 offered not, 1 this iPod's own
+    /// listening, 2 the host's playback.
+    let play: Int
+    let skip: Int
+    let seek: Int
+    /// What the play button shows.
+    let playing: Bool
+    /// Paused here while the jam plays on: play joins it again.
+    let pausedHere: Bool
 
     init(_ d: [String: Any]) {
         host = d["host"] as? String ?? ""
@@ -154,10 +164,14 @@ struct Jam {
         asked = Set(d["asked"] as? [String] ?? [])
         asks = (d["asks"] as? [[String: Any]] ?? []).map { Item($0.merging(["k": "song"]) { a, _ in a }) }
         listening = d["listening"] as? Int ?? 0
-        ended = d["ended"] as? Bool ?? false
+        play = d["play"] as? Int ?? 0
+        skip = d["skip"] as? Int ?? 0
+        seek = d["seek"] as? Int ?? 0
+        playing = d["playing"] as? Bool ?? false
+        pausedHere = d["pausedHere"] as? Bool ?? false
     }
 
-    var strip: String { Say.jamStrip(host, listeners.count) }
+    var strip: String { pausedHere ? Say.jamPausedHere : Say.jamStrip(host, listeners.count) }
 }
 
 private func json(_ text: UnsafePointer<CChar>) -> [String: Any] {
@@ -218,16 +232,7 @@ final class Core {
     private func readJam() {
         jam = (takenJSON(nori_ios_jam()) as? [String: Any]).map(Jam.init)
         NotificationCenter.default.post(name: .noriJam, object: nil)
-        // A jam that is over leaves the guest profile, whose pass is refused by every request now: the
-        // profile before it opens again.
-        if jam?.ended == true, !leavingEndedJam {
-            leavingEndedJam = true
-            nori_ios_jam_leave()
-        }
     }
-
-    /// The guest profile of an ended jam is being left; its leaving says the jam ended.
-    private var leavingEndedJam = false
 
     /// Hearts changed in this session, by item id, until a page read brings the server's word.
     private var marks: [String: Bool] = [:]
@@ -390,13 +395,14 @@ final class Core {
             refresh()
             readJam()
             NotificationCenter.default.post(name: .noriDevices, object: nil)
+        case 20 where flag == 2:
+            Toast.show(Say.jamInviteEnded)
         case 20 where flag != 0:
             switchProfile(nil)
         case 20:
             Toast.show(Say.jamJoinFailed(Say.failure(count, text)))
         case 21:
-            switchProfile(leavingEndedJam ? Say.jamEnded : Say.jamLeft)
-            leavingEndedJam = false
+            switchProfile(count == 0 ? Say.jamLeft : Say.jamEnded(text))
         case 19:
             SystemVolume.set(Float(ms) / 1000)
         case 5:
@@ -409,9 +415,23 @@ final class Core {
             }
         case 11:
             NotificationCenter.default.post(name: .noriLyrics, object: id)
+        case 22:
+            askCurve(text, offered: flag != 0)
         default:
             break
         }
+    }
+
+    /// An AutoEQ curve for the output just attached: offered (Apply answers it) or already applied (Undo
+    /// answers it). Either way `nori_ios_curve_answer` is the answer.
+    private func askCurve(_ curve: String, offered: Bool) {
+        var top = UIApplication.shared.keyWindow?.rootViewController
+        while let next = top?.presentedViewController { top = next }
+        guard let shown = top else { return }
+        let ask = UIAlertController(title: offered ? Say.curveOffered : Say.curveApplied, message: curve, preferredStyle: .alert)
+        ask.addAction(UIAlertAction(title: offered ? Say.curveApply : Say.curveUndo, style: .default) { _ in nori_ios_curve_answer() })
+        ask.addAction(UIAlertAction(title: offered ? Say.curveNotNow : Say.curveKeep, style: .cancel))
+        shown.present(ask, animated: true)
     }
 
     private func answered(_ token: UInt64, _ answer: PageAnswer) {

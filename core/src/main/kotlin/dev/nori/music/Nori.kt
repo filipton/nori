@@ -121,25 +121,32 @@ class Nori private constructor(private val context: Context) {
     val player = PlayerConnection(context, this)
 
     /**
-     * Joins the jam an invite [link] names: the guest profile it gives is the one in use from now on, and
-     * leaving drops it again (the profile in use before takes over).
+     * Joins the jam an invite [link] names (the core's `jam_join`, which knows this phone's own invites):
+     * once joined, the guest profile it gives is the one in use, and leaving drops it again (the profile
+     * in use before takes over). What it came to.
      */
-    suspend fun joinJam(link: String) = withContext(Dispatchers.IO) {
-        val pass = lifted { dev.nori.music.ffi.jamJoin(transport, link, dev.nori.music.remote.Remotes.deviceName(context)) }
-        val guest = dev.nori.music.settings.newServer(dev.nori.music.ffi.settings.serverNewId())
-            .copy(name = context.getString(dev.nori.music.core.R.string.jam_profile), url = pass.url, apiKey = pass.apiKey)
-        // A guest of one jam at a time: the profile of a jam left behind goes.
-        val before = settings.value.server?.takeIf { dev.nori.music.ffi.remote.isGuestKey(it.apiKey) }
-        withContext(Dispatchers.Main) {
-            activate(guest)
-            before?.let { removeServer(it.id) }
+    suspend fun joinJam(link: String): dev.nori.music.ffi.JamJoin = withContext(Dispatchers.IO) {
+        val joined = lifted { dev.nori.music.ffi.jamJoin(transport, settings.core, remotes.peek(), link, dev.nori.music.remote.Remotes.deviceName(context)) }
+        if (joined is dev.nori.music.ffi.JamJoin.Joined) {
+            val guest = dev.nori.music.settings.newServer(dev.nori.music.ffi.settings.serverNewId())
+                .copy(name = context.getString(dev.nori.music.core.R.string.jam_profile), url = joined.pass.url, apiKey = joined.pass.apiKey)
+            withContext(Dispatchers.Main) { activate(guest) }
         }
+        joined
     }
 
-    /** Leaves the jam this guest profile is in and drops the profile. */
-    suspend fun leaveJam() {
+    /**
+     * Leaves the jam this guest profile is in, at once: its music stops, the profile goes and the one in
+     * use before it opens again. The relay is told on the way (the core's `jam_leave`). Main thread.
+     */
+    fun leaveJam() {
         remotes.leave()
-        withContext(Dispatchers.Main) { logout() }
+        logout()
+    }
+
+    /** The jam this guest profile was in ended (the core's `jam_ended`): left as on Leave. Main thread. */
+    fun jamEnded() {
+        if (remotes.isGuest()) logout()
     }
 
     /** The app's own updates from its GitHub releases; nothing is asked until the app starts it. */
@@ -201,8 +208,13 @@ class Nori private constructor(private val context: Context) {
         accepted
     }
 
-    /** Makes [profile] the active server (adding or replacing it in the saved list). */
+    /**
+     * Makes [profile] the active server (adding or replacing it in the saved list). A jam guest's profile
+     * switched away from is left: the jam is told, and the profile goes.
+     */
     fun activate(profile: SavedServer) {
+        val leftJam = settings.value.server?.takeIf { dev.nori.music.ffi.remote.isGuestKey(it.apiKey) && it.id != profile.id }
+        if (leftJam != null) remotes.leave()
         player.clear()
         // The old core is dropped, not closed: a request may still be using it, and the cleaner frees it.
         synchronized(lock) { opened = null }
@@ -210,7 +222,8 @@ class Nori private constructor(private val context: Context) {
         http.configure(profile)
         library.onServerChanged()
         library.onProfileChanged()
-        remotes.profileChanged()
+        remotes.refresh()
+        leftJam?.let { removeServer(it.id) }
     }
 
     /** Settings that do not need the server asked again: headers, Wi-Fi only, music folder, name. */
@@ -231,7 +244,7 @@ class Nori private constructor(private val context: Context) {
         // Its rows in the app's database; a whole library is a lot of rows, so not on this thread.
         val db = File(context.filesDir, dev.nori.music.ffi.db.dbFileName()).path
         Thread({ runCatching { dev.nori.music.ffi.db.dbForgetServer(db, id) } }, "nori-forget").start()
-        if (wasActive) { http.configure(settings.value.server); library.onServerChanged(); remotes.profileChanged() }
+        if (wasActive) { http.configure(settings.value.server); library.onServerChanged(); remotes.refresh() }
     }
 
     fun logout() = settings.value.server?.let { removeServer(it.id) }

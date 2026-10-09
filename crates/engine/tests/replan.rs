@@ -195,3 +195,22 @@ fn automix_on_before_play_mixes() {
     rig.engine.seek(SECS as i64 * 1000 - 15_000);
     assert!(rig.mixes_into(1), "the album's first song mixes into its second");
 }
+
+/// "Measure again" once the ending of the song playing is made: the clients relay what the core says it
+/// asks of the player, and the ending is planned again.
+#[test]
+fn measure_again_plans_the_ending_again() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let rig = Rig::new("replan-measure", &["f1", "f2"], false);
+    rig.engine.play_at(0, 0);
+    assert!(rig.until(20, |r| r.engine.status().index == Some(0) && r.engine.status().position_ms > 1_000));
+    rig.engine.seek(SECS as i64 * 1000 - 20_000);
+    assert!(rig.until(20, |r| r.core.session.planner.made("f1").is_some()), "f1's ending is made");
+    let asked = Arc::new(AtomicUsize::new(0));
+    let counted = asked.clone();
+    rig.core.session.planner.on_plan(Some(Box::new(move || _ = counted.fetch_add(1, Ordering::Relaxed))));
+    let m = rig.core.measure_again().unwrap();
+    rig.relay(m.effect);
+    rig.until(5, |r| r.engine.status().index != Some(0) || asked.load(Ordering::Relaxed) > 0);
+    assert!(asked.load(Ordering::Relaxed) > 0, "f1's ending planned again before it plays: {:?}", rig.engine.status());
+}

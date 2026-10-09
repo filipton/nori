@@ -50,10 +50,27 @@ pub fn device_name() -> String {
 /// The profile open before a jam was joined, opened again on leaving it (an app value).
 const BEFORE_JAM: &str = "host.beforeJam";
 
-/// Joins the jam `link` invites to (blocking), named as the active profile's user, else `device`.
-pub fn jam_join(transport: Arc<dyn nori_core::transport::Transport>, settings: &Settings, link: String, device: &str) -> Result<JamPass, NetError> {
+/// Why a jam was not joined.
+#[derive(Debug)]
+pub enum JoinError {
+    /// The invite is to the jam this device hosts.
+    Own,
+    /// The jam has ended.
+    Ended,
+    Failed(NetError),
+}
+
+/// Joins the jam `link` invites to (blocking), named as the active profile's user, else `device`; never
+/// one `remote` (this device's) opened ([`nori_core::remote::jam_join`]).
+pub fn jam_join(transport: Arc<dyn nori_core::transport::Transport>, settings: &Arc<Settings>, link: String, device: &str, remote: Option<Arc<nori_core::remote::Remote>>) -> Result<JamPass, JoinError> {
+    use nori_core::remote::JamJoin;
     let user = settings.prefs(|p| p.servers.iter().find(|s| s.id == p.active_server_id).map(|s| s.user.clone()).filter(|u| !u.is_empty()));
-    block_on(nori_core::remote::jam_join(transport, link, user.unwrap_or_else(|| device.into())))
+    match block_on(nori_core::remote::jam_join(transport, settings.clone(), remote, link, user.unwrap_or_else(|| device.into()))) {
+        Ok(JamJoin::Joined { pass }) => Ok(pass),
+        Ok(JamJoin::Own) => Err(JoinError::Own),
+        Ok(JamJoin::Ended) => Err(JoinError::Ended),
+        Err(e) => Err(JoinError::Failed(e)),
+    }
 }
 
 /// The guest profile `pass` signs in with, called `name`, made the active one in place of any guest
@@ -72,13 +89,13 @@ pub fn jam_joined(settings: &Settings, pass: JamPass, name: &str) -> SavedServer
     guest
 }
 
-/// Drops the jam's guest profile; the profile to open now: the one open before the jam, else the first
-/// saved, else none (the login).
+/// Drops the jam's guest profile; the profile to open now: the one open before the jam, else the one
+/// used last (the list is in the order they were opened), else none (the login).
 pub fn jam_left(settings: &Settings) -> Option<SavedServer> {
     let mut prefs = settings.current().unwrap_or_default();
     prefs.servers.retain(|s| !nori_remote::is_guest_key(&s.api_key));
     let before = settings.app_value(BEFORE_JAM).and_then(|id| prefs.servers.iter().find(|s| s.id == id));
-    let back = before.or(prefs.servers.first()).cloned();
+    let back = before.or(prefs.servers.last()).cloned();
     prefs.active_server_id = back.as_ref().map(|s| s.id.clone()).unwrap_or_default();
     settings.put(prefs);
     back
@@ -318,5 +335,28 @@ mod tests {
         assert_eq!(jam_left(&settings).map(|s| s.id), Some("work".into()), "the profile open before the jams");
         let p = settings.current().unwrap();
         assert_eq!((p.servers.len(), p.active_server_id.as_str()), (2, "work"));
+    }
+
+    /// With the profile open before the jam gone, leaving opens the one used last, else the login.
+    #[test]
+    fn leaving_a_jam_falls_back_to_the_profile_used_last() {
+        let dir = nori_testdir::TempDir::new("host-jam-back");
+        let settings = Settings::new();
+        let mut prefs = settings.open(&db_path(dir.path())).unwrap();
+        let own = |id: &str| SavedServer { id: id.into(), url: format!("http://{id}"), user: "ann".into(), ..Default::default() };
+        // In the order they were opened: "work" last.
+        prefs.servers = vec![own("home"), own("work")];
+        prefs.active_server_id = "gone".into();
+        settings.put(prefs);
+        let pass = JamPass { url: "http://friend".into(), api_key: nori_remote::guest_key("key") };
+        jam_joined(&settings, pass.clone(), "Jam");
+        assert_eq!(jam_left(&settings).map(|s| s.id), Some("work".into()));
+
+        let mut prefs = settings.current().unwrap();
+        prefs.servers.clear();
+        settings.put(prefs);
+        jam_joined(&settings, pass, "Jam");
+        assert_eq!(jam_left(&settings).map(|s| s.id), None, "the login");
+        assert!(settings.current().unwrap().servers.is_empty());
     }
 }

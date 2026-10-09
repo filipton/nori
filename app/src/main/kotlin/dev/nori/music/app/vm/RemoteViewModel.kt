@@ -48,19 +48,21 @@ class RemoteViewModel(app: Application) : NoriViewModel(app) {
     /** The jam this phone hosts or is a guest in. */
     val jam: StateFlow<JamView?> = remotes.jam
 
+    /** The jam this phone was a guest in ended, by its host's name if seen; the phone's own profile is open again. */
+    val ended = remotes.ended
+
     /** The device playing while it is not this phone (Remotes.mirror). */
     val mirror: StateFlow<dev.nori.music.ffi.Mirror?> = remotes.mirror
 
     /** Whether the server relays: jams and devices elsewhere only then. */
     val relay: StateFlow<RelaySupport> = remotes.relay
 
-    /**
-     * Whether a jam can be started here: jams are on, the server is not known to lack the relay, and none
-     * is hosted or joined. Song, album and playlist menus offer "Start a jam" only then.
-     */
-    val canStartJam: StateFlow<Boolean> = combine(nori.settings.prefs.map { it.jam }, remotes.relay, remotes.jam) { on, relay, jam ->
-        on && relay != RelaySupport.UNSUPPORTED && jam == null
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+    /** Where starting a jam here stands (the core's `jam_start`): offered, being started, or hosted. */
+    val jamStarting: StateFlow<dev.nori.music.ffi.JamStart> = remotes.jamStart
+
+    /** Whether a jam can be started here; song, album and playlist menus offer "Start a jam" only then. */
+    val canStartJam: StateFlow<Boolean> = remotes.jamStart.map { it == dev.nori.music.ffi.JamStart.OFFERED }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     /** The songs this guest asked for that the host has not decided on yet, by id. */
     val asked: StateFlow<Set<String>> = remotes.jam.map { j -> j?.takeIf { !it.hosting }?.let { v -> v.pending.filter { it.from == v.you }.map { it.song.id }.toSet() }.orEmpty() }
@@ -73,6 +75,7 @@ class RemoteViewModel(app: Application) : NoriViewModel(app) {
     private var watchers = 0
 
     init {
+        remotes.refresh()
         viewModelScope.launch { remotes.changes.collect { if (watchers > 0) refresh() } }
     }
 
@@ -119,7 +122,7 @@ class RemoteViewModel(app: Application) : NoriViewModel(app) {
     /** Sends member [id] out of the jam. */
     fun remove(id: String) = jamAct(Op.Kick(id))
 
-    fun leave() = viewModelScope.launch { nori.leaveJam() }
+    fun leave() = nori.leaveJam()
 
     /** The server's address when an invite to it works only on a home network (the core's `is_home_only`). */
     fun homeOnly(): String? = nori.settings.value.server?.url?.takeIf { dev.nori.music.ffi.remote.isHomeOnly(it) }

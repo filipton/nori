@@ -66,9 +66,17 @@ class MainActivity : ComponentActivity() {
         val link = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.dataString ?: return
         if (!dev.nori.music.ffi.remote.isInvite(link)) return
         lifecycleScope.launch {
-            runCatching { Nori.get(this@MainActivity).joinJam(link) }.onFailure {
-                actions.tell(getString(R.string.jam_join_failed))
-            }
+            val said = runCatching { Nori.get(this@MainActivity).joinJam(link) }.fold(
+                {
+                    when (it) {
+                        is dev.nori.music.ffi.JamJoin.Joined -> null
+                        dev.nori.music.ffi.JamJoin.Own -> R.string.jam_own
+                        dev.nori.music.ffi.JamJoin.Ended -> R.string.jam_invite_ended
+                    }
+                },
+                { dev.nori.music.NoriLog.w("jam: not joined: $it"); R.string.jam_join_failed },
+            )
+            said?.let { actions.tell(getString(it)) }
         }
     }
 

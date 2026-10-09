@@ -4,13 +4,11 @@ import dev.nori.music.ffi.model.AutoEqEntry
 import dev.nori.music.ffi.devices.ChoiceKind
 import dev.nori.music.ffi.Client
 import dev.nori.music.ffi.Core
-import dev.nori.music.ffi.model.CurveStep
+import dev.nori.music.ffi.devices.CurveNotice
+import dev.nori.music.ffi.devices.DeviceCurve
 import dev.nori.music.ffi.devices.DeviceEffect
 import dev.nori.music.ffi.model.SoundProfile
-import dev.nori.music.net.said
 import dev.nori.music.settings.Settings
-import dev.nori.music.settings.Sound
-import dev.nori.music.settings.sound
 import dev.nori.music.settings.withSound
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,15 +19,10 @@ import kotlinx.coroutines.withContext
 
 /**
  * Which sound each output device gets. The decisions are nori-player's (crates/player/src/device.rs) and
- * the steps the core's (crates/devices/src/profiles.rs): each step is one call that reads the settings,
- * looks up, saves and binds profiles, keeps the sound from before a device took over and the devices
- * never to be offered a curve, and answers with a [DeviceEffect]. This fetches AutoEQ presets, applies
- * the effects and raises the notices. A device can be given a saved profile, a flat sound, an AutoEQ
- * curve, or nothing; when it becomes the active output its sound is loaded, and when music goes back to
- * a device with nothing chosen the sound from before comes back. Headphones with nothing chosen and a
- * curve in the AutoEQ list get it offered, or applied straight away when [autoEqAuto] is on. When no
- * curve is found because the list is not on the device yet, it is fetched then if the core says it is
- * due (on Wi-Fi), so new headphones find their curve without a trip to the list first.
+ * the steps the core's (crates/devices/src/profiles.rs, crates/core/src/profiles.rs): each step is one
+ * call that reads the settings, looks up, fetches, saves and binds profiles, keeps the sound from before
+ * a device took over and the devices never to be offered a curve, and answers with a [DeviceEffect]
+ * (and, for an arrival's AutoEQ curve, a [CurveNotice]). This applies the effects and raises the notices.
  *
  * Driven by [Outputs.current] from the playback service, so it works with the app's screens closed.
  * It adds no listener of its own: it runs once per device change, never while music plays.
@@ -38,19 +31,12 @@ class DeviceSound(private val settings: Settings, private val core: () -> Core, 
     private val lock = Mutex()
 
     /** Something to tell the user about the device that just connected. */
-    sealed interface Notice { val output: String }
-    /** Nothing is chosen for [output]; [entry] looks like it. Asking is the default. */
-    data class Offer(override val output: String, val entry: AutoEqEntry) : Notice
-    /** [curve] was applied and remembered for [output] without asking; [before] is what undo puts back. */
-    data class Applied(override val output: String, val curve: String, val before: Sound, val created: Boolean) : Notice
-
-    private val _notice = MutableStateFlow<Notice?>(null)
-    val notice: StateFlow<Notice?> = _notice
-    fun consume(n: Notice) { _notice.compareAndSet(n, null) }
+    private val _notice = MutableStateFlow<CurveNotice?>(null)
+    val notice: StateFlow<CurveNotice?> = _notice
+    fun consume(n: CurveNotice) { _notice.compareAndSet(n, null) }
     /** The last notice raised, seen or not: the test bridge answers it after the snackbar is gone. */
-    @Volatile var lastNotice: Notice? = null
+    @Volatile var lastNotice: CurveNotice? = null
         private set
-    private fun post(n: Notice) { lastNotice = n; _notice.value = n }
 
     private val _profiles = MutableStateFlow<List<SoundProfile>>(emptyList())
     /** The saved profiles with the devices each is bound to. Filled by [refresh]. */
@@ -73,55 +59,26 @@ class DeviceSound(private val settings: Settings, private val core: () -> Core, 
     private suspend fun arrive(output: String) {
         // A notice is about the device that just arrived; one left unseen for an earlier device is stale.
         _notice.value = null
-        val a = io { core().deviceArrive(output) }
-        perform(output, a.effect)
-        if (a.curve == CurveStep.NONE) return
-        var entry = a.entry ?: listArrived(output) ?: return
-        // An entry AutoEQ turns out to have no curve for is hidden by the core; the next best is tried.
-        repeat(3) {
-            if (a.curve == CurveStep.OFFER) {
-                post(Offer(output, entry))
-                return
-            }
-            val before = settings.value.sound()
-            val created = try {
-                adopt(output, entry, live = true)
-            } catch (_: NoCurve) {
-                entry = curvesFor(output, 1).firstOrNull() ?: return
-                return@repeat
-            } catch (e: Exception) {
-                // No network, or GitHub not answering: asking later is better than silently doing nothing.
-                dev.nori.music.NoriLog.w("autoeq for $output: ${e.said}")
-                post(Offer(output, entry))
-                return
-            }
-            post(Applied(output, entry.name, before, created))
-            return
-        }
+        perform(output, io { core().deviceArrive(output) })
+        curve(output, io { client().deviceCurve(output, metered()) })
     }
 
-    /** No curve matched: the AutoEQ list is fetched if the core says it is due, then asked again. */
-    private suspend fun listArrived(output: String): AutoEqEntry? {
-        val fetched = io { runCatching { client().autoeqUpdate(false, metered()) }.getOrNull() } ?: return null
-        return if (fetched == 0u) null else curvesFor(output, 1).firstOrNull()
+    /** Performs an AutoEQ step's effect, then raises its notice. */
+    private suspend fun curve(output: String, c: DeviceCurve) {
+        perform(output, c.effect)
+        c.notice?.let { lastNotice = it; _notice.value = it }
     }
 
     /** The AutoEQ curves this output's own name points at, best first. Empty for the speaker, a nameless DAC, or no index. */
-    suspend fun curvesFor(output: String, limit: Int = 5): List<AutoEqEntry> = io { runCatching { core().autoeqForOutput(output, limit.toUInt()) }.getOrDefault(emptyList()) }
+    suspend fun curvesFor(output: String): List<AutoEqEntry> = io { runCatching { core().autoeqForOutput(output, 5u) }.getOrDefault(emptyList()) }
 
-    /** Yes to an [Offer]. When AutoEQ turns out to have no curve for it, the next best one is offered. */
-    suspend fun accept(offer: Offer) {
-        lock.withLock {
-            try {
-                adopt(offer.output, offer.entry, live = true)
-            } catch (_: NoCurve) {
-                curvesFor(offer.output, 1).firstOrNull()?.let { post(Offer(offer.output, it)) }
-            }
-        }
+    /** Yes to an offer (`Client::device_accept`); throws, saying why, when the curve could not be fetched. */
+    suspend fun accept(offer: CurveNotice.Offer): Unit = lock.withLock {
+        curve(offer.output, io { client().deviceAccept(offer.output, offer.entry) })
     }
 
-    /** Undoes an [Applied]: the sound from before, nothing bound, and this device is not offered a curve again. */
-    suspend fun undo(n: Applied): Unit = lock.withLock {
+    /** Undoes a curve applied without asking: the sound from before, nothing bound, and this device is not offered a curve again. */
+    suspend fun undo(n: CurveNotice.Applied): Unit = lock.withLock {
         perform(n.output, io { core().deviceUndo(n.output, n.curve, n.created, n.before) })
     }
 
@@ -148,8 +105,11 @@ class DeviceSound(private val settings: Settings, private val core: () -> Core, 
             Choice.Flat -> ChoiceKind.FLAT to ""
             Choice.Bypass -> ChoiceKind.BYPASS to ""
             is Choice.Profile -> ChoiceKind.PROFILE to choice.name
+            // Its parametric preset, or its graphic curve fitted by the core, saved as a profile named after
+            // it and bound to this device alone.
             is Choice.Curve -> {
-                adopt(output, choice.entry, live)
+                val text = io { client().autoeqCurve(choice.entry) } ?: throw NoCurve(choice.entry)
+                perform(output, io { core().deviceAdopt(output, choice.entry.name, text, live) })
                 return@withLock
             }
         }
@@ -158,19 +118,6 @@ class DeviceSound(private val settings: Settings, private val core: () -> Core, 
 
     /** AutoEQ has no curve for this entry; the core has taken it out of the list. */
     class NoCurve(val entry: AutoEqEntry) : Exception(entry.name)
-
-    /**
-     * Fetches [entry]'s curve (its parametric preset, or its graphic curve fitted by the core) and has the
-     * core save it as a profile named after it, bound to [output] alone, and load it when [live]. Returns
-     * whether the profile is new. Throws [NoCurve] when AutoEQ has none, or why the request failed.
-     */
-    private suspend fun adopt(output: String, entry: AutoEqEntry, live: Boolean): Boolean {
-        val c = io { core() }
-        val text = io { client().autoeqCurve(entry) } ?: throw NoCurve(entry)
-        val effect = io { c.deviceAdopt(output, entry.name, text, live) }
-        perform(output, effect)
-        return effect.created
-    }
 
     /** Does what the core said, in its order; see [DeviceEffect]. */
     private suspend fun perform(output: String, e: DeviceEffect) {

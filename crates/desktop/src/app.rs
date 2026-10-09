@@ -221,6 +221,8 @@ pub struct App {
     elsewhere: Option<Elsewhere>,
     /// A jam guest's: the host's playback as last published, and when it was right.
     jam_now: Option<(DeviceState, Instant)>,
+    /// A jam guest's controls by its role: what the player offers, and whether it paused here.
+    jam_controls: Option<nori_core::remote::JamControls>,
     /// The songs this guest asked for that wait for the host.
     asked: HashSet<String>,
 }
@@ -352,6 +354,7 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
             jam_hosting: false,
             elsewhere: None,
             jam_now: None,
+            jam_controls: None,
             asked: HashSet::new(),
         })
     });
@@ -424,6 +427,7 @@ pub fn stop(app: &RefCell<App>) {
 fn wire(ui: &AppWindow, h: &AppHandle) {
     on!(ui.on_messages_arrived, h, |a| a.drain_inbox());
     on!(ui.on_go, h, |a, v| a.go(v));
+    on!(ui.on_note_act, h, |a| a.note_act());
     on!(ui.on_open_album, h, |a, id| a.open_page(Req::Album(id.into())));
     on!(ui.on_open_artist, h, |a, id| a.open_page(Req::Artist(id.into())));
     on!(ui.on_open_playlist, h, |a, id| a.open_page(Req::Playlist(id.into())));
@@ -625,15 +629,34 @@ impl App {
     }
 
     fn say(&self, text: &str, error: bool) {
+        self.note_for(text, error, "", Duration::from_millis(if error { 5000 } else { 2500 }));
+    }
+
+    /// A note with a button, up long enough to be answered.
+    fn ask(&self, text: &str, action: &str) {
+        self.note_for(text, false, action, Duration::from_secs(8));
+    }
+
+    fn note_for(&self, text: &str, error: bool, action: &str, up: Duration) {
         let ui = self.ui();
         ui.set_note(text.into());
         ui.set_note_error(error);
+        ui.set_note_action(action.into());
         let weak = self.ui.clone();
-        self.note.start(TimerMode::SingleShot, Duration::from_millis(if error { 5000 } else { 2500 }), move || {
+        self.note.start(TimerMode::SingleShot, up, move || {
             if let Some(ui) = weak.upgrade() {
                 ui.set_note("".into());
+                ui.set_note_action("".into());
             }
         });
+    }
+
+    /// The note's button: the session's last AutoEQ notice answered.
+    fn note_act(&self) {
+        self.on_session(|s| s.curve_answer());
+        let ui = self.ui();
+        ui.set_note("".into());
+        ui.set_note_action("".into());
     }
 
     fn open(&mut self, profile: SavedServer) {
@@ -1130,6 +1153,12 @@ impl App {
         self.session.as_ref().is_some_and(|s| s.guest)
     }
 
+    /// Whether the player offers `control`: a jam guest's by its role (the core's jam controls), this
+    /// computer's own player all of them.
+    fn offers(&self, control: fn(&nori_core::remote::Controls) -> nori_core::remote::Reach) -> bool {
+        !self.guest() || self.jam_controls.is_some_and(|c| control(&c.controls) != nori_core::remote::Reach::Nowhere)
+    }
+
     /// Whether the open profile has the account's things (hearts, playlists, settings): a jam guest's has
     /// not (the core's `ProfileRules`).
     fn account(&self) -> bool {
@@ -1149,8 +1178,11 @@ impl App {
         }
         ui.set_join_busy(true);
         ui.set_join_error("".into());
-        let (http, tx) = (self.http.clone(), self.tx.clone());
-        nori_host::spawn("nori-jam-join", move || tx.send(Msg::Joined(nori_host::jam_join(http, &session::app().settings, link, &nori_host::device_name()).map_err(|e| words::net_error(&e)))));
+        let (http, tx, remote) = (self.http.clone(), self.tx.clone(), self.session.as_ref().and_then(|s| s.remote()));
+        nori_host::spawn("nori-jam-join", move || {
+            let joined = nori_host::jam_join(http, &session::app().settings, link, &nori_host::device_name(), remote);
+            tx.send(Msg::Joined(joined.map_err(|e| words::jam_join_failed(&e))))
+        });
     }
 
     /// The guest profile joined with: opened in place of the user's own, which is opened again on leaving.
@@ -1163,17 +1195,16 @@ impl App {
         self.open(guest);
     }
 
-    /// Leaves the jam this guest is in; [`Msg::Left`] once the relay was told (or could not be).
-    fn leave_jam(&self) {
-        let (Some(r), tx) = (self.session.as_ref().and_then(|s| s.remote()), self.tx.clone()) else { return };
-        nori_host::spawn("nori-jam-leave", move || {
-            let _ = session::block_on(r.jam_leave());
-            tx.send(Msg::Left);
-        });
+    /// Leaves the jam this guest is in, at once; the relay is told on the way.
+    fn leave_jam(&mut self) {
+        if let Some(r) = self.session.as_ref().and_then(|s| s.remote()) {
+            r.jam_leave();
+        }
+        self.left(words::JAM_LEFT);
     }
 
-    /// The guest profile is dropped, and the user's own opened again.
-    fn left(&mut self) {
+    /// The guest profile is dropped, and the user's own opened again; `said` says why.
+    fn left(&mut self, said: &str) {
         let back = nori_host::jam_left(&session::app().settings);
         self.jam_now = None;
         self.asked.clear();
@@ -1186,7 +1217,7 @@ impl App {
                 self.go(LOGIN);
             }
         }
-        self.say(words::JAM_LEFT, false);
+        self.say(said, false);
     }
 
     fn take(&mut self, m: Msg) {
@@ -1236,6 +1267,7 @@ impl App {
                 self.settings_shown();
             }
             Msg::Note { text, error } => self.say(&text, error),
+            Msg::Ask { text, action } => self.ask(&text, &action),
             Msg::Reachable(Err(e)) => self.say(&e, true),
             Msg::Reachable(Ok(())) | Msg::From(..) => {}
             Msg::Remote => {
@@ -1255,9 +1287,9 @@ impl App {
             Msg::Joined(Err(e)) => {
                 let ui = self.ui();
                 ui.set_join_busy(false);
-                ui.set_join_error(words::jam_join_failed(&e).into());
+                ui.set_join_error(e.into());
             }
-            Msg::Left => self.left(),
+            Msg::JamEnded(host) => self.left(&words::jam_ended(host.as_deref())),
             Msg::Starred => {
                 self.on_session(|s| s.mpris_changed());
                 self.follow();
@@ -1391,6 +1423,9 @@ impl App {
             p.set_devices_on(ui.get_devices_on());
             p.set_jam(ui.global::<crate::Jam>().get_strip());
             p.set_guest(ui.global::<crate::Jam>().get_guest());
+            p.set_can_play(ui.global::<crate::Jam>().get_can_play());
+            p.set_can_skip(ui.global::<crate::Jam>().get_can_skip());
+            p.set_can_seek(ui.global::<crate::Jam>().get_can_seek());
             p.set_playing_on(ui.get_playing_on());
         }
         if let Some(sd) = &self.sidebar {
@@ -1598,7 +1633,7 @@ impl App {
         let jams = guest || crate::session::app().settings.prefs(|p| p.jam);
         let remote = self.session.as_ref().and_then(|s| s.remote()).filter(|_| jams);
         let unsupported = remote.as_ref().is_some_and(|r| r.relay() == nori_core::remote::RelaySupport::Unsupported);
-        let view = remote.as_ref().and_then(|r| r.jam_view()).filter(|v| v.hosting || guest);
+        let view = remote.as_ref().and_then(|r| r.jam_view());
         g.set_on(remote.is_some() && !unsupported && !guest);
         g.set_guest(guest);
         g.set_note(if unsupported && !guest { words::JAM_UNSUPPORTED.into() } else { "".into() });
@@ -1609,6 +1644,10 @@ impl App {
         g.set_along_note(words::jam_along(listening).into());
         // A guest follows the host's playback, its place run on from when the host heard it.
         let heard = remote.as_ref().and_then(|r| r.jam_playing()).map(|m| Instant::now() - Duration::from_millis(m.heard_ago_ms().max(0) as u64));
+        self.jam_controls = remote.as_ref().filter(|_| guest).and_then(|r| r.jam_controls());
+        g.set_can_play(self.offers(|c| c.play_pause));
+        g.set_can_skip(self.offers(|c| c.skip));
+        g.set_can_seek(self.offers(|c| c.seek));
         self.jam_now = view.as_ref().filter(|_| guest).and_then(|v| v.queue.clone().map(|q| (q, heard.unwrap_or_else(|| Instant::now() - Duration::from_millis(v.age_ms.max(0) as u64)))));
         let link = view.as_ref().and_then(|v| v.link.clone()).unwrap_or_default();
         if link != self.jam_link {
@@ -1625,7 +1664,10 @@ impl App {
             self.asked = asked;
             self.mark_playing();
         }
-        g.set_strip(shown.as_ref().map_or_else(String::new, |s| s.strip.clone()).into());
+        let strip = shown.as_ref().map_or_else(String::new, |s| s.strip.clone());
+        // Paused here while the jam plays on: play joins it again.
+        let strip = if self.jam_controls.is_some_and(|c| c.paused_here) { words::JAM_PAUSED_HERE.to_string() } else { strip };
+        g.set_strip(strip.into());
         g.set_listening(shown.as_ref().map_or_else(String::new, |s| s.listening.clone()).into());
         let (people, asks) = shown.map_or_else(Default::default, |s| (s.people, s.asks));
         g.set_people(ModelRc::new(VecModel::from(people)));
@@ -1790,7 +1832,8 @@ impl App {
         let guest = s.guest;
         let (id, playing) = match (&self.elsewhere, &self.jam_now) {
             (Some(e), _) => (e.song().map(|s| s.id.clone()), e.mirror.playing),
-            (None, Some((st, _))) => (crate::jam::playing(st).map(|e| e.id.clone()), st.playing),
+            // A guest's play button says what its controls say: paused here while the jam plays on.
+            (None, Some((st, _))) => (crate::jam::playing(st).map(|e| e.id.clone()), self.jam_controls.map_or(st.playing, |c| c.playing)),
             (None, None) if guest => (None, false),
             (None, None) => s.engine.status_with(|st| (st.id.clone(), st.state == State::Playing)),
         };
@@ -1887,7 +1930,7 @@ fn row(s: &Song, index: usize, playing: bool, starred: Option<bool>) -> SongRow 
         album: s.album.as_str().into(),
         artist_id: s.artist_id.clone().unwrap_or_default().into(),
         album_id: s.album_id.clone().unwrap_or_default().into(),
-        time: words::duration(s.duration as i64).into(),
+        time: nori_core::numbers::clock(s.duration as i64, false).into(),
         art: s.cover_art.clone().unwrap_or_default().into(),
         index: index as i32,
         playing,

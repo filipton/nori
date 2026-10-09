@@ -524,7 +524,7 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
         return;
     }
     put(f, Paragraph::new(Span::styled("─".repeat(w), dim(t))), Rect { y: fy, height: 1, ..area });
-    for (k, n) in app.nav_bottom().iter().enumerate() {
+    for (k, n) in crate::app::NAV_BOTTOM.iter().enumerate() {
         item(f, &mut app.hits, fy + 1 + k as u16, i + k, *n, n.name());
     }
     let (dot, colour, word) = if app.offline {
@@ -1103,7 +1103,7 @@ fn sliders(f: &mut Frame, area: Rect, rows: &[EqRow], bands: &[usize], p: &nori_
         let cw = (col - 1) as usize;
         let centre = |s: &str| format!("{:^cw$}", fit(s, cw));
         put(f, Paragraph::new(Span::styled(centre(&name), label_style)), Rect { x, y: top + h, width: col - 1, height: 1 });
-        let value = crate::text::signed_db(gain);
+        let value = nori_core::numbers::signed_db(gain, nori_core::numbers::POINT);
         let value_style = if is { Style::default().fg(t.accent) } else { dim(t) };
         put(f, Paragraph::new(Span::styled(centre(&value), value_style)), Rect { x, y: top + h + 1, width: col - 1, height: 1 });
         app.hits.push((Rect { x, y: top, width: col, height: h + 2 }.intersection(area), Hit::Row(ListRef::Eq, i)));
@@ -1686,12 +1686,17 @@ fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
         ("⏭", Style::default().fg(t.text), Button::Next),
         (repeat, lit(app.repeat() != crate::app::REPEAT_OFF), Button::Repeat),
     ];
-    // The jam's playback is its host's: a guest has no controls.
-    let controls = if app.guest() { &controls[..0] } else { &controls[..] };
+    // A jam guest's are those its role offers: shuffle and repeat are the host's.
+    let offered = |b: Button| match b {
+        Button::Toggle => app.offers(|c| c.play_pause),
+        Button::Previous | Button::Next => app.offers(|c| c.skip),
+        _ => !app.guest(),
+    };
+    let controls: Vec<_> = controls.into_iter().filter(|c| offered(c.2)).collect();
     let gap = 3u16;
     let total: u16 = controls.iter().map(|c| c.0.width() as u16).sum::<u16>() + gap * 4;
     let mut x = mid.x + mid.width.saturating_sub(total) / 2;
-    for &(label, style, b) in controls {
+    for &(label, style, b) in &controls {
         let cw = label.width() as u16;
         if x + cw > mid.x + mid.width {
             break;
@@ -1725,7 +1730,7 @@ fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
         let r = Rect { x, width: bar_w, ..l2 };
         put(f, Paragraph::new(bar), r);
         app.seek_rect = r;
-        if !app.guest() {
+        if app.offers(|c| c.seek) {
             app.hits.push((r, Hit::Seek));
         }
         x += bar_w + 1;

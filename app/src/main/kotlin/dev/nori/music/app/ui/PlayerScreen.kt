@@ -695,21 +695,22 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                     style = MaterialTheme.typography.bodySmall,
                 )
 
-                Box(kept("seek")) { SeekBar(vm, state.playing, state.durationMs, seekable = !state.jamGuest) }
+                Box(kept("seek")) { SeekBar(vm, state.playing, state.durationMs, seekable = state.offersSeek) }
 
                 // Three controls, plain glyphs with no containers. Shuffle and repeat live in the queue header.
                 // Sized off `w4` as a share of the screen's width: Apple's pause glyph stands 9.8 % of the
                 // width tall and the skip glyphs are 9.7 % wide; these were about a fifth smaller. The
                 // seek bar, volume bar and bottom icons below were scaled by their own measured ratios.
                 // Apple leaves a clear gap between the times and these, rather than letting them follow on.
-                // A jam guest has none: the host plays.
-                if (!state.jamGuest) Row(kept("transport").fillMaxWidth().padding(top = 24.dp), Arrangement.spacedBy(34.dp, Alignment.CenterHorizontally), Alignment.CenterVertically) {
+                // A jam guest's are those its role offers (Spotify's Jam): an admin's are the host's, a
+                // guest listening here has play and pause of its own, one only watching has none.
+                if (state.offersPlayPause || state.offersSkip) Row(kept("transport").fillMaxWidth().padding(top = 24.dp), Arrangement.spacedBy(34.dp, Alignment.CenterHorizontally), Alignment.CenterVertically) {
                     // The buttons send the record across exactly as a swipe does, so the two ways of
                     // changing song look like the same thing happening. A previous that only rewinds
                     // this song is not a record change and gets no slide - there is nothing to slide
                     // to. The rule for which one it is has to match the player's (media3 rewinds
                     // within the first three seconds), so the sleeve and the sound agree.
-                    IconButton(
+                    if (state.offersSkip) IconButton(
                         {
                             // The player's own rule (`queue_previous_restarts`), so the sleeve and the sound agree.
                             val rewinds = vm.previousRestarts(vm.positionMs, state.previousIndex >= 0)
@@ -717,15 +718,20 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                         },
                         Modifier.size(72.dp),
                     ) { LookIcon(Icons.Filled.FastRewind, say.previous, Modifier.size(55.dp), ink) }
-                    IconButton(vm::toggle, Modifier.size(84.dp)) {
+                    if (state.offersPlayPause) IconButton(vm::toggle, Modifier.size(84.dp)) {
                         PlayPauseGlyph(state.playing, state.buffering, 70.dp, 28.dp, ink)
                     }
-                    IconButton({ if (!slide.ask(-1)) vm.next() }, Modifier.size(72.dp)) { LookIcon(Icons.Filled.FastForward, say.next, Modifier.size(55.dp), ink) }
+                    if (state.offersSkip) IconButton({ if (!slide.ask(-1)) vm.next() }, Modifier.size(72.dp)) { LookIcon(Icons.Filled.FastForward, say.next, Modifier.size(55.dp), ink) }
                 }
+                // Paused here while the jam plays on: play joins it again where it is.
+                if (state.jam?.pausedHere == true) LookText(
+                    say.jamPausedHere, { live.color(CoverLook.ON_60) },
+                    Modifier.fillMaxWidth().padding(top = 8.dp), style = MaterialTheme.typography.bodyMedium.copy(textAlign = androidx.compose.ui.text.style.TextAlign.Center),
+                )
 
                 if (page == Panel.ART && !across) Spacer(Modifier.weight(0.17f))
-                // Nothing sounds on a jam guest's phone to set the volume of.
-                if (!state.jamGuest) Box(kept("volume")) { VolumeRow(vm) }
+                // A jam guest's volume is its own while the music plays here.
+                if (state.offersVolume) Box(kept("volume")) { VolumeRow(vm) }
                 val jam by vm.jamStrip.collectAsStateWithLifecycle()
                 if (jam != null) Box(Modifier.fillMaxWidth().padding(top = if (state.jamGuest) 16.dp else 0.dp), contentAlignment = Alignment.Center) {
                     JamStrip(jam, live.color(CoverLook.ACCENT))
@@ -2705,10 +2711,15 @@ private fun Queue(vm: PlayerViewModel) {
     // Shuffle and repeat live here, pinned above the list - not in the transport, and never scrolled
     // away (the list opens at the playing row, which used to hide them).
     Column(Modifier.fillMaxSize()) {
-        jam?.let { j ->
-            if (j.hosting) JamHeader(j) { vm.cover(it, CoverSize.ROW) }
-            else if (state.jamGuest) GuestJamHeader(j) { vm.cover(it, CoverSize.ROW) }
-        }
+        val j = jam
+        val start by remote.jamStarting.collectAsStateWithLifecycle()
+        if (j?.hosting == true) JamHeader(j) { vm.cover(it, CoverSize.ROW) }
+        else if (state.jamGuest) {
+            if (j != null) GuestJamHeader(j) { vm.cover(it, CoverSize.ROW) } else GuestLeaveHeader()
+        } else if (start == dev.nori.music.ffi.JamStart.STARTING) Text(
+            words(dev.nori.music.app.R.string.jam_starting), Modifier.padding(vertical = 8.dp),
+            color = look.color(CoverLook.ON_VARIANT), style = MaterialTheme.typography.bodyMedium,
+        )
         // A jam guest's queue is the host's to change: it only shows it.
         val edits = !state.jamGuest
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
@@ -2727,7 +2738,8 @@ private fun Queue(vm: PlayerViewModel) {
                 }
             }
         }
-    val reorderable = rows.reorderable && edits
+    // A jam admin moves songs in the host's queue (the songs it plays next).
+    val reorderable = rows.reorderable && (edits || state.offersReorder)
     val queueNow by rememberUpdatedState(state.queue)
     drag.size = state.queue.size
     // A song is dropped only among those still to come: not above the song playing, nor into what has played.

@@ -5,6 +5,7 @@ use std::ffi::{c_char, CStr, CString};
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, Once, OnceLock};
 
+use nori_core::profiles::CurveNotice;
 use nori_core::remote::Discovery;
 use nori_core::rules::QueueMoment;
 use nori_core::settings::SavedServer;
@@ -64,6 +65,10 @@ pub const REPORT_VOLUME: i32 = 19;
 pub const REPORT_JAM_JOINED: i32 = 20;
 /// The jam left: `flag` 1 when the profile to go back to is the active one (to open), 0 when there is none.
 pub const REPORT_JAM_LEFT: i32 = 21;
+/// The AutoEQ curve of the output music moved to was offered (`flag` 1) or applied without asking (`flag`
+/// 0). [`Report::text`] is the curve, [`Report::id`] the output; `nori_ios_curve_answer` applies or
+/// undoes it.
+pub const REPORT_CURVE: i32 = 22;
 
 pub const STATE_IDLE: i32 = 0;
 pub const STATE_PLAYING: i32 = 1;
@@ -142,6 +147,7 @@ fn deliver_one(said: Said) {
             });
         }
         Said::Lyrics { song, pick } => crate::pages::lyrics_arrived(song, &pick.lyrics),
+        Said::JamEnded { host } => return crate::jam::left(Some(host.clone())),
         _ => {}
     }
     emit(&said);
@@ -238,12 +244,24 @@ fn pack(said: &Said) -> Packed {
             p.text = c(&e.to_string());
         }
         Said::Remote => p.kind = REPORT_REMOTE,
+        // Reported as the guest profile is dropped (jam::left).
+        Said::JamEnded { .. } => {}
         Said::Volume(v) => {
             p.kind = REPORT_VOLUME;
             p.ms = (v * 1000.0).round() as i64;
         }
         // Hearts are read again when a page or the player is.
         Said::Starred(_) => {}
+        Said::Curve(n) => {
+            p.kind = REPORT_CURVE;
+            let (output, curve, offer) = match n {
+                CurveNotice::Offer { output, entry } => (output, &entry.name, true),
+                CurveNotice::Applied { output, curve, .. } => (output, curve, false),
+            };
+            p.flag = i32::from(offer);
+            p.id = c(output);
+            p.text = c(curve);
+        }
     }
     p
 }
@@ -314,6 +332,8 @@ fn pack_event(p: &mut Packed, e: &Event) {
             p.kind = REPORT_AWAKE;
             p.flag = i32::from(*on);
         }
+        // Listening along paused or played here, or the host did: the jam's controls are read again.
+        Event::Following(_) => p.kind = REPORT_REMOTE,
     }
 }
 
@@ -332,6 +352,7 @@ pub const NOTE_INDEXED: i32 = 12;
 pub const NOTE_INDEX_STOPPED: i32 = 13;
 pub const NOTE_DONE: i32 = 14;
 pub const NOTE_FORGOT: i32 = 15;
+pub const NOTE_CURVE_FAILED: i32 = 16;
 
 /// A note as its code, a count where it has one, and the failure's English detail for the log.
 fn note(n: &Note) -> (i32, i32, String) {
@@ -352,6 +373,7 @@ fn note(n: &Note) -> (i32, i32, String) {
         Note::IndexStopped(e) => (NOTE_INDEX_STOPPED, 0, e.to_string()),
         Note::Done(_) => (NOTE_DONE, 0, String::new()),
         Note::Forgot(n) => (NOTE_FORGOT, count(*n as usize), String::new()),
+        Note::CurveFailed(e) => (NOTE_CURVE_FAILED, 0, e.to_string()),
     }
 }
 
@@ -1116,6 +1138,8 @@ mod tests {
         fn changed(&self) {
             let _ = self.0.lock().unwrap().send(());
         }
+
+        fn jam_ended(&self, _: Option<String>) {}
     }
 
     /// The iPod's session as a device of the account, on the simulated audio unit called back in real time,

@@ -183,6 +183,11 @@ class Settings(private val context: Context) {
         if (change.effect != 0u) _effects.tryEmit(change.effect.toInt())
     }
 
+    /** What a core call asks of the player besides a settings change (`MeasuredAgain`), told as a change's effect is. */
+    fun asked(effect: UInt) {
+        if (effect != 0u) _effects.tryEmit(effect.toInt())
+    }
+
     /**
      * One of the equalizer screen's tools, used where the core keeps the settings; only the sound part
      * comes back. Returns how many bands there are now. Throws, saying why, for an import with no filters.

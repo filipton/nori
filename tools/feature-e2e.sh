@@ -433,11 +433,18 @@ print(next(json.dumps({'id':s['id'],'title':s['title'],'artist':s['artist'],'cov
     tapnode text "Start a Jam"
     check "the player opens on the queue, the jam over it" wait_until 15 on_screen 'text="End Jam"'
     check "nobody listens yet" on_screen 'text="no one yet"'
+    tapnode text People
+    check "People offers the invite" wait_until 10 on_screen 'text="Invite"'
     tapnode text Invite
     check "Invite shows the code and the link" wait_until 10 on_screen 'text="Copy link"'
     link=$(ui | grep -oE 'text="https?://[^"]*/nori/jam#[^"]*"' | head -1 | cut -d'"' -f2 | sed 's/&amp;/\&/g')
     echo "     the invite: $link"
     adb shell input keyevent KEYCODE_BACK
+    # Its own invite opened here is refused: this phone stays the host, on its own profile.
+    adb shell am start -a android.intent.action.VIEW -d "'$link'" >/dev/null 2>&1
+    check "its own invite is refused" wait_until 10 on_screen 'text="That’s your own Jam"'
+    check "and it still hosts" bash -c "'$app' remote view | grep -q 'hosting=true'"
+    check "on its own profile" wait_for server "$app_jam" 5
     guests="$here/../build/e2e-jam"; mkdir -p "$guests"
     python3 "$here/jam-guest.py" "$link" Gus "{\"id\":\"$lib_song\",\"title\":\"Far Song Two\",\"artist\":\"Nori E2E Two\",\"duration\":170}" > "$guests/gus.log" 2>&1 & gus=$!
     check "Gus's request comes in by itself" wait_until 20 on_screen 'text="Asked by Gus"'
@@ -459,6 +466,17 @@ print(next(json.dumps({'id':s['id'],'title':s['title'],'artist':s['artist'],'cov
     check "End Jam ends it for the guests" wait_until 15 grep -q "the jam is over" "$guests/gus.log"
     check "and here" wait_until 10 bash -c "'$app' remote view | grep -q 'no jam'"
     kill $gus $dee 2>/dev/null
+    # Its own invite to the jam it ended changes nothing, and a new one starts at once.
+    adb shell am start -a android.intent.action.VIEW -d "'$link'" >/dev/null 2>&1
+    check "its ended jam's invite says so" wait_until 10 on_screen 'text="This Jam has ended"'
+    check "on its own profile, in no jam" bash -c "'$app' remote view | grep -q 'no jam'"
+    check "no jam under the song" off_screen 'text="Jam · '
+    "$app" open devices >/dev/null
+    check "the devices sheet offers a jam again" wait_until 10 on_screen 'text="Start a Jam"'
+    tapnode text "Start a Jam"
+    check "and it starts at once" wait_until 5 on_screen 'text="End Jam"'
+    tapnode text "End Jam"
+    check "and ends" wait_until 10 bash -c "'$app' remote view | grep -q 'no jam'"
     "$app" set jam false >/dev/null
     "$app" login "$APP_URL|$USER|$PASS" >/dev/null; wait_for server "$APP_URL" 30 >/dev/null
 
@@ -494,15 +512,82 @@ print(json.dumps({k:s.get(k) for k in ['id','title','artist','album','albumId','
     check "the host's queue says it was asked for here" wait_until 10 on_screen 'content-desc="Added by '
     tapnode text "Listen here"
     check "Listen here plays the host's music on this phone" sounds 30
+    # Listening along is playback as any other: the service in the foreground, its notification the
+    # jam's song with whose jam it is, on through the background and the screen off (the deep buffer's
+    # bursts keep coming).
+    jam_notified() { adb shell dumpsys notification --noredact | grep -A40 'pkg=dev.nori.music' | grep -q 'android.subText=String (Jam · Mac Host)'; }
+    check "the notification says whose jam it is" wait_until 10 jam_notified
+    in_foreground() { adb shell dumpsys activity services dev.nori.music | grep -q 'isForeground=true'; }
+    adb shell input keyevent 3
+    adb shell input keyevent 26
+    check "in the background, screen off, the service stays in the foreground" in_foreground
+    check "and the music goes on" bursts_continue
+    check "and on" bursts_continue
+    "$app" wake >/dev/null
+    "$app" launch >/dev/null
+    check "back in the app, the jam plays here" wait_for playing True 10
+    # A plain guest's pause holds its own listening (the host plays on); play joins the jam where it is then.
+    "$app" do pause >/dev/null
+    check "a guest's pause is its own" silent 10
+    check "the player says the jam plays on" wait_until 10 on_screen 'text="Paused here · Jam still playing"'
+    "$app" do resume >/dev/null
+    check "play joins the jam again" sounds 15
+    check "the strip says the jam again" wait_until 10 off_screen 'text="Paused here · Jam still playing"'
     tapnode text Leave
     check "leaving returns to the home server" wait_for server "$APP_URL" 20
     check "and its music stops at once" silent 5
     check "the host saw it leave" wait_until 15 grep -q "left:" "$guests/host.log"
+    kill $host 2>/dev/null
+
+    # An admin's controls are the host's: its pause pauses the jam (and so here), its play and skip too.
+    echo "  -- an admin of a jam on another server"
+    rm -f "$guests/admin-host.log"
+    NORI_JAM_ADMINS=1 python3 "$here/jam-host.py" "$jam_server" admin admin "$(relay_song 'Long%20Track%2004')" "$(relay_song 'Long%20Track%2005')" > "$guests/admin-host.log" 2>&1 & host=$!
+    wait_until 15 grep -qs invite: "$guests/admin-host.log"
+    link=$(grep invite: "$guests/admin-host.log" | cut -d' ' -f2)
+    adb shell am start -a android.intent.action.VIEW -d "'$link'" >/dev/null 2>&1
+    check "the invite opens the player on the host's jam" wait_until 20 on_screen 'text="Listen here"'
+    tapnode text "Listen here"
+    check "Listen here plays the host's music" sounds 30
+    check "an admin skips" wait_until 10 on_screen 'content-desc="Next"'
+    "$app" do pause >/dev/null
+    check "an admin's pause is the host's" wait_until 15 grep -q "obeyed: pause" "$guests/admin-host.log"
+    check "and pauses here with it" silent 15
+    "$app" do resume >/dev/null
+    check "its play is the host's" wait_until 15 grep -q "obeyed: play" "$guests/admin-host.log"
+    check "and plays here with it" sounds 15
+    "$app" do next >/dev/null
+    check "its skip is the host's" wait_until 15 grep -q "obeyed: next" "$guests/admin-host.log"
+    check "and here it plays the host's next song" wait_for title "Long Track 05" 20
+    tapnode text Leave
+    check "leaving returns to the home server" wait_for server "$APP_URL" 20
+    kill $host 2>/dev/null
+
     "$app" play "$LYRICS_SONG" >/dev/null
     check "a song played after leaving plays here" sounds 20
     check "it is the one picked" wait_for title "${LYRICS_SONG#search:}" 10
     "$app" do pause >/dev/null
     kill $host 2>/dev/null
+
+    # A guest whose jam ends goes home by itself: at once when the host ends it, and on opening the app
+    # when the relay dropped it meanwhile (its key no longer signs in).
+    host_jam() { # host_jam <log>: a jam hosted on this Mac, joined from this phone
+      rm -f "$1"
+      python3 "$here/jam-host.py" "$jam_server" admin admin "$(relay_song 'Long%20Track%2004')" > "$1" 2>&1 & host=$!
+      wait_until 15 grep -qs invite: "$1"
+      adb shell am start -a android.intent.action.VIEW -d "'$(grep invite: "$1" | cut -d' ' -f2)'" >/dev/null 2>&1
+      check "a guest again" wait_until 20 bash -c "'$app' remote view | grep -q 'Mac Host:HOST'"
+    }
+    host_jam "$guests/host-ends.log"
+    kill $host
+    check "the host ending the jam takes the guest home" wait_for server "$APP_URL" 15
+    check "and says who ended it" wait_until 5 on_screen 'text="Mac Host ended the Jam"'
+    host_jam "$guests/host-gone.log"
+    kill -9 $host; wait $host 2>/dev/null
+    adb shell am force-stop "$pkg"
+    curl -sf "$jam_server/rest/noriRemote.close?u=admin&p=admin&v=1.16.1&c=e2e&f=json&room=$(grep room: "$guests/host-gone.log" | cut -d' ' -f2)" >/dev/null
+    app_up >/dev/null
+    check "a guest profile whose jam the relay dropped opens the user's own" wait_for server "$APP_URL" 20
   fi
 fi
 

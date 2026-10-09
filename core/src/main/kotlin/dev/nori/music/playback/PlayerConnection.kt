@@ -25,6 +25,7 @@ import dev.nori.music.ffi.model.RadioStation
 import dev.nori.music.ffi.model.Song
 import dev.nori.music.ffi.Mirror
 import dev.nori.music.ffi.remote.Op
+import dev.nori.music.ffi.remote.Reach
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -68,10 +69,21 @@ data class PlayerState(
     val origin: Int = 0,
     /** The device playing while it is not this phone: the page shows and controls that one. */
     val playingOn: String? = null,
-    /** [playingOn] is the host of a jam this phone is a guest in: the page shows it and controls nothing. */
+    /** [playingOn] is the host of a jam this phone is a guest in: the page shows it, its controls go by [jam]. */
     val jamGuest: Boolean = false,
+    /** A jam guest's controls by its role (the core's `jam_controls`): which show, and whether play joins it here again. */
+    val jam: dev.nori.music.ffi.JamControls? = null,
 ) {
     val current: Song? get() = queue.getOrNull(index)
+
+    /** Whether the page offers [control] of a jam guest's [jam]: this phone's own player offers them all. */
+    private fun offers(control: (dev.nori.music.ffi.remote.Controls) -> Reach): Boolean =
+        !jamGuest || jam?.controls?.let(control).let { it != null && it != Reach.NOWHERE }
+    val offersPlayPause: Boolean get() = offers { it.playPause }
+    val offersSkip: Boolean get() = offers { it.skip }
+    val offersSeek: Boolean get() = offers { it.seek }
+    val offersReorder: Boolean get() = offers { it.reorder }
+    val offersVolume: Boolean get() = offers { it.volume }
 }
 
 /**
@@ -102,16 +114,20 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
 
     init {
         scope.launch {
-            kotlinx.coroutines.flow.combine(nori.remotes.mirror, nori.remotes.jamPlaying) { m, host -> m?.let { it to false } ?: host?.let { it to true } }
-                .collect { mirrored(it?.first, it?.second == true) }
+            kotlinx.coroutines.flow.combine(nori.remotes.mirror, nori.remotes.jamPlaying, nori.remotes.jamControls) { m, host, jam -> m?.let { Triple(it, false, null) } ?: host?.let { Triple(it, true, jam) } }
+                .collect { mirrored(it?.first, it?.second == true, it?.third) }
         }
     }
 
-    private fun mirrored(m: Mirror?, guest: Boolean) {
+    /** The jam this phone is a guest in, while it is one: its controls go by its role. */
+    private var jamGuest = false
+
+    private fun mirrored(m: Mirror?, guest: Boolean, jam: dev.nori.music.ffi.JamControls?) {
         val was = mirror
         mirror = m
+        jamGuest = guest
         when {
-            m != null -> showMirror(m, guest)
+            m != null -> showMirror(m, guest, jam)
             // Back here: the page shows this phone's own player again.
             was != null -> controller?.let { publish(it, queueChanged = true) } ?: run { _state.value = PlayerState() }
         }
@@ -119,9 +135,9 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
 
     /**
      * The mirrored device's queue and playback as the page's state; its rows are in play order already. A
-     * jam [guest] has no song either side to skip to.
+     * jam [guest] skips by its role ([jam]), and its play button shows what [jam] says.
      */
-    private fun showMirror(m: Mirror, guest: Boolean) {
+    private fun showMirror(m: Mirror, guest: Boolean, jam: dev.nori.music.ffi.JamControls? = null) {
         val old = _state.value
         val songs = m.rows.map { it.song }
         val queue = if (songs == old.queue) old.queue else songs
@@ -129,13 +145,13 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         val all = m.repeat.toInt() == Player.REPEAT_MODE_ALL && m.rows.size.toUInt() == m.len
         _state.value = old.copy(
             connected = true, queue = queue, index = at,
-            nextIndex = if (at < 0 || guest) -1 else (at + 1).takeIf { it < queue.size } ?: (if (all) 0 else -1),
-            previousIndex = if (at < 0 || guest) -1 else (at - 1).takeIf { it >= 0 } ?: (if (all) queue.lastIndex else -1),
+            nextIndex = if (at < 0 || (guest && jam?.controls?.skip == Reach.NOWHERE)) -1 else (at + 1).takeIf { it < queue.size } ?: (if (all) 0 else -1),
+            previousIndex = if (at < 0 || (guest && jam?.controls?.skip == Reach.NOWHERE)) -1 else (at - 1).takeIf { it >= 0 } ?: (if (all) queue.lastIndex else -1),
             order = if (old.order.size == queue.size && old.order.withIndex().all { (k, v) -> k == v }) old.order else queue.indices.toList(),
-            queued = emptySet(), radio = null, playing = m.playing, buffering = m.buffering && m.playing, shuffle = m.shuffle,
+            queued = emptySet(), radio = null, playing = jam?.playing ?: m.playing, buffering = m.buffering && m.playing, shuffle = m.shuffle,
             repeat = when (m.repeat.toInt()) { Player.REPEAT_MODE_ALL -> Repeat.ALL; Player.REPEAT_MODE_ONE -> Repeat.ONE; else -> Repeat.OFF },
             durationMs = (queue.getOrNull(at)?.duration?.toLong() ?: 0L) * 1000, error = null, bridging = false, playingOn = m.name,
-            jamGuest = guest,
+            jamGuest = guest, jam = jam,
         )
     }
 
@@ -146,8 +162,14 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         return (m.positionMs + ran).coerceIn(0, end)
     }
 
-    /** [op] for the mirrored device; shown at once, as it is expected to come out. */
-    private fun remote(op: Op) = nori.remotes.command(op)
+    /**
+     * [op] for the mirrored device; shown at once, as it is expected to come out. A jam guest's goes by its
+     * role (the core's `jam_press`): to the host, or its play and pause to this phone's own listening.
+     */
+    private fun remote(op: Op) {
+        if (!jamGuest) return run { nori.remotes.command(op) }
+        nori.remotes.jamPress(op) { with { c -> if (op is Op.Pause) c.pause() else if (op is Op.Play) c.play() } }
+    }
 
     /** The mirrored device's list index for the page's row [row]. */
     private fun remoteIndex(m: Mirror, row: Int): UInt? = m.rows.getOrNull(row)?.index
@@ -510,9 +532,6 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     /** Runs [action] on the main thread once the service is up (connecting to it starts it). */
     fun connected(action: () -> Unit) = with { action() }
 
-    /** A jam guest listens along: the player is prepared and wants to play, the engine follows the host. */
-    fun listenAlong() = with { c -> if (c.playbackState == Player.STATE_IDLE) c.prepare(); c.play() }
-
     fun skipTo(index: Int) = with { c ->
         mirror?.let { m -> remoteIndex(m, index)?.let { remote(Op.Jump(it, m.rev)) }; return@with }
         c.seekToDefaultPosition(index); if (c.playbackState == Player.STATE_IDLE) c.prepare(); c.play()
@@ -542,7 +561,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
 
     /** Also prepares a queue that was restored but never loaded. */
     fun toggle() = with { c ->
-        mirror?.let { m -> remote(if (m.playing) Op.Pause else Op.Play); return@with }
+        mirror?.let { remote(if (_state.value.playing) Op.Pause else Op.Play); return@with }
         Util.handlePlayPauseButtonAction(c)
     }
     fun next() = with { c ->

@@ -87,6 +87,7 @@ enum Say {
         case NORI_NOTE_INDEXING: return "Filling the offline index…"
         case NORI_NOTE_INDEXED: return "Offline index: \(songs(count))"
         case NORI_NOTE_INDEX_STOPPED: return "The offline index stopped"
+        case NORI_NOTE_CURVE_FAILED: return "Could not fetch the sound curve for these headphones"
         default: return nil
         }
     }
@@ -377,10 +378,18 @@ enum Say {
     static let join = "Join"
     static let joining = "Joining…"
     static let notAnInvite = "That is not a jam invite. Paste the whole link the host sent you."
+    static let ownJam = "That's your own jam"
+    static let jamInviteEnded = "This jam has ended"
     static func jamJoinFailed(_ why: String) -> String { "Couldn't join the jam (\(why))" }
     static let leaveJam = "Leave"
     static let jamLeft = "You left the jam"
-    static let jamEnded = "The jam ended"
+    static let curveOffered = "Tune the sound for these headphones?"
+    static let curveApplied = "Sound tuned for these headphones"
+    static let curveApply = "Apply"
+    static let curveNotNow = "Not Now"
+    static let curveUndo = "Undo"
+    static let curveKeep = "Keep"
+    static func jamEnded(_ host: String) -> String { host.isEmpty ? "The jam ended" : "\(host) ended the jam" }
     static let listenHere = "Listen Here"
     static let playingHere = "Playing Here"
     static let youAskedFor = "You Asked For"
@@ -389,6 +398,8 @@ enum Say {
     static func listening(_ n: Int) -> String { n == 0 ? "no one yet" : "\(n) listening" }
     /// The jam on the player: "Jam · Desk · 2 listening".
     static func jamStrip(_ host: String, _ n: Int) -> String { "Jam · \(host) · \(listening(n))" }
+    /// A jam guest paused its own listening; play joins the jam again.
+    static let jamPausedHere = "Paused here · Jam still playing"
     static func waitingFor(_ host: String) -> String { "Waiting for \(host)" }
     /// Why a guest who asked to listen along does not, by `nori_ios_jam` listening code.
     static func jamAlong(_ code: Int) -> String? {

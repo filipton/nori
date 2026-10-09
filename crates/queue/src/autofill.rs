@@ -47,7 +47,9 @@ fn current_entry(p: &nori_player::playlist::Playlist) -> Option<u64> {
 }
 
 fn refills(origin: Option<nori_model::OriginKind>, auto_fill: bool) -> bool {
-    auto_fill || matches!(origin, Some(nori_model::OriginKind::ShuffleSongs | nori_model::OriginKind::ShuffleAlbums))
+    use nori_model::OriginKind as K;
+    // A jam's queue is its host's, which a guest listening along only follows.
+    origin != Some(K::Jam) && (auto_fill || matches!(origin, Some(K::ShuffleSongs | K::ShuffleAlbums)))
 }
 
 /// What a next press does now.
@@ -323,6 +325,7 @@ mod tests {
         assert!(refills(Some(K::ShuffleAlbums), false) && refills(Some(K::ShuffleSongs), false));
         assert!(!refills(Some(K::Album), false) && !refills(None, false));
         assert!(refills(None, true));
+        assert!(!refills(Some(K::Jam), true), "a jam's queue is its host's to fill");
 
         // Refill timing follows queue.
         let s = crate::playlist::tests::session(&["rf1", "rf2", "rf3", "rf4"], 0);

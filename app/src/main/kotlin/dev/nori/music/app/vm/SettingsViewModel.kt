@@ -74,7 +74,7 @@ data class AutoEqHit(val entry: dev.nori.music.ffi.model.AutoEqEntry, val captio
 }
 
 /** A line for the snackbar about the device that just connected, with the one thing it offers to do. */
-data class EqNotice(val message: String, val action: String, val source: DeviceSound.Notice)
+data class EqNotice(val message: String, val action: String, val source: dev.nori.music.ffi.devices.CurveNotice)
 
 data class SyncUi(val running: Boolean = false, val indexed: IngestStats = IngestStats(0u, 0u, 0u), val error: String? = null)
 
@@ -105,7 +105,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     // ---- the settings screen (SettingsPages.kt), on the core's settings model (nori-settings, settings_model.rs) ----
 
     /** The groups the root of Settings lists, in [res]'s language. */
-    fun settingsGroups(res: android.content.res.Resources): List<SettingsGroup> = dev.nori.music.app.vm.settingsGroups(res)
+    fun settingsGroups(res: android.content.res.Resources): List<SettingsGroup> = dev.nori.music.app.vm.settingsGroups(res, nori.rules.settings)
 
     private var search: Pair<android.content.res.Resources, SettingsSearch>? = null
 
@@ -113,7 +113,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     fun searchSettings(query: String, res: android.content.res.Resources): List<SettingsHit> {
         val s = search?.takeIf { it.first === res }?.second
             ?: SettingsSearch(res, nori.settings.core.settingsState(false, false).beatModel !is dev.nori.music.ffi.settings.BeatModel.Unavailable).also { search = res to it }
-        return s.find(query)
+        return s.find(query, nori.rules.settings)
     }
 
     /**
@@ -121,7 +121,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
      * its rules make of the settings, asked only when they or [facts] change.
      */
     fun settingsPage(id: String, p: StoredPrefs, facts: SettingsFacts, res: android.content.res.Resources): SettingsPage? =
-        settingsPage(res, id, p, facts, nori.settings.core.settingsState(facts.dac.bitPerfect, facts.dac.device != null))
+        settingsPage(res, id, p, facts, nori.settings.core.settingsState(facts.dac.bitPerfect, facts.dac.device != null), nori.rules.settings)
 
     /** Whether the settings action [action] asks first, and what it says; null for one done at once. */
     fun actionAsks(action: String, res: android.content.res.Resources): ActionAsk? = settingsActionAsks(res, action, settingsFacts.value)
@@ -441,12 +441,12 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     /** What to say about the device that just connected; only while it is still the one playing. */
     val eqNotice: StateFlow<EqNotice?> = combine(devices.notice, currentOutput) { n, current ->
         // Only about the device still playing; the words are Say's.
-        val text = when (n) {
-            is DeviceSound.Offer -> dev.nori.music.app.ui.say.deviceNotice(true, n.entry.name)
-            is DeviceSound.Applied -> dev.nori.music.app.ui.say.deviceNotice(false, n.curve)
-            null -> null
+        val (output, text) = when (n) {
+            is dev.nori.music.ffi.devices.CurveNotice.Offer -> n.output to dev.nori.music.app.ui.say.deviceNotice(true, n.entry.name)
+            is dev.nori.music.ffi.devices.CurveNotice.Applied -> n.output to dev.nori.music.app.ui.say.deviceNotice(false, n.curve)
+            null -> null to null
         }
-        if (n == null || text == null || n.output != current) null else EqNotice(text.first, text.second, n)
+        if (n == null || text == null || output != current) null else EqNotice(text.first, text.second, n)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** The notice is on screen now, so it is not shown again. */
@@ -455,12 +455,12 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     /** "Apply" on an offer, "Undo" on a curve applied without asking. */
     fun eqNoticeAction(n: EqNotice) = viewModelScope.launch {
         when (val src = n.source) {
-            is DeviceSound.Offer -> try {
+            is dev.nori.music.ffi.devices.CurveNotice.Offer -> try {
                 devices.accept(src)
             } catch (e: Exception) {
                 _autoEq.update { it.copy(error = describeConnectionError(e)) }
             }
-            is DeviceSound.Applied -> devices.undo(src)
+            is dev.nori.music.ffi.devices.CurveNotice.Applied -> devices.undo(src)
         }
     }
 
@@ -545,7 +545,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     }
 
     fun clearAnalyses() = viewModelScope.launch {
-        withContext(Dispatchers.IO) { runCatching { nori.core.analysisClear() } }
+        withContext(Dispatchers.IO) { runCatching { nori.core.measureAgain() } }.getOrNull()?.let { nori.settings.asked(it.effect) }
         refreshAnalysed()
     }
 

@@ -5,7 +5,7 @@
 use std::ffi::c_char;
 
 use nori_core::browse::ProfileRules;
-use nori_core::remote::{JamView, Listening};
+use nori_core::remote::{Controls, JamControls, JamView, Listening, Reach};
 use serde_json::{json, Value};
 
 use crate::pages::owned;
@@ -17,11 +17,17 @@ pub const JOIN_STARTED: i32 = 0;
 pub const JOIN_NOT_AN_INVITE: i32 = 1;
 /// No session is open.
 pub const JOIN_CLOSED: i32 = 2;
+/// The invite is to the jam this iPod hosts.
+pub const JOIN_OWN: i32 = 3;
+/// The invite is to a jam this iPod opened, ended since. One the server says ended is reported as flag 2.
+pub const JOIN_ENDED: i32 = 4;
 
-/// `r` for the app: `{"asks", "account", "sections": [LibrarySection as numbers, in order]}`.
+/// `r` for the app: `{"asks", "account", "sections": [LibrarySection as numbers, in order], "settings":
+/// [SettingsPart as numbers]}`.
 fn rules_json(r: &ProfileRules) -> Value {
     let sections: Vec<u8> = r.sections.iter().map(|s| *s as u8).collect();
-    json!({ "asks": r.asks, "account": r.account, "sections": sections })
+    let settings: Vec<u8> = r.settings.iter().map(|s| *s as u8).collect();
+    json!({ "asks": r.asks, "account": r.account, "sections": sections, "settings": settings })
 }
 
 /// What the open profile offers (a jam guest's: the host's library, its picks asked of the host), as JSON
@@ -40,21 +46,37 @@ fn listening_code(l: Listening) -> u8 {
     }
 }
 
+fn reach_code(r: Reach) -> u8 {
+    match r {
+        Reach::Nowhere => 0,
+        Reach::Here => 1,
+        Reach::Jam => 2,
+    }
+}
+
 /// A guest's jam `v` for the app: `{"host", "listeners": [names], "asked": [song ids], "asks": [{"t", "s",
 /// "c"}], "listening": 0 only shown, 1 playing here, 2 asked but the host lets no one, 3 asked but the
-/// server lets no guest, "ended": the host closed the jam or sent this guest out}`. Its asks and asked songs
-/// are its own requests the host has yet to take.
-fn jam_json(v: &JamView) -> Value {
+/// server lets no guest, "play", "skip", "seek": what each control reaches by its role (0 offered not,
+/// 1 this iPod's own listening, 2 the host's playback), "playing": what the play button shows,
+/// "pausedHere": paused here while the jam plays on}`. Its asks and asked songs are its own requests the
+/// host has yet to take.
+fn jam_json(v: &JamView, controls: Option<JamControls>) -> Value {
     let listeners: Vec<&str> = v.listeners().map(|m| m.name.as_str()).collect();
     let asks: Vec<Value> = v.asks().map(|p| json!({ "t": p.song.title, "s": p.song.artist, "c": p.song.cover_art.as_deref().unwrap_or("") })).collect();
     let asked: Vec<&str> = v.asks().map(|p| p.song.id.as_str()).collect();
-    json!({ "host": v.host(), "listeners": listeners, "asked": asked, "asks": asks, "listening": listening_code(v.listening), "ended": v.ended })
+    let c = controls.map(|c| c.controls);
+    let code = |f: fn(&Controls) -> Reach| c.as_ref().map_or(0, |c| reach_code(f(c)));
+    json!({
+        "host": v.host(), "listeners": listeners, "asked": asked, "asks": asks, "listening": listening_code(v.listening),
+        "play": code(|c| c.play_pause), "skip": code(|c| c.skip), "seek": code(|c| c.seek),
+        "playing": controls.is_some_and(|c| c.playing), "pausedHere": controls.is_some_and(|c| c.paused_here),
+    })
 }
 
 /// The jam this iPod is a guest in, as JSON to free ([`jam_json`]); NULL in none.
 #[no_mangle]
 pub extern "C" fn nori_ios_jam() -> *mut c_char {
-    with_session(|s| s.remote().filter(|_| s.guest).and_then(|r| r.jam_view()).map(|v| owned(&jam_json(&v))))
+    with_session(|s| s.remote().filter(|_| s.guest).and_then(|r| r.jam_view().map(|v| owned(&jam_json(&v, r.jam_controls())))))
         .flatten()
         .unwrap_or(std::ptr::null_mut())
 }
@@ -70,13 +92,21 @@ pub unsafe extern "C" fn nori_ios_jam_join(link: *const c_char, name: *const c_c
     if !nori_core::remote::is_invite(&link) {
         return JOIN_NOT_AN_INVITE;
     }
-    let Some(app) = with_session(|s| s.core.session.clone()) else { return JOIN_CLOSED };
-    nori_host::spawn("nori-ios-jam-join", move || match nori_host::jam_join(nori_http::Http::new(), &app.settings, link, DEVICE_NAME) {
+    let Some((app, remote)) = with_session(|s| (s.core.session.clone(), s.remote())) else { return JOIN_CLOSED };
+    match nori_core::remote::own_invite(app.settings.clone(), remote.clone(), link.clone()) {
+        Some(nori_core::remote::JamJoin::Own) => return JOIN_OWN,
+        Some(_) => return JOIN_ENDED,
+        None => {}
+    }
+    nori_host::spawn("nori-ios-jam-join", move || match nori_host::jam_join(nori_http::Http::new(), &app.settings, link, DEVICE_NAME, remote) {
         Ok(pass) => {
             nori_host::jam_joined(&app.settings, pass, &name);
             report(REPORT_JAM_JOINED, 1, 0, "");
         }
-        Err(e) => {
+        // Answered above, before joining started.
+        Err(nori_host::JoinError::Own) => {}
+        Err(nori_host::JoinError::Ended) => report(REPORT_JAM_JOINED, 2, 0, ""),
+        Err(nori_host::JoinError::Failed(e)) => {
             let (code, detail) = crate::account::fail(e);
             report(REPORT_JAM_JOINED, 0, code, &detail.unwrap_or_default());
         }
@@ -84,18 +114,23 @@ pub unsafe extern "C" fn nori_ios_jam_join(link: *const c_char, name: *const c_c
     JOIN_STARTED
 }
 
-/// Leaves the jam this guest is in, on a thread of its own; a `REPORT_JAM_LEFT` once the guest profile is
-/// dropped.
+/// Leaves the jam this guest is in, at once (the relay is told on the way); a `REPORT_JAM_LEFT`.
 #[no_mangle]
 pub extern "C" fn nori_ios_jam_leave() {
-    let Some((remote, app)) = with_session(|s| (s.remote(), s.core.session.clone())) else { return };
-    nori_host::spawn("nori-ios-jam-leave", move || {
-        if let Some(r) = remote {
-            let _ = nori_core::transport::block_on(r.jam_leave());
-        }
-        let back = nori_host::jam_left(&app.settings);
-        report(REPORT_JAM_LEFT, i32::from(back.is_some()), 0, "");
-    });
+    let Some(remote) = with_session(|s| s.remote()) else { return };
+    if let Some(r) = remote {
+        r.jam_leave();
+    }
+    left(None);
+}
+
+/// Drops the guest profile, and reports `REPORT_JAM_LEFT`: flag 1 when there is a profile to open, index
+/// 1 when the jam ended (`ended`) rather than was left, text then its host's name if seen.
+pub(crate) fn left(ended: Option<Option<String>>) {
+    let Some(app) = with_session(|s| s.core.session.clone()) else { return };
+    let back = nori_host::jam_left(&app.settings);
+    let host = ended.clone().flatten().unwrap_or_default();
+    report(REPORT_JAM_LEFT, i32::from(back.is_some()), i32::from(ended.is_some()), &host);
 }
 
 /// Listens along (`on` 1: the host's music plays here, in step), or only shows the jam.
@@ -114,7 +149,7 @@ mod tests {
     #[test]
     fn a_guest_has_the_hosts_library_and_no_account() {
         let guest = rules_json(&nori_core::browse::profile_rules(true));
-        assert_eq!(guest, json!({ "asks": true, "account": false, "sections": [0, 2, 3, 7] }));
+        assert_eq!(guest, json!({ "asks": true, "account": false, "sections": [0, 2, 3, 7], "settings": [0, 2, 3, 4, 5, 7, 9, 10] }));
         let account = rules_json(&nori_core::browse::profile_rules(false));
         assert_eq!((account["asks"].clone(), account["account"].clone(), account["sections"].as_array().map(Vec::len)), (json!(false), json!(true), Some(12)));
     }
@@ -134,11 +169,18 @@ mod tests {
             refused: None,
             along: false,
             listening: Listening::HostOff,
-            ended: false,
         };
+        // Paused here, a plain guest's play and pause are its own; it skips and seeks nothing.
+        let controls = JamControls { controls: Controls::of(Role::Guest, true), playing: false, paused_here: true };
         assert_eq!(
-            jam_json(&v),
-            json!({ "host": "Desk", "listeners": ["iPod", "Dee"], "asked": ["x"], "asks": [{ "t": "X", "s": "Band", "c": "al-x" }], "listening": 2, "ended": false })
+            jam_json(&v, Some(controls)),
+            json!({
+                "host": "Desk", "listeners": ["iPod", "Dee"], "asked": ["x"], "asks": [{ "t": "X", "s": "Band", "c": "al-x" }], "listening": 2,
+                "play": 1, "skip": 0, "seek": 0, "playing": false, "pausedHere": true,
+            })
         );
+        let admin = JamControls { controls: Controls::of(Role::Admin, false), playing: true, paused_here: false };
+        let j = jam_json(&v, Some(admin));
+        assert_eq!((&j["play"], &j["skip"], &j["seek"], &j["playing"]), (&json!(2), &json!(2), &json!(2), &json!(true)), "an admin's reach the host");
     }
 }

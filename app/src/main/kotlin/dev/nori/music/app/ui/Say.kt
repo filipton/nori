@@ -50,6 +50,7 @@ class Say(private val r: Resources) {
     val repeat: String = r.getString(R.string.repeat)
     val queue: String = r.getString(R.string.queue)
     val lyrics: String = r.getString(R.string.lyrics)
+    val jamPausedHere: String = r.getString(R.string.jam_paused_here)
     val favourite: String = r.getString(R.string.favourite)
     val addToFavourites: String = r.getString(R.string.add_to_favourites)
     val removeFromFavourites: String = r.getString(R.string.remove_from_favourites)
@@ -713,6 +714,8 @@ class Say(private val r: Resources) {
     val playingNext: String get() = r.getString(R.string.said_playing_next)
     val addedToQueue: String get() = r.getString(R.string.said_added_to_queue)
     fun jamAsked(title: String): String = r.getString(R.string.jam_asked, title)
+    val homeClosedToGuests: String get() = r.getString(R.string.home_closed_to_guests)
+    fun jamEnded(host: String?): String = host?.let { r.getString(R.string.jam_ended_by, it) } ?: r.getString(R.string.jam_ended)
     val excludedFromMixes: String get() = r.getString(R.string.said_excluded_from_mixes)
     val noServerQueue: String get() = r.getString(R.string.said_no_server_queue)
     val serverDownloading: String get() = r.getString(R.string.said_server_downloading)
@@ -758,8 +761,6 @@ class Say(private val r: Resources) {
     }
     /** "Cutoff 1265 Hz: how high up the other ear hears", in whole hertz as the core keeps it. */
     fun crossfeedCut(hz: Float): String = r.getString(R.string.eq_crossfeed_cut, Fmt.fixed(hz.toDouble(), 0))
-    /** A graphic band's ISO label: "31.5", "63", "1k", "12.5k". */
-    fun isoBand(hz: Float): String = if (hz < 100f && hz != kotlin.math.floor(hz)) Fmt.fixed(hz.toDouble(), 1) else Fmt.hz(hz)
     /** The band dialog's title: "63 Hz", "1k Hz". */
     fun hzTitle(freq: Float): String = r.getString(R.string.eq_hz_title, Fmt.hz(freq))
     /** "Slope 0.71" for a shelf given by its slope, "Q 1.41" for the rest. */

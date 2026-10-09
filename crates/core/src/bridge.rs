@@ -1,5 +1,7 @@
 //! Offline bridge calls over the downloads in the core's database. The policy is nori-queue's.
 
+use crate::cache_policy::Read;
+use crate::client::Client;
 use crate::playlist::QueueEdit;
 use crate::{db, Core, Result};
 
@@ -25,15 +27,35 @@ impl Core {
         }
         if self.session.bridge_failed() { BridgeTake::Skip } else { BridgeTake::Stop }
     }
+}
 
-    /// The parked song is next (`BridgeStep::Parked`): resume the queue if `network_up`, else add more
-    /// downloads before it. None when nothing changes.
-    pub fn bridge_parked(&self, network_up: bool) -> Option<QueueEdit> {
-        if network_up {
-            self.session.unbridge()
+/// Whether the server is back is the server's answer to a ping, asked when the parked song comes up and
+/// when the platform reports another network; never on a timer.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+impl Client {
+    /// The parked song is next (`BridgeStep::Parked`): the parked queue comes back if the server answers,
+    /// else more downloads go in before it. None when nothing changes.
+    pub async fn bridge_parked(&self) -> Option<QueueEdit> {
+        if self.server_answers().await {
+            self.core.session.unbridge()
         } else {
-            self.bridge_start().ok().flatten()
+            self.core.bridge_start().ok().flatten()
         }
+    }
+
+    /// The platform moved to another network while bridging: the parked queue comes back if the server
+    /// answers. None when nothing is bridged or the server is still gone.
+    pub async fn bridge_network_changed(&self) -> Option<QueueEdit> {
+        if !self.core.session.bridge_state().bridging || !self.server_answers().await {
+            return None;
+        }
+        self.core.session.unbridge()
+    }
+}
+
+impl Client {
+    async fn server_answers(&self) -> bool {
+        self.read_now(Read::Ping).await.is_ok()
     }
 }
 
@@ -119,8 +141,47 @@ pub(crate) mod tests {
             t => panic!("{t:?}"),
         }
         assert!(core.session.bridge_state().bridging);
-        assert!(core.bridge_parked(true).is_some());
-        assert!(!core.session.bridge_state().bridging);
+    }
+
+    /// The parked queue comes back when the server answers a ping, on the parked song or another network.
+    #[test]
+    fn back_when_the_server_answers() {
+        use crate::client::tests::{block, client, Fake, OK};
+        use crate::transport::FailureKind;
+        let profile = || crate::client::NetProfile { url: "h".into(), ..Default::default() };
+        let bridged = || {
+            let (c, fake) = client(profile());
+            c.core.session.set(vec!["on1".into(), "on2".into()], Some(0), false, None);
+            c.core.session.register(vec![song("on1", "Muse", "y", false), song("on2", "Muse", "y", false)]);
+            // Enough for a second batch.
+            for k in 0..BATCH * 2 {
+                let id = format!("dl{k}");
+                c.core.download_queue(vec![song(&id, "Muse", "x", false)]).unwrap();
+                c.core.download_done(id).unwrap();
+            }
+            assert!(c.core.bridge_start().unwrap().is_some());
+            (c, fake)
+        };
+        let ping = |fake: &Fake, up: bool| if up { fake.answer(OK) } else { fake.fail(FailureKind::Connect) };
+        let pings = |fake: &Fake| fake.asked().iter().filter(|u| u.contains("/rest/ping")).count();
+
+        for up in [false, true] {
+            let (c, fake) = bridged();
+            ping(&fake, up);
+            let edit = block(c.bridge_network_changed());
+            assert_eq!((edit.is_some(), c.core.session.bridge_state().bridging), (up, !up), "network changed, server up {up}");
+            assert_eq!(pings(&fake), 1);
+
+            let (c, fake) = bridged();
+            ping(&fake, up);
+            let edit = block(c.bridge_parked()).expect("the queue changes either way");
+            assert_eq!(c.core.session.bridge_state().bridging, !up, "parked, server up {up}");
+            assert_eq!(edit.remove.is_empty(), !up, "back: the bridge's songs go; still gone: more go in");
+        }
+
+        let (c, fake) = client(profile());
+        assert!(block(c.bridge_network_changed()).is_none());
+        assert_eq!(pings(&fake), 0, "nothing bridged, nothing asked");
     }
 
 }

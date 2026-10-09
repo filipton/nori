@@ -403,8 +403,23 @@ impl Session {
     }
 }
 
+/// The queue as it is now: its songs, and the current one's index.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct QueueNow {
+    pub songs: Vec<Song>,
+    pub index: u32,
+}
+
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Session {
+    /// The queue as it is now, for a player to take as its own: a jam guest's, the host's songs its
+    /// follower queued.
+    pub fn playlist_now(&self) -> QueueNow {
+        let (ids, index) = self.playlist(|p| (p.ids().to_vec(), p.current().unwrap_or(0) as u32));
+        QueueNow { songs: self.songs(ids), index }
+    }
+
     /// [`Session::from_page`].
     pub fn playlist_from(&self, page: std::sync::Arc<nori_library::pages::PageQueue>) -> bool {
         self.from_page(&page)

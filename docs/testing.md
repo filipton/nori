@@ -176,9 +176,18 @@ is Android glue and stays on the device. 50 moved, 60 stay.
   `--only jam` hosts a jam on the emulator against octo-fiesta's real relay (the local one on 5274,
   `NORI_E2E_JAM`) with two guests on this Mac (`tools/jam-guest.py`, the relay's frames in Python): what only
   the device shows is the jam in the player, its queue and the devices sheet, requests arriving live and
-  decided by tapping (the accessibility tree's Accept and Refuse), and the accepted song playing. Then the
+  decided by tapping (the accessibility tree's Accept and Refuse), and the accepted song playing; once ended,
+  its own old invite opened through the system's intent saying the jam ended and changing nothing, and a new
+  one starting at once (which invites are its own and what an ended one does are tests/remote.rs'). Then the
   emulator is a guest of a jam on the relay's server hosted on this Mac (`tools/jam-host.py`) while its own
   profile is the home server's: the invite opening the guest's player, a tap asking, Leave returning home.
+  Listening along there is the playback service's own (media3's foreground service and notification, the
+  AudioTrack's deep buffer with the screen off, the session's state): the notification saying whose jam it
+  is, the music going on in the background with the screen off, a plain guest's pause holding only its
+  own listening and play joining again, and an admin's pause, play and skip reaching the host
+  (`NORI_JAM_ADMINS=1`). What a guest's engine does with them (holding, joining where the host is, its
+  output let go and back) is nori-engine's along.rs; which control reaches where is nori-remote's and
+  nori-core's tests/remote.rs.
 - The car: the tree, the rows a pick plays, search and spoken requests are nori-core's (car.rs, tested there);
   media3's session, the items Android Auto reads and the pictures the car opens through CarArtProvider are
   Android's. A debug build walks it as a car connects, through a media browser: `app.sh do "car tree home"`,

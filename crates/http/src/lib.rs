@@ -469,7 +469,7 @@ mod tests {
             (Error::new(ErrorKind::PermissionDenied, "denied"), FailureKind::Io),
         ];
         for (io, want) in cases {
-            let TransportError::Failed { kind, .. } = failure(ureq::Error::Io(io)) else { panic!() };
+            let TransportError::Failed { kind, .. } = failure(ureq::Error::Io(io));
             assert_eq!(kind, want);
         }
     }

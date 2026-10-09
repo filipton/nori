@@ -192,7 +192,7 @@ impl Cli {
 }
 
 fn title(songs: &[Song], index: usize) -> String {
-    songs.get(index).map_or_else(|| format!("#{index}"), |s| format!("{} - {} ({})", s.artist, s.title, crate::text::duration(s.duration as i64)))
+    songs.get(index).map_or_else(|| format!("#{index}"), |s| format!("{} - {} ({})", s.artist, s.title, nori_core::numbers::clock(s.duration as i64, false)))
 }
 
 fn print_songs(songs: &[Song]) {
@@ -322,7 +322,7 @@ pub fn main(argv: Vec<String>) {
                 Event::Bridge { .. } => println!("stopped: the network is gone"),
                 Event::Mixing(on) => println!("{}", if on { "mixing" } else { "mixed" }),
                 Event::Placed { index, ms } => println!("  {} at {} (another path)", shown(index), clock(ms)),
-                Event::Awake(_) => {}
+                Event::Awake(_) | Event::Following(_) => {}
             }
         }
     });

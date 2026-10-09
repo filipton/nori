@@ -181,9 +181,6 @@ private val tabs = listOf(
     Tab("settings", say.settings, Icons.Filled.Settings),
 )
 
-/** A jam guest's tabs: the settings are the account's. */
-private val guestTabs = tabs.filter { it.route != "settings" }
-
 /**
  * [launchRoute] is what the activity was asked for from outside - a tap on the download notification, or
  * a launcher shortcut: a screen, or a shuffle to start - set on launch or on a new intent, and cleared
@@ -211,7 +208,6 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
         }
         val rules = remember(guest) { dev.nori.music.ffi.library.profileRules(guest) }
         val home = "home"
-        val shownTabs = if (rules.account) tabs else guestTabs
         // A guest follows the host while the app is in sight: what plays, the queue, its requests.
         val remote: dev.nori.music.app.vm.RemoteViewModel = viewModel()
         if (guest) androidx.lifecycle.compose.LifecycleResumeEffect(Unit) { remote.watch(true); onPauseOrDispose { remote.watch(false) } }
@@ -249,6 +245,8 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
         var menuSong by remember { mutableStateOf<Song?>(null) }
         var menuFromPlayer by remember { mutableStateOf(false) }
         var devicesOpen by remember { mutableStateOf(false) }
+        // Said on the profile the phone went back to: the guest's page is fading out by then.
+        if (!guest) LaunchedEffect(Unit) { remote.ended.collect { snackbar.showSnackbar(say.jamEnded(it), withDismissAction = true) } }
         LaunchedEffect(Unit) {
             // Latest, not in turn: showing a message suspends until it goes away, so a plain collect
             // could not even see the next one until the last had sat out its four seconds - a quick
@@ -266,7 +264,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
         LaunchedEffect(eqNotice) {
             val n = eqNotice ?: return@LaunchedEffect
             // An offer waits for an answer; a curve already applied only offers to undo it.
-            val offer = n.source is dev.nori.music.playback.DeviceSound.Offer
+            val offer = n.source is dev.nori.music.ffi.devices.CurveNotice.Offer
             val result = snackbar.showSnackbar(
                 n.message, actionLabel = n.action, withDismissAction = offer,
                 duration = if (offer) androidx.compose.material3.SnackbarDuration.Long else androidx.compose.material3.SnackbarDuration.Short,
@@ -330,7 +328,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             // roots themselves, the icon went out the moment anything was opened. There is one back stack
             // and a tab tap rebuilds it from the start, so the page's tab is the last root shown.
             var lastTab by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(home) }
-            val onTab = route?.takeIf { r -> shownTabs.any { it.route == r } }
+            val onTab = route?.takeIf { r -> tabs.any { it.route == r } }
             LaunchedEffect(onTab) { if (onTab != null) lastTab = onTab }
             val tabRoute = onTab ?: lastTab
             // This session's star changes, so every heart prefers them over the snapshot it painted with.
@@ -478,9 +476,9 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
               // The tab bar is over the player, not under it: as the player rises it slides down off the
               // screen instead of vanishing under the sheet in one frame. See BottomChrome.
               if (wide) Box(Modifier.align(if (railLeft) Alignment.CenterStart else Alignment.CenterEnd).fillMaxHeight()) {
-                  TabRail(tabRoute, shownTabs, nav::tab, chromeLook, player, railLeft)
+                  TabRail(tabRoute, tabs, nav::tab, chromeLook, player, railLeft)
               }
-              else Box(Modifier.align(Alignment.BottomCenter)) { TabBar(tabRoute, shownTabs, nav::tab, chromeLook, player) { tabsHeight = it } }
+              else Box(Modifier.align(Alignment.BottomCenter)) { TabBar(tabRoute, tabs, nav::tab, chromeLook, player) { tabsHeight = it } }
               }
               // Top: less in the way of the now-playing bar; swipe or the X dismisses.
               SnackbarHost(

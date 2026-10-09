@@ -2,27 +2,16 @@
 //! mono, limiter and crossfeed. All numbers come from the core.
 
 use nori_core::dsp::{effective_preamp_db, eq_presets, graphic_bands, graphic_response};
+use nori_core::numbers::{self, POINT};
 use nori_core::settings::{crossfeed_preset_of, EqMode, StoredPrefs, EQ_RANGES};
 use nori_core::{EqKind, PresetKind};
 use slint::{ModelRc, SharedString, VecModel};
 
 use crate::{AppWindow, EqBandRow};
 
-/// "63", "1k", "2.5k", "31.5".
-pub fn hz(f: f32) -> String {
-    if f >= 1000.0 {
-        let k = f / 1000.0;
-        if (k - k.round()).abs() < 0.05 { format!("{:.0}k", k) } else { format!("{:.1}k", k) }
-    } else if f.fract() != 0.0 {
-        format!("{f:.1}")
-    } else {
-        format!("{f:.0}")
-    }
-}
-
-/// "+1.5", "−3.0" (typographic minus).
+/// "+1.5", "−3.0": the core's decibels with a typographic minus.
 pub fn signed(v: f32) -> String {
-    if v > 0.0 { format!("+{v:.1}") } else { format!("{v:.1}").replace('-', "−") }
+    numbers::signed_db(v, POINT).replace('-', "−")
 }
 
 pub fn preset_name(kind: PresetKind) -> &'static str {
@@ -85,7 +74,7 @@ pub fn fill(ui: &AppWindow, p: &StoredPrefs) {
         p.eq_graphic
             .iter()
             .enumerate()
-            .map(|(i, g)| EqBandRow { label: centres.get(i).map_or(String::new(), |b| hz(b.label_hz)).into(), gain: *g, value: signed(*g).into(), uses_gain: true })
+            .map(|(i, g)| EqBandRow { label: centres.get(i).map_or(String::new(), |b| numbers::iso_band(b.label_hz, POINT)).into(), gain: *g, value: signed(*g).into(), uses_gain: true })
             .collect()
     } else {
         p.eq_bands
@@ -97,7 +86,7 @@ pub fn fill(ui: &AppWindow, p: &StoredPrefs) {
                     _ => "",
                 };
                 EqBandRow {
-                    label: format!("{}{side}", hz(b.freq)).into(),
+                    label: format!("{}{side}", numbers::hz(b.freq, POINT)).into(),
                     gain: b.gain_db,
                     value: if uses_gain(b.kind) { signed(b.gain_db).into() } else { kind_name(b.kind).into() },
                     uses_gain: uses_gain(b.kind),
@@ -141,7 +130,7 @@ pub fn fill(ui: &AppWindow, p: &StoredPrefs) {
         .into(),
     );
     ui.set_eq_cut(p.crossfeed_hz);
-    ui.set_eq_cut_label(format!("Cutoff {:.0} Hz: how high up the other ear hears", p.crossfeed_hz).into());
+    ui.set_eq_cut_label(format!("Cutoff {} Hz: how high up the other ear hears", numbers::fixed(p.crossfeed_hz as f64, 0, false, POINT)).into());
     ui.set_eq_bypass(if p.sound_bypass { "No processing on this output, so nothing here changes the sound. Turn it off in Settings, under Sound." } else { "" }.into());
     let r = EQ_RANGES;
     ui.set_eq_ranges(ModelRc::new(VecModel::from(vec![r.gain.min, r.gain.max, r.preamp.min, r.preamp.max, r.balance.min, r.balance.max, r.limiter.min, r.limiter.max, r.crossfeed.min, r.crossfeed.max, r.crossfeed_cut.min, r.crossfeed_cut.max])));
@@ -153,8 +142,6 @@ mod tests {
 
     #[test]
     fn eq_drawing() {
-        assert_eq!((hz(31.5), hz(63.0), hz(1000.0), hz(2500.0), hz(16000.0)), ("31.5".into(), "63".into(), "1k".into(), "2.5k".into(), "16k".into()));
-
         // Curve spans the box flat at zero.
         let c = curve(&[0.0; 10], 960.0, 96.0);
         assert_eq!(c.matches('L').count(), 96);

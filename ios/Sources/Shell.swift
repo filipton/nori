@@ -23,9 +23,9 @@ final class ShellController: UITabBarController {
         view.addSubview(mini)
     }
 
-    /// The tabs the open profile has: the settings are the account's, not a jam guest's.
+    /// The tabs the open profile has: Settings where it opens any (a jam guest's: this iPod's own).
     @objc private func lay() {
-        let shown = tabs.filter { Core.shared.rules.account || !($0.viewControllers.first is SettingsPage) }
+        let shown = tabs.filter { !Core.shared.rules.settings.isEmpty || !($0.viewControllers.first is SettingsPage) }
         guard viewControllers?.count != shown.count else { return }
         setViewControllers(shown, animated: false)
     }
@@ -183,6 +183,7 @@ final class MiniPlayer: UIView {
         addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(panned(_:))))
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(changed), name: .noriNow, object: nil)
+        center.addObserver(self, selector: #selector(changed), name: .noriJam, object: nil)
         center.addObserver(self, selector: #selector(paintHeart), name: .noriFavorites, object: nil)
         center.addObserver(self, selector: #selector(changed), name: UIApplication.didBecomeActiveNotification, object: nil)
         center.addObserver(self, selector: #selector(stopTicking), name: UIApplication.didEnterBackgroundNotification, object: nil)
@@ -204,15 +205,17 @@ final class MiniPlayer: UIView {
             cover.show("", points: 40)
         }
         play.isEnabled = now.song != nil
-        // A jam's music is its host's to play and skip.
-        play.isHidden = now.jam
+        // A jam guest plays as its role lets it (the core's jam controls); its skip is a swipe.
+        let jam = now.jam ? Core.shared.jam : nil
+        play.isHidden = now.jam && (jam?.play ?? 0) == 0
         // The sound goes elsewhere: the speaker is filled, and says only that.
         speaker.isHidden = now.jam
         speaker.setImage(now.device != nil ? Glyph.speakerSmall : Glyph.speakerSmallOutline, for: .normal)
         speaker.accessibilityLabel = now.device.map(Say.playingOn) ?? Say.output
         paintHeart()
-        play.setImage(now.playing ? Glyph.pause : Glyph.play, for: .normal)
-        play.accessibilityLabel = now.playing ? Say.pause : Say.play
+        let playing = jam?.playing ?? now.playing
+        play.setImage(playing ? Glyph.pause : Glyph.play, for: .normal)
+        play.accessibilityLabel = playing ? Say.pause : Say.play
         paintProgress()
         let active = UIApplication.shared.applicationState == .active
         if now.playing && active {
@@ -658,7 +661,7 @@ final class SettingsPage: UITableViewController {
             case 1: navigationController?.pushViewController(EqualizerPage(), animated: true)
             case 2: navigationController?.pushViewController(SoundPage(), animated: true)
             case 4: JamJoin.ask(from: self)
-            default: nori_ios_sync()
+            default: if Core.shared.rules.settings.contains(1) { nori_ios_sync() }
             }
             return
         }

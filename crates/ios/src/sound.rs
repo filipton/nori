@@ -3,7 +3,7 @@
 
 use std::ffi::c_char;
 
-use nori_core::profiles::{device_rows, output_port, sheet, ChoiceKind, DeviceEffect, OutputPort};
+use nori_core::profiles::{device_rows, output_port, sheet, ChoiceKind, OutputPort};
 use nori_core::settings_store::SoundTool;
 use nori_core::{AutoEqEntry, Core};
 use nori_host::session::Session;
@@ -99,24 +99,6 @@ fn browse_json(core: &Core, query: String) -> Value {
     })
 }
 
-/// Does what the core said: loads the sound it gives and arrives again when it asks to.
-fn perform(s: &Session, output: &str, mut effect: DeviceEffect) {
-    // A step asks to arrive again at most once (the engine's `output_changed` does the same).
-    for _ in 0..2 {
-        if let Some(sound) = effect.apply.take() {
-            let settings = &s.core.session.settings;
-            if let Some(prefs) = settings.current() {
-                let bits = settings.put(prefs.with_sound(sound));
-                s.applied(bits);
-            }
-        }
-        if !effect.arrive {
-            return;
-        }
-        effect = s.core.device_arrive(output.to_string()).effect;
-    }
-}
-
 /// Fetches `entry`'s curve. `Ok(None)`: AutoEQ has none, and the core hides the entry from now on.
 fn curve(s: &Session, entry: AutoEqEntry) -> Result<Option<String>, ()> {
     nori_core::transport::block_on(s.client.autoeq_curve(entry)).map_err(|_| ())
@@ -185,7 +167,7 @@ pub unsafe extern "C" fn nori_ios_device_assign(
     let live = output == route_key();
     with_session(|s| match s.core.device_assign(output.clone(), choice, profile, live) {
         Ok(effect) => {
-            perform(s, &output, effect);
+            s.device_effect(&output, effect);
             1
         }
         Err(_) => 0,
@@ -215,7 +197,7 @@ pub unsafe extern "C" fn nori_ios_device_adopt(
         let name = entry.name.clone();
         fetched(curve(s, entry), |text| match s.core.device_adopt(output.clone(), name, text, live) {
             Ok(effect) => {
-                perform(s, &output, effect);
+                s.device_effect(&output, effect);
                 true
             }
             Err(_) => false,
@@ -233,8 +215,15 @@ pub unsafe extern "C" fn nori_ios_device_forget(output: *const c_char) {
     let output = c_text(output);
     with_session(|s| {
         let effect = s.core.device_forget(output.clone());
-        perform(s, &output, effect);
+        s.device_effect(&output, effect);
     });
+}
+
+/// The answer to the last [`crate::session::REPORT_CURVE`]: the curve offered applied, or the one applied
+/// undone. Fetching runs on a thread of its own.
+#[no_mangle]
+pub extern "C" fn nori_ios_curve_answer() {
+    with_session(Session::curve_answer);
 }
 
 /// The AutoEQ list's hits for `query`, as JSON to free: `{short, count, hits}`.

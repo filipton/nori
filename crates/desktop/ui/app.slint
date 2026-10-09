@@ -202,6 +202,11 @@ export global Jam {
     callback set-along(bool);
     // A guest plays the jam here, in step with the host; why it cannot when it asked to.
     in property <bool> here;
+    // What the player offers a guest by its role (an admin's reach the host, a guest's play and pause its own
+    // listening); all of it outside a jam.
+    in property <bool> can-play: true;
+    in property <bool> can-skip: true;
+    in property <bool> can-seek: true;
     in property <string> along-note;
     callback listen(bool);
     callback start();
@@ -1277,8 +1282,13 @@ component PlayerControls inherits Rectangle {
     in property <string> jam;
     // "Playing on <device>" while another device plays and this player controls it; empty while it plays here.
     in property <string> playing-on;
-    // A jam guest's player: it shows the jam's song and controls nothing.
+    // A jam guest's player: it shows the jam's song; shuffle and repeat are the host's.
     in property <bool> guest;
+    // What the player offers: a jam guest's by its role (an admin's skips and seeks reach the host, a
+    // guest's play and pause its own listening), all of them for this computer's own.
+    in property <bool> can-play: true;
+    in property <bool> can-skip: true;
+    in property <bool> can-seek: true;
     pure callback art(string, int, int) -> image;
     // The heart pressed.
     callback star();
@@ -1310,7 +1320,7 @@ component PlayerControls inherits Rectangle {
             icon: 20px;
             clicked => { root.toggle-shuffle(); }
         }
-        if !root.guest: IconButton {
+        if root.can-skip: IconButton {
             y: (parent.height - self.height) / 2;
             path: Icons.previous;
             solid: true;
@@ -1318,14 +1328,14 @@ component PlayerControls inherits Rectangle {
             icon: 22px;
             clicked => { root.previous(); }
         }
-        if !root.guest: PlayPause {
+        if root.can-play: PlayPause {
             y: (parent.height - self.height) / 2;
             playing: root.playing;
             size: 36px;
             icon: 24px;
             clicked => { root.toggle(); }
         }
-        if !root.guest: IconButton {
+        if root.can-skip: IconButton {
             y: (parent.height - self.height) / 2;
             path: Icons.next;
             solid: true;
@@ -1452,13 +1462,13 @@ component PlayerControls inherits Rectangle {
                     thick: 6px;
                     value: root.duration-ms > 0 ? (parent.dragged >= 0 ? parent.dragged : root.position-ms) / root.duration-ms : 0;
                     moved(v) => {
-                        if !root.guest {
+                        if root.can-seek {
                             parent.dragged = v * root.duration-ms;
                         }
                     }
                     done(v) => {
                         parent.dragged = -1;
-                        if !root.guest {
+                        if root.can-seek {
                             root.seek(v);
                         }
                     }
@@ -3383,7 +3393,7 @@ component SidebarContent inherits Rectangle {
         Rectangle {
             height: 6px;
         }
-        if !root.guest: SideItem {
+        SideItem {
             text: "Settings";
             icon: Icons.gear;
             chosen: root.view == 8 || root.view == 9;
@@ -3459,6 +3469,9 @@ export component AppWindow inherits Window {
     in property <string> failed;
     in property <string> note;
     in property <bool> note-error;
+    // A button on the note ("Apply", "Undo"), and its press.
+    in property <string> note-action;
+    callback note-act();
     // Bumped whenever a cover arrives: every picture asks `art` again and finds the new one.
     in property <int> covers-rev;
     pure callback art(string, int, int) -> image;
@@ -4515,10 +4528,25 @@ export component AppWindow inherits Window {
                     width: min(parent.width - 40px, toast.preferred-width + 32px);
                     height: 32px;
                     radius: 16px;
-                    toast := Text {
-                        text: root.note;
-                        color: root.note-error ? #ff453a : Theme.text;
-                        overflow: elide;
+                    toast := HorizontalLayout {
+                        alignment: center;
+                        spacing: 14px;
+                        Text {
+                            text: root.note;
+                            color: root.note-error ? #ff453a : Theme.text;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        if root.note-action != "": Text {
+                            text: root.note-action;
+                            color: Theme.accent;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.note-act(); }
+                            }
+                        }
                     }
                 }
 
@@ -4553,6 +4581,9 @@ export component AppWindow inherits Window {
                         devices-on: root.devices-on;
                         jam: Jam.strip;
                         guest: Jam.guest;
+                        can-play: Jam.can-play;
+                        can-skip: Jam.can-skip;
+                        can-seek: Jam.can-seek;
                         playing-on: root.playing-on;
                         art(a, s, r) => { return root.art(a, s, r); }
                         toggle => { root.toggle(); }
@@ -5276,6 +5307,9 @@ export component PlayerBar inherits Window {
     in property <string> jam;
     in property <string> playing-on;
     in property <bool> guest;
+    in property <bool> can-play: true;
+    in property <bool> can-skip: true;
+    in property <bool> can-seek: true;
     pure callback art(string, int, int) -> image;
     callback toggle();
     callback star();
@@ -5316,6 +5350,9 @@ export component PlayerBar inherits Window {
         devices-on: root.devices-on;
         jam: root.jam;
         guest: root.guest;
+        can-play: root.can-play;
+        can-skip: root.can-skip;
+        can-seek: root.can-seek;
         playing-on: root.playing-on;
         art(a, s, r) => { return root.art(a, s, r); }
         toggle => { root.toggle(); }

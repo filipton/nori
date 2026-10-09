@@ -61,7 +61,8 @@ impl Jam {
         changed
     }
 
-    fn role(&self, by: By) -> Option<Role> {
+    /// The role of `by`; None for one not in the jam.
+    pub fn role(&self, by: By) -> Option<Role> {
         match by {
             By::Host => Some(Role::Host),
             By::Member(id) => self.members.iter().find(|m| m.id == id).map(|m| m.role),

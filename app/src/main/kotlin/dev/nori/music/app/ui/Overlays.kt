@@ -226,7 +226,15 @@ fun <T : Any> NoriSheet(
     }
     val dismiss by rememberUpdatedState(onDismissRequest)
     val live by rememberUpdatedState(open)
-    ModalBottomSheet(onDismissRequest = { if (live) dismiss() }, sheetState = state) { content(shown) }
+    // In the app's own colours, its plate and its text alike, also when opened from a page dressed in a
+    // cover's (the plate is Material's, and a cover's text on it may not read).
+    val scheme = LocalAppScheme.current ?: MaterialTheme.colorScheme
+    val look = remember(scheme) { FixedLook(plainLook(scheme)) }
+    MaterialTheme(colorScheme = scheme) {
+        CompositionLocalProvider(LocalLook provides look) {
+            ModalBottomSheet(onDismissRequest = { if (live) dismiss() }, sheetState = state) { content(shown) }
+        }
+    }
 }
 
 /** [NoriSheet] shown while [visible]. */

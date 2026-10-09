@@ -396,6 +396,7 @@ mod tests {
             (StoredPrefs { auto_mix_bass_swap: !a.auto_mix_bass_swap, ..a.clone() }, REPLAN),
             (StoredPrefs { fade_ms: a.fade_ms + 300, ..a.clone() }, PLAYER),
             (StoredPrefs { hi_res: !a.hi_res, ..a.clone() }, PLAYER),
+            (StoredPrefs { previous_always_skips: true, ..a.clone() }, PLAYER),
             (StoredPrefs { cache_mb: 4096, ..a.clone() }, CACHE_LIMIT),
         ];
         for (b, want) in cases {

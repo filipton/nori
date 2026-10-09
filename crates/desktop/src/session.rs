@@ -54,6 +54,8 @@ pub enum Msg {
     Lyrics { song: String, pick: LyricsPick },
     Facts(Box<crate::settings::Facts>),
     Note { text: String, error: bool },
+    /// A note with a button, answered with [`nori_host::session::Session::curve_answer`].
+    Ask { text: String, action: String },
     LoggedIn(Result<SavedServer, String>),
     Reachable(Result<(), String>),
     /// The other devices or the jam changed (remote control, jams).
@@ -62,8 +64,8 @@ pub enum Msg {
     Jam(Result<(), String>),
     /// Someone's jam joined (what the guest profile signs in with), or why not.
     Joined(Result<nori_core::remote::JamPass, String>),
-    /// This guest left its jam.
-    Left,
+    /// The jam this guest is in ended (its host's name, if seen).
+    JamEnded(Option<String>),
     /// Another device set the volume (0 to 1).
     Volume(f32),
     /// A heart changed, here or on another device.
@@ -345,6 +347,7 @@ impl Session {
                 devices: CpalOutput::devices(),
                 device: own::text(own::DEVICE).unwrap_or_default(),
                 syncing: false,
+                rules: core.rules(),
             })));
         });
     }
@@ -359,8 +362,13 @@ fn worded(s: Said) -> Msg {
         Said::Search(v) => Msg::Search(v),
         Said::Reachable(r) => Msg::Reachable(r.map_err(|e| net_error(&e))),
         Said::Remote => Msg::Remote,
+        Said::JamEnded { host } => Msg::JamEnded(host),
         Said::Volume(v) => Msg::Volume(v),
         Said::Starred(_) => Msg::Starred,
+        Said::Curve(n) => {
+            let (text, action) = crate::words::curve_notice(&n);
+            Msg::Ask { text, action: action.into() }
+        }
         Said::Note(n) => match n {
             Note::Queued { next, songs: n } => note(format!("{}: {}", if next { "Playing next" } else { "Added to the queue" }, songs(n)), false),
             Note::NothingToPlay => note("Nothing to play".into(), false),
@@ -374,6 +382,7 @@ fn worded(s: Said) -> Msg {
             Note::Indexed(t) => note(format!("Offline index: {} songs", t.songs), false),
             Note::IndexStopped(e) => note(format!("The offline index stopped: {}", net_error(&e)), true),
             Note::Forgot(n) => note(format!("Forgot {n} measured songs"), false),
+            Note::CurveFailed(e) => note(format!("Could not fetch the AutoEQ curve: {}", net_error(&e)), true),
             Note::Done(chore) => note(
                 match chore {
                     Chore::ClearStream => "Cleared the streamed music",

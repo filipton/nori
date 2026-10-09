@@ -5,7 +5,7 @@ use nori_player::device::{self, BYPASS, FLAT};
 use nori_player::outputs::SPEAKER;
 use rusqlite::OptionalExtension;
 
-use crate::settings::{self, sound_from, sound_json, SoundError, SoundSettings};
+use crate::settings::{self, sound_from, sound_json, SoundError, SoundSettings, StoredPrefs};
 use crate::{alog, autoeq, Arrival, AutoEqEntry, Core, CoreError, CurveStep, SoundProfile};
 
 pub use nori_devices::profiles::*;
@@ -62,12 +62,89 @@ impl Client {
             }
         }
     }
+
+    /// The AutoEQ half of `output`'s arrival, after `Core::device_arrive`: with nothing chosen for it, the
+    /// curve its name points at is offered, or applied with "apply automatically" on. The AutoEQ list is
+    /// fetched first when it has no match and is due (`metered`: the network costs); an entry AutoEQ has
+    /// no curve for gives way to the next best; a failed request offers the curve instead.
+    pub async fn device_curve(&self, output: String, metered: bool) -> DeviceCurve {
+        let step = self.core.curve_step(&output, &Now::read(self.settings()));
+        self.curve_as(&output, step, metered).await
+    }
+
+    /// Yes to an offer: `entry`'s curve becomes `output`'s sound, loaded now. When AutoEQ has no curve for
+    /// it, the next best is offered. Errors when the request fails.
+    pub async fn device_accept(&self, output: String, entry: AutoEqEntry) -> NetResult<DeviceCurve> {
+        Ok(match self.adopt(&output, entry).await? {
+            Some(effect) => DeviceCurve { effect, notice: None },
+            None => self.next_curve(&output).map_or_else(DeviceCurve::none, |e| DeviceCurve::offer(&output, e)),
+        })
+    }
+}
+
+/// Entries an arrival tries before giving up on AutoEQ having a curve for the device.
+const CURVE_TRIES: usize = 3;
+
+impl Client {
+    async fn curve_as(&self, output: &str, step: CurveStep, metered: bool) -> DeviceCurve {
+        if step == CurveStep::None {
+            return DeviceCurve::none();
+        }
+        let Some(mut entry) = self.best_curve(output, metered).await else { return DeviceCurve::none() };
+        if step == CurveStep::Offer {
+            return DeviceCurve::offer(output, entry);
+        }
+        for _ in 0..CURVE_TRIES {
+            let before = self.settings().prefs(StoredPrefs::sound);
+            match self.adopt(output, entry.clone()).await {
+                Ok(Some(effect)) => {
+                    let notice = CurveNotice::Applied { output: output.to_string(), curve: entry.name, before, created: effect.created };
+                    return DeviceCurve { effect, notice: Some(notice) };
+                }
+                Ok(None) => match self.next_curve(output) {
+                    Some(next) => entry = next,
+                    None => break,
+                },
+                Err(e) => {
+                    // Asking later is better than silently doing nothing.
+                    alog::info(&format!("autoeq for {output}: {e}"));
+                    return DeviceCurve::offer(output, entry);
+                }
+            }
+        }
+        DeviceCurve::none()
+    }
+
+    /// The curve `output`'s name points at; the AutoEQ list is fetched first when it has none and is due.
+    async fn best_curve(&self, output: &str, metered: bool) -> Option<AutoEqEntry> {
+        if let Some(e) = self.next_curve(output) {
+            return Some(e);
+        }
+        match self.autoeq_update(false, metered).await {
+            Ok(Some(n)) if n > 0 => self.next_curve(output),
+            _ => None,
+        }
+    }
+
+    /// The best curve for `output` still listed (one AutoEQ had none for is no longer).
+    fn next_curve(&self, output: &str) -> Option<AutoEqEntry> {
+        self.core.autoeq_for_output(output.to_string(), 1).into_iter().next()
+    }
+
+    /// Fetches `entry`'s curve and has it saved as `output`'s sound and loaded. None when AutoEQ has no
+    /// usable curve for it.
+    async fn adopt(&self, output: &str, entry: AutoEqEntry) -> NetResult<Option<DeviceEffect>> {
+        let name = entry.name.clone();
+        let Some(text) = self.autoeq_curve(entry).await? else { return Ok(None) };
+        Ok(self.core.device_adopt(output.to_string(), name, text, true).inspect_err(|e| alog::info(&format!("autoeq for {output}: {e:?}"))).ok())
+    }
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
-    /// Music now plays to `output`.
-    pub fn device_arrive(&self, output: String) -> DeviceArrival {
+    /// Music now plays to `output`: its own sound, or the one from before a device took over. Its AutoEQ
+    /// curve is [`Client::device_curve`]'s, after this.
+    pub fn device_arrive(&self, output: String) -> DeviceEffect {
         self.arrive_as(output, &Now::read(&self.session.settings))
     }
 
@@ -141,12 +218,23 @@ impl Core {
         self.autoeq_search(query, 40).unwrap_or_default()
     }
 
-    fn arrive_as(&self, output: String, now: &Now) -> DeviceArrival {
+    /// What `output`'s arrival plans: its bound profile, and the AutoEQ step.
+    fn arrival_plan(&self, output: &str, bound: bool, now: &Now) -> device::ArrivalPlan {
+        let quiet = self.quiet_list().iter().any(|o| o == output);
+        device::on_arrival(Arrival { bound, per_output: now.per_output, speaker: output == SPEAKER, quiet, auto_apply: now.auto_apply })
+    }
+
+    /// The AutoEQ step of `output`'s arrival.
+    fn curve_step(&self, output: &str, now: &Now) -> CurveStep {
+        let bound = self.profile_for_output(output.to_string()).ok().flatten().is_some();
+        self.arrival_plan(output, bound, now).curve
+    }
+
+    fn arrive_as(&self, output: String, now: &Now) -> DeviceEffect {
         let bound = self.profile_for_output(output.clone()).ok().flatten();
         alog::info(&format!("device sound: {output} -> {}", bound.as_ref().map_or("nothing chosen", |p| p.name.as_str())));
         let loose = self.loose();
-        let quiet = self.quiet_list().contains(&output);
-        let plan = device::on_arrival(Arrival { bound: bound.is_some(), per_output: now.per_output, speaker: output == SPEAKER, quiet, auto_apply: now.auto_apply });
+        let plan = self.arrival_plan(&output, bound.is_some(), now);
         let mut step = Step::none();
         if plan.load_bound {
             if let Some(sound) = bound.and_then(|b| sound_from(&b.json)) {
@@ -159,9 +247,7 @@ impl Core {
                 step.effect.apply = sound_from(&json);
             }
         }
-        let entry = if plan.curve == CurveStep::None { None } else { self.autoeq_for_output(output.clone(), 5).into_iter().next() };
-        let preset_url = entry.as_ref().map(autoeq::preset_url);
-        DeviceArrival { effect: self.settle(&output, step), curve: plan.curve, entry, preset_url }
+        self.settle(&output, step)
     }
 
     fn adopt_as(&self, output: &str, name: &str, preset: &str, live: bool, now: &Now) -> Result<Step, SoundError> {
@@ -292,40 +378,38 @@ pub(crate) mod tests {
         c.profile_save(SoundProfile { name: "Warm".into(), json: sound_json(&warm), outputs: vec!["USB: K3".into()] }).unwrap();
         let playing = SoundSettings { balance: 0.5, ..sound() };
         let a = c.arrive_as("USB: K3".into(), &now(playing.clone()));
-        assert_eq!(a.effect.apply, Some(warm.clone()));
+        assert_eq!(a.apply, Some(warm.clone()));
         assert_eq!(c.loose(), Some(sound_json(&playing)));
-        assert_eq!(a.curve, CurveStep::None);
+        assert_eq!(c.curve_step("USB: K3", &now(sound())), CurveStep::None);
         // An already saved sound is not overwritten.
         c.arrive_as("USB: K3".into(), &now(sound()));
         assert_eq!(c.loose(), Some(sound_json(&playing)));
         let off = Now { per_output: false, ..now(playing) };
-        assert_eq!(c.arrive_as("USB: K3".into(), &off).effect.apply, None);
+        assert_eq!(c.arrive_as("USB: K3".into(), &off).apply, None);
 
         // Unbound device restores saved sound.
         let c = core();
         let kept = SoundSettings { mono: true, ..sound() };
         c.set_loose(LooseChange::Store { json: sound_json(&kept) });
         let a = c.arrive_as(SPEAKER.into(), &now(sound()));
-        assert_eq!(a.effect.apply, Some(kept));
+        assert_eq!(a.apply, Some(kept));
         assert_eq!(c.loose(), None);
-        assert_eq!(a.curve, CurveStep::None);
+        assert_eq!(c.curve_step(SPEAKER, &now(sound())), CurveStep::None);
         c.set_loose(LooseChange::Store { json: "garbage".into() });
         let a = c.arrive_as(SPEAKER.into(), &now(sound()));
-        assert_eq!((a.effect.apply, c.loose()), (None, None), "unreadable saved sound is dropped");
-        let a = c.arrive_as("Bluetooth: Buds".into(), &now(sound()));
-        assert_eq!(a.curve, CurveStep::Offer);
-        assert_eq!(a.entry, None, "no index");
-        assert_eq!(a.effect, DeviceEffect::none());
+        assert_eq!((a.apply, c.loose()), (None, None), "unreadable saved sound is dropped");
+        assert_eq!(c.arrive_as("Bluetooth: Buds".into(), &now(sound())), DeviceEffect::none());
+        assert_eq!(c.curve_step("Bluetooth: Buds", &now(sound())), CurveStep::Offer);
 
         // Quiet device is not offered a curve.
         let c = core();
         c.set_quiet("Bluetooth: Buds", true);
         c.set_quiet("Bluetooth: Buds", true);
         assert_eq!(c.device_quiet(), ["Bluetooth: Buds"]);
-        assert_eq!(c.arrive_as("Bluetooth: Buds".into(), &now(sound())).curve, CurveStep::None);
+        assert_eq!(c.curve_step("Bluetooth: Buds", &now(sound())), CurveStep::None);
         c.device_forget("Bluetooth: Buds".into());
         assert!(c.device_quiet().is_empty());
-        assert_eq!(c.arrive_as("Bluetooth: Buds".into(), &now(sound())).curve, CurveStep::Offer);
+        assert_eq!(c.curve_step("Bluetooth: Buds", &now(sound())), CurveStep::Offer);
     }
 
     #[test]
@@ -436,6 +520,77 @@ pub(crate) mod tests {
             assert_eq!(headphones_name(nameless), None, "{nameless}");
         }
         assert!(c.autoeq_find("a".into()).is_empty());
+    }
+
+    /// An arrival's AutoEQ step: the list fetched when missing, an entry with no curve passed over for the
+    /// next, a failed request turned into an offer; and an offer said yes to.
+    #[test]
+    fn arrival_curves() {
+        use crate::client::tests::{block, client, Fake};
+        use crate::transport::FailureKind;
+        const BUDS: &str = "Bluetooth: WH-1000XM6";
+        let index = "- [Sony WH-1000XM6](./Super%20Review/over-ear/Sony%20WH-1000XM6) by Super Review\n\
+- [Sony WH-1000XM6 (analog cable)](./Super%20Review/over-ear/Sony%20WH-1000XM6%20(analog%20cable)) by Super Review\n";
+        let missing = |fake: &Fake| {
+            fake.answers.lock().push_back(Ok((404, b"404: Not Found".to_vec())));
+            fake.answers.lock().push_back(Ok((404, b"404: Not Found".to_vec())));
+        };
+        let fresh = |listed: bool| {
+            let (c, fake) = client(crate::client::NetProfile { url: "h".into(), ..Default::default() });
+            if listed {
+                autoeq::store(&mut c.core.db.lock(), index, crate::db::now_ms()).unwrap();
+            }
+            (c, fake)
+        };
+        let offered = |d: &DeviceCurve| match &d.notice {
+            Some(CurveNotice::Offer { output, entry }) if output == BUDS => Some(entry.name.clone()),
+            _ => None,
+        };
+
+        // Not listed yet: the list is fetched, and its best match offered.
+        let (c, fake) = fresh(false);
+        fake.answer(index);
+        let d = block(c.curve_as(BUDS, CurveStep::Offer, false));
+        assert_eq!(offered(&d).as_deref(), Some("Sony WH-1000XM6"));
+        assert_eq!(fake.asked(), [autoeq::INDEX_URL]);
+        // On a metered network the list waits: nothing to offer.
+        let (c, fake) = fresh(false);
+        assert_eq!(block(c.curve_as(BUDS, CurveStep::Offer, true)), DeviceCurve::none());
+        assert!(fake.asked().is_empty());
+
+        // Applied: the best has no curve, the next has.
+        let (c, fake) = fresh(true);
+        missing(&fake);
+        fake.answer(PRESET);
+        let d = block(c.curve_as(BUDS, CurveStep::Apply, false));
+        assert!(d.effect.apply.as_ref().is_some_and(|s| s.eq_enabled), "{d:?}");
+        assert!(matches!(&d.notice, Some(CurveNotice::Applied { output, curve, created: true, .. }) if output == BUDS && curve.contains("analog")), "{d:?}");
+        assert_eq!(c.core.profile_for_output(BUDS.into()).unwrap().unwrap().name, "Sony WH-1000XM6 (analog cable)");
+        // None has a curve: nothing at all.
+        let (c, fake) = fresh(true);
+        missing(&fake);
+        missing(&fake);
+        assert_eq!(block(c.curve_as(BUDS, CurveStep::Apply, false)), DeviceCurve::none());
+        // The network fails: offered instead.
+        let (c, fake) = fresh(true);
+        fake.fail(FailureKind::Timeout);
+        let d = block(c.curve_as(BUDS, CurveStep::Apply, false));
+        assert_eq!((offered(&d).as_deref(), d.effect), (Some("Sony WH-1000XM6"), DeviceEffect::none()));
+        // Nothing to do: nothing asked.
+        let (c, fake) = fresh(true);
+        assert_eq!(block(c.device_curve(nori_player::outputs::SPEAKER.into(), false)), DeviceCurve::none());
+        assert!(fake.asked().is_empty());
+
+        // Yes to an offer: applied; or, with no curve for it, the next best offered.
+        let (c, fake) = fresh(true);
+        let best = c.next_curve(BUDS).unwrap();
+        fake.answer(PRESET);
+        let d = block(c.device_accept(BUDS.into(), best.clone())).unwrap();
+        assert!(d.effect.apply.is_some() && d.notice.is_none(), "{d:?}");
+        let (c, fake) = fresh(true);
+        missing(&fake);
+        let d = block(c.device_accept(BUDS.into(), best)).unwrap();
+        assert!(offered(&d).is_some_and(|n| n.contains("analog")), "{d:?}");
     }
 
     #[test]

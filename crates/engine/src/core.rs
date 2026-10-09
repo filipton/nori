@@ -153,7 +153,8 @@ impl App for CoreApp {
         }
     }
 
-    /// The core names the device and applies its sound (`Core::device_arrive`), stored in the settings.
+    /// The core names the device and applies its sound (`Core::device_arrive`), stored in the settings;
+    /// its AutoEQ curve is the client's to ask for on `Event::Output` (`Client::device_curve`).
     fn output_changed(&mut self, kind: nori_player::outputs::OutputKind, name: &str) -> Option<(String, Option<Sound>)> {
         let core = self.devices.clone()?;
         let seen = nori_player::outputs::refresh(&[(kind, name)], &self.known, None);
@@ -164,20 +165,14 @@ impl App for CoreApp {
             return None;
         }
         self.output = Some(seen.current.clone());
-        let mut effect = core.device_arrive(seen.current.clone()).effect;
-        let mut sound = None;
-        // A step may ask to arrive again once done.
-        for _ in 0..2 {
-            if let Some(s) = effect.apply.take() {
+        let sound = match core.device_arrive(seen.current.clone()).apply {
+            Some(s) => {
                 let prefs = self.session.settings.current()?.with_sound(s);
                 self.session.settings.put(prefs.clone());
-                sound = Some(settings(&prefs, self.volume.db()).sound);
+                Some(settings(&prefs, self.volume.db()).sound)
             }
-            if !effect.arrive {
-                break;
-            }
-            effect = core.device_arrive(seen.current.clone()).effect;
-        }
+            None => None,
+        };
         Some((seen.current, sound))
     }
 
@@ -1231,7 +1226,7 @@ pub fn follow(engine: &crate::Engine, session: &Session, lead: Option<nori_core:
         engine.queue_changed();
     }
     let ago_us = l.ago_us();
-    engine.follow(Some(crate::Lead { index, ms: l.ms, ago_us, rate: l.rate, playing: l.playing, speed: l.speed, pitch: l.pitch, mix: l.mix }));
+    engine.follow(Some(crate::Lead { index, ms: l.ms, ago_us, there_us: l.there_us, rate: l.rate, playing: l.playing, speed: l.speed, pitch: l.pitch, mix: l.mix }));
 }
 
 /// Where the host's song is in this session's queue, followed by the one after it there, and whether
@@ -1250,7 +1245,8 @@ pub fn queued_for(session: &Session, l: &nori_core::remote::Lead) -> (usize, boo
         Some(k) => (k, false),
         None => {
             session.register(l.songs.clone());
-            session.set(ids, Some(l.index as u32), false, None);
+            // The host's queue, the host's to fill: never refilled here.
+            session.set(ids, Some(l.index as u32), false, Some(nori_core::PageOrigin::new(nori_core::OriginKind::Jam, "")));
             (l.index, true)
         }
     }
@@ -1284,6 +1280,7 @@ pub fn settings(s: &StoredPrefs, volume_db: f64) -> Settings {
         crossfade_s: s.crossfade_sec,
         auto_mix: s.auto_mix,
         gain_boost_db: if s.gain_prefs().boosts() { s.gain_boost_db } else { 0.0 },
+        previous_always_skips: s.previous_always_skips,
     }
 }
 

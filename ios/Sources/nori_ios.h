@@ -25,7 +25,8 @@ void nori_ios_free(char *s);
 /// `kind`: 1 state, 2 song, 3 looped, 4 position, 5 error, 6 output, 7 buffering, 8 stopped,
 /// 9 note, 10 reachable, 11 lyrics, 12 search, 13 title, 14 mixing, 15 bridge, 16 placed, 17 awake,
 /// 18 remote (the devices, the one playing or the jam changed), 19 volume (another device set it: `ms`
-/// thousandths), 20 jam joined, 21 jam left (`nori_ios_jam_join`, `nori_ios_jam_leave`).
+/// thousandths), 20 jam joined, 21 jam left (`nori_ios_jam_join`, `nori_ios_jam_leave`; `index` 1: the jam
+/// ended, `text` its host's name if known).
 /// `state`: 0 idle, 1 playing, 2 paused, 3 ended.
 typedef struct NoriReport {
     int32_t kind;
@@ -134,6 +135,7 @@ void nori_ios_remote_pick(const char *id);
 #define NORI_NOTE_INDEX_STOPPED 13
 #define NORI_NOTE_DONE 14
 #define NORI_NOTE_FORGOT 15
+#define NORI_NOTE_CURVE_FAILED 16
 
 /// Pages for `nori_ios_read`. `arg`: the id for album/artist/playlist/mix, the name for a genre, the
 /// query for search, the offset for songs; empty otherwise.
@@ -246,6 +248,8 @@ int32_t nori_ios_device_assign(const char *output, int32_t choice, const char *p
 int32_t nori_ios_device_adopt(const char *output, const char *name, const char *source,
                               const char *form, const char *target, const char *path);
 void nori_ios_device_forget(const char *output);
+/// The answer to the last AutoEQ report (22): the curve offered applied, or the one applied undone.
+void nori_ios_curve_answer(void);
 
 /// The AutoEQ list's hits, JSON to free: {short, count, hits: [{name, source, form, target, path}]}.
 char *nori_ios_autoeq_browse(const char *query);
@@ -328,12 +332,14 @@ char *nori_ios_rules(void);
 /// lets no guest}. Its asks are its own requests the host has yet to take.
 char *nori_ios_jam(void);
 /// Joins the jam invite `link` is to, its guest profile named `name`. NORI_JOIN_STARTED: report 20 says
-/// how it went (flag 1 joined: open the active profile; flag 0: index a NORI_LOGIN_* code, text its
-/// detail).
+/// how it went (flag 1 joined: open the active profile; flag 2: the jam has ended; flag 0: index a
+/// NORI_LOGIN_* code, text its detail).
 int32_t nori_ios_jam_join(const char *link, const char *name);
 #define NORI_JOIN_STARTED 0
 #define NORI_JOIN_NOT_AN_INVITE 1
 #define NORI_JOIN_CLOSED 2
+#define NORI_JOIN_OWN 3
+#define NORI_JOIN_ENDED 4
 /// Leaves the jam; report 21 once the guest profile is dropped (flag 1: open the active profile, the
 /// user's own again; 0: none is saved).
 void nori_ios_jam_leave(void);

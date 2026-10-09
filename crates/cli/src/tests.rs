@@ -910,7 +910,6 @@ fn jam() -> nori_core::remote::JamView {
         refused: None,
         along: true,
         listening: nori_core::remote::Listening::Watching,
-        ended: false,
     }
 }
 
@@ -1139,7 +1138,6 @@ fn guest_jam() -> nori_core::remote::JamView {
         refused: None,
         along: true,
         listening: nori_core::remote::Listening::Watching,
-        ended: false,
     }
 }
 
@@ -1169,7 +1167,7 @@ fn joining_a_jam_with_its_invite_link() {
     assert!(draw(&mut a, 120, 30).contains(crate::text::JOINING));
     key(&mut a, KeyCode::Char('x'));
     assert!(matches!(&a.overlay, Some(Overlay::Join { text, .. }) if text == link), "no typing while it joins");
-    a.handle(Msg::Joined(Err("HTTP 404".into())));
+    a.handle(Msg::Joined(Err(crate::text::jam_join_failed(&nori_host::JoinError::Failed(nori_core::transport::NetError::Http { status: 404 })))));
     let s = draw(&mut a, 120, 30);
     assert!(s.contains("Couldn't join the jam (HTTP 404)") && !s.contains(crate::text::JOINING), "{s}");
     key(&mut a, KeyCode::Esc);
@@ -1206,9 +1204,10 @@ fn a_guest_browses_the_hosts_library_and_asks_for_songs() {
     let row = |text: &str| s.lines().find(|l| l.contains(text)).unwrap_or_else(|| panic!("{text} missing:\n{s}")).to_string();
     assert!(row("Two").contains("Asked"), "the song this guest asked for:\n{s}");
     assert!(!row("One ").contains("Asked") && !row("Three").contains('♥'), "another's request, and no hearts:\n{s}");
-    for gone in ["Downloads", "PLAYLISTS", "Equalizer", "Settings"] {
+    for gone in ["Downloads", "PLAYLISTS"] {
         assert!(!s.contains(gone), "{gone} is the account's:\n{s}");
     }
+    assert!(s.contains("Equalizer") && s.contains("Settings"), "this computer's own, a guest's too:\n{s}");
     assert!(s.contains("◉ Jam · Desk · 2 listening") && !s.contains('⏮') && !s.contains('⤮'), "the jam, and no controls:\n{s}");
 
     // Picking a song plays it, which the session asks the host for; the account's keys do nothing.
@@ -1216,12 +1215,41 @@ fn a_guest_browses_the_hosts_library_and_asks_for_songs() {
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.cmds, [Cmd::Play { songs, start: 0, shuffle: false, from: Some(nori_core::PageOrigin::new(nori_core::OriginKind::Songs, "")) }]);
     a.cmds.clear();
-    for k in ['f', 'D', ' ', 'n', 's', 'i', '5', '7'] {
+    for k in ['f', 'D', ' ', 'n', 's', 'i', '5'] {
         key(&mut a, KeyCode::Char(k));
     }
     assert!(a.cmds.is_empty() && a.view == View::Songs, "{:?} {:?}", a.cmds, a.view);
     key(&mut a, KeyCode::Char('a'));
     assert_eq!(a.cmds, [Cmd::Enqueue(vec![song("1", "One", 200)], false)]);
+}
+
+/// A jam guest's player offers what its role reaches (Spotify's Jam): listening along, play and pause of
+/// its own, saying so while it paused here; an admin's skips are the host's too. Shuffle and repeat
+/// stay the host's.
+#[test]
+fn a_guests_controls_go_by_its_role() {
+    use nori_core::remote::wire::Role;
+    use nori_core::remote::{Controls, JamControls};
+    let mut a = guest();
+    a.go(View::Songs);
+    a.devices.controls = Some(JamControls { controls: Controls::of(Role::Guest, true), playing: false, paused_here: true });
+    let s = draw(&mut a, 160, 30);
+    dump("guest-paused-here", &s);
+    assert!(s.contains(" ▶ ") && !s.contains('⏮') && !s.contains('⤮') && s.contains(crate::text::JAM_PAUSED_HERE), "play only, and paused here:\n{s}");
+    a.cmds.clear();
+    for k in [' ', 'n', 's'] {
+        key(&mut a, KeyCode::Char(k));
+    }
+    assert_eq!(a.cmds, [Cmd::Toggle], "its play, not a skip");
+
+    a.devices.controls = Some(JamControls { controls: Controls::of(Role::Admin, true), playing: true, paused_here: false });
+    let s = draw(&mut a, 160, 30);
+    assert!(s.contains('⏮') && s.contains('⏭') && !s.contains('⤮') && s.contains("◉ Jam · Desk"), "the host's skips:\n{s}");
+    a.cmds.clear();
+    for k in [' ', 'n', 's'] {
+        key(&mut a, KeyCode::Char(k));
+    }
+    assert_eq!(a.cmds, [Cmd::Toggle, Cmd::Next]);
 }
 
 #[test]

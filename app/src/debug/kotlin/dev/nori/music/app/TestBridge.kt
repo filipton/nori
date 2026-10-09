@@ -113,7 +113,7 @@ private fun remoteCheck(nori: dev.nori.music.Nori, arg: String, value: String): 
             val st = d.state?.let { s -> "${if (s.playing) "playing" else "paused"} ${s.entries.firstOrNull { it.index == s.index }?.title}" } ?: "no state"
             "${d.name}${if (d.nearby) " (nearby)" else ""}: $st${d.refused?.let { " refused $it" } ?: ""}"
         }?.ifEmpty { "none" } ?: "no remote"
-        "jam" -> kotlinx.coroutines.runBlocking { nori.remotes.jamOpen() }
+        "jam" -> kotlinx.coroutines.runBlocking { nori.remotes.jamOpen() } ?: "nothing started"
         "view" -> r()?.jamView()?.let { v ->
             "hosting=${v.hosting} members=${v.members.joinToString(",") { "${it.name}:${it.role}" }} pending=${v.pending.joinToString(",") { it.song.title }} next=${v.queue?.entries?.joinToString(",") { it.title }} along=${v.along} listening=${v.listening}"
         } ?: "no jam"
@@ -122,7 +122,7 @@ private fun remoteCheck(nori: dev.nori.music.Nori, arg: String, value: String): 
         "ask" -> kotlinx.coroutines.runBlocking { nori.library.search(value).songs.firstOrNull() }?.let { s ->
             r()?.jamAct(dev.nori.music.ffi.remote.Op.Request(s)); "asked for ${s.title}"
         } ?: "nothing found"
-        "join" -> { kotlinx.coroutines.runBlocking { nori.joinJam(value) }; "joined" }
+        "join" -> kotlinx.coroutines.runBlocking { nori.joinJam(value) }.toString()
         // "found <host>|<port>|<k=v;k=v>": a door as mDNS would find it (the emulator sees no multicast
         // from the host); the TXT as `dns-sd -L` prints it.
         "found" -> {

@@ -621,6 +621,7 @@
     <string name="jam_end">End Jam</string>
     <string name="jam_end_short">End</string>
     <string name="jam_people">People</string>
+    <string name="jam_people_count">People · %1$d</string>
     <string name="jam_people_none">No one has joined yet. They join with the invite’s code or link.</string>
     <string name="jam_you_host">You · Host</string>
     <string name="jam_you_role">You · %1$s</string>
@@ -638,9 +639,17 @@
     <string name="jam_added_by">Added by %1$s</string>
     <string name="jam_failed">Couldn’t start the Jam. Jams need octo-fiesta in front of your server.</string>
     <string name="jam_join_failed">Couldn’t join the Jam</string>
+    <string name="jam_own">That’s your own Jam</string>
+    <string name="jam_invite_ended">This Jam has ended</string>
+    <string name="jam_starting">Starting the Jam…</string>
+    <string name="home_closed_to_guests">The host’s server doesn’t share its library with guests yet. Search still works.</string>
     <string name="jam_leave">Leave</string>
+    <string name="jam_ended_by">%1$s ended the Jam</string>
+    <string name="jam_ended">The Jam ended</string>
     <string name="jam_listen_here">Listen here</string>
     <string name="jam_playing_here">Playing here</string>
+    <!-- A jam guest paused its own listening; play joins the jam again. -->
+    <string name="jam_paused_here">Paused here · Jam still playing</string>
     <string name="jam_along_host_off">The host isn’t letting guests listen along right now. You can still ask for songs.</string>
     <string name="jam_along_server_off">This server doesn’t let guests listen along. You can still ask for songs.</string>
     <string name="jam_let_listen">Let guests listen along</string>
