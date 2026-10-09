@@ -279,6 +279,9 @@ pub struct Lead {
     pub index: usize,
     pub ms: f64,
     pub at_us: i64,
+    /// The same moment on the host's own clock: it moves only with the host's words, not as its clock
+    /// is learned here, so a jump there is told apart from a better reading of its clock.
+    pub there_us: i64,
     pub rate: f64,
     pub playing: bool,
     pub speed: f32,
@@ -846,6 +849,7 @@ impl Inner {
             index,
             ms: st.position_ms as f64,
             at_us: at,
+            there_us: st.at_us?,
             rate: nori_remote::rate(st),
             playing: st.playing && !st.buffering,
             speed: along.speed,

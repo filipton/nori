@@ -503,6 +503,7 @@ fn a_guest_queues_the_host_songs_once() {
         index,
         ms: 0.0,
         at_us: 0,
+        there_us: 0,
         rate: 1.0,
         playing: true,
         speed: 1.0,

@@ -1231,7 +1231,7 @@ pub fn follow(engine: &crate::Engine, session: &Session, lead: Option<nori_core:
         engine.queue_changed();
     }
     let ago_us = l.ago_us();
-    engine.follow(Some(crate::Lead { index, ms: l.ms, ago_us, rate: l.rate, playing: l.playing, speed: l.speed, pitch: l.pitch, mix: l.mix }));
+    engine.follow(Some(crate::Lead { index, ms: l.ms, ago_us, there_us: l.there_us, rate: l.rate, playing: l.playing, speed: l.speed, pitch: l.pitch, mix: l.mix }));
 }
 
 /// Where the host's song is in this session's queue, followed by the one after it there, and whether

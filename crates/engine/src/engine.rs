@@ -136,6 +136,9 @@ pub struct Lead {
     /// Where it was heard there `ago_us` before the call, ms.
     pub ms: f64,
     pub ago_us: i64,
+    /// That moment on the leader's own clock, µs: a jump there is told apart from its clock read better
+    /// here.
+    pub there_us: i64,
     /// Song ms per real ms there: its speed times a mix's tempo.
     pub rate: f64,
     pub playing: bool,
@@ -532,7 +535,7 @@ impl Engine {
     /// replace the settings', skipped silence comes as its jumps, and nothing is offloaded meanwhile.
     pub fn follow(&self, lead: Option<Lead>) {
         let leading = lead.map(|l| {
-            let led = Led { index: l.index, ms: l.ms, at_us: (self.now_us)() - l.ago_us, rate: l.rate, playing: l.playing };
+            let led = Led { index: l.index, ms: l.ms, at_us: (self.now_us)() - l.ago_us, there_us: l.there_us, rate: l.rate, playing: l.playing };
             Box::new(Leading { led, speed: l.speed, pitch: l.pitch, mix: l.mix })
         });
         self.send(Command::Follow(leading));

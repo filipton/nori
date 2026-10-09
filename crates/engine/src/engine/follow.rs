@@ -3,7 +3,10 @@
 //! starts again where it is when it strays far or the leader jumps. In between it stays in step as a
 //! clock loop does: the output slips a frame in or leaves one out now and then ([`crate::output`]), at
 //! the rate this device drifts from the leader (learned from the gaps over the last minute), plus a
-//! little to close a gap beyond a few ms. Song time is never moved: the place heard stays exact.
+//! little to close a gap beyond a few ms. Song time is never moved: the place heard stays exact. What
+//! the output holds already is written again only to put a start right once its place settles: a
+//! drift is slipped away in the music written next, however deep the output, and a reading off the
+//! others (an output's delay misread for a moment) is not acted on until the next one agrees.
 //! Here are the decisions; the worker carries them out.
 
 use std::collections::VecDeque;
@@ -16,9 +19,9 @@ pub(super) const CLOSE_MAX: f64 = 0.005;
 const DRIFT_MAX: f64 = 0.003;
 /// Gaps within this are left to the drift's slip alone, ms.
 const DEADBAND_MS: f64 = 1.0;
-/// A gap past this once what is written is heard is closed from what the output can still replace
-/// (written again), not only from what is written next, ms.
-const REMAKE_MS: f64 = 2.0;
+/// Within this of a start, the output telling its delay anew (an Android track's first timestamp) is
+/// part of the start: put right from what the output can still replace, µs.
+const START_SETTLES_US: i64 = 5_000_000;
 /// Slips closer than this to the one written are not changed to.
 const SLIP_STEP: f64 = 0.000_02;
 /// While in step the place is read this often, µs.
@@ -55,12 +58,13 @@ const START_LEAD_MAX_US: i64 = 4_800_000;
 const ELSEWHERE_US: i64 = 600_000;
 
 /// The leader's playback: song `index` (in this engine's queue) was at `ms` at `at_us` on the engine's
-/// clock, moving at `rate`.
+/// clock (`there_us` on the leader's own), moving at `rate`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Led {
     pub index: usize,
     pub ms: f64,
     pub at_us: i64,
+    pub there_us: i64,
     pub rate: f64,
     pub playing: bool,
 }
@@ -112,6 +116,17 @@ pub(super) struct Starting {
     pub jump: Option<(usize, f64, i64)>,
 }
 
+/// A reading of the gap, against those before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reading {
+    /// On their line.
+    Kept,
+    /// Off it, as was the one before: the gap stepped.
+    Stepped,
+    /// Off it alone: held back until the next says which.
+    Odd,
+}
+
 /// The place heard after a start, as far as it can be trusted.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Settling {
@@ -152,11 +167,33 @@ pub(super) struct Following {
     mixed: bool,
     /// Since when this one plays another song than the leader's, µs.
     elsewhere: Option<i64>,
+    /// A reading off the line the others make, held back until the next says whether the gap stepped
+    /// (when, µs; the gap with the time slipped in, ms).
+    odd: Option<(i64, f64)>,
+    /// The pace there changed since the last start: the place settled after it says nothing of how late
+    /// starts are heard.
+    paced: bool,
 }
 
 impl Following {
     pub fn new(led: Led) -> Following {
-        Following { led, leapt: true, slip: 0.0, drift: 0.0, readings: VecDeque::new(), starting: None, look_at: None, started_at: i64::MIN / 2, start_delay_us: 0, settling: Settling::Settled, mixed: false, start_lead_us: START_LEAD_US, elsewhere: None }
+        Following {
+            led,
+            leapt: true,
+            slip: 0.0,
+            drift: 0.0,
+            readings: VecDeque::new(),
+            starting: None,
+            look_at: None,
+            started_at: i64::MIN / 2,
+            start_delay_us: 0,
+            settling: Settling::Settled,
+            mixed: false,
+            start_lead_us: START_LEAD_US,
+            elsewhere: None,
+            odd: None,
+            paced: false,
+        }
     }
 
     /// The last start's music was not ready at its moment (the network slow to bring it): the next is
@@ -177,10 +214,15 @@ impl Following {
         // Just after a start the leader's own words still settle (its output after a seek): the newest
         // is followed by slipping, not by starting again.
         let settled = now_us - self.started_at > LEAP_QUIET_US;
-        self.leapt |= settled && old.playing && new.playing && old.index == new.index && (new.place_at(now_us) - old.place_at(now_us)).abs() > LEAP_MS;
-        // Another pace there moves the gap once, as each side hears it: not a drift.
+        // On the leader's own clock: its clock read anew here moves the gap, which is slipped away.
+        let ran_on = old.ms + (new.there_us - old.there_us) as f64 / 1000.0 * old.rate;
+        self.leapt |= settled && old.playing && new.playing && old.index == new.index && (new.ms - ran_on).abs() > LEAP_MS;
+        // Another pace there moves the gap once, as each side hears it (a change of speed writes the
+        // output again anyway): not a drift, judged once it settles, as a start is.
         if old.rate != new.rate {
             self.readings.clear();
+            self.settling = Settling::Started;
+            self.paced = true;
         }
     }
 
@@ -194,6 +236,7 @@ impl Following {
         self.settling = Settling::Started;
         self.readings.clear();
         self.mixed = false;
+        self.paced = false;
         Step::Start { index: self.led.index, ms: self.led.place_at(at_us + self.start_delay_us), at_us }
     }
 
@@ -229,19 +272,21 @@ impl Following {
         }
         let gap = ms - self.led.place_at(now_us);
         let slipped = here.slipped.heard_ms;
+        let mut settled_now = false;
         if self.settling != Settling::Settled {
             // The gap moves by the drift and the slip since the reading compared with.
             let agrees = |at: i64, was: f64, was_slipped: f64| (gap + slipped - was - was_slipped - self.drift * (now_us - at) as f64 / 1000.0).abs() <= SETTLED_MS;
             match self.settling {
                 Settling::Read { at_us: at, gap: was, slipped: was_slipped } if now_us - at >= SETTLE_US && agrees(at, was, was_slipped) => {
                     self.settling = Settling::Settled;
+                    settled_now = true;
                     if std::mem::take(&mut self.mixed) {
                         // A start into a mix lands as the mix's reckoning had it: off that, it starts
                         // again out of it.
                         if gap.abs() > MIXED_OFF_MS {
                             return self.start(now_us);
                         }
-                    } else {
+                    } else if !std::mem::take(&mut self.paced) {
                         // How late (or early) the start was heard: the next one allows for it.
                         self.start_delay_us = (self.start_delay_us - (gap * 1000.0) as i64).clamp(0, START_DELAY_MAX_US);
                     }
@@ -257,12 +302,18 @@ impl Following {
                 }
             }
         }
-        if let Some(&(at, _)) = self.readings.back().filter(|r| now_us - r.0 < LOOK_EVERY_US) {
+        if let Some(at) = self.readings.back().map(|r| r.0).max(self.odd.map(|o| o.0)).filter(|at| now_us - at < LOOK_EVERY_US) {
             self.look_at = Some(at + LOOK_EVERY_US);
             return Step::Stay;
         }
         self.look_at = Some(now_us + LOOK_EVERY_US);
-        self.read(now_us, gap + slipped);
+        let reading = self.read(now_us, gap + slipped);
+        if reading == Reading::Odd {
+            return Step::Stay;
+        }
+        // The place judged anew as a start (or a change of pace) settles, or as the output says its delay
+        // soon after one: put right at once, where a start's gap is heard anyway.
+        let judged = settled_now || (reading == Reading::Stepped && self.readings[0].0 - self.started_at < START_SETTLES_US);
         // The gap now, steadier than one reading.
         let mut level: Vec<f64> = self.readings.iter().rev().take(LEVEL_OF).map(|&(at, u)| u + self.drift * (now_us - at) as f64 / 1000.0 - slipped).collect();
         level.sort_by(f64::total_cmp);
@@ -275,7 +326,7 @@ impl Following {
         let then = level + self.drift * written_ms - ahead_ms - owed_ms;
         // Frames slipped put the place back by the song time they would have carried.
         let rate = (self.drift / self.led.rate).clamp(-DRIFT_MAX, DRIFT_MAX);
-        if then.abs() > REMAKE_MS {
+        if judged && then.abs() >= DEADBAND_MS {
             // Owed from as the device's music ends (its slips taken as spread evenly).
             let held = here.held_ms.min(written_ms);
             let at = level + self.drift * held - ahead_ms * held / written_ms.max(1.0);
@@ -292,10 +343,25 @@ impl Following {
 
     /// Notes `u`, the gap with the time slipped in, read at `now_us`, and learns the drift from the
     /// readings since the last step: the slope of a least squares line through them.
-    fn read(&mut self, now_us: i64, u: f64) {
-        // A step (the output's own delay said anew, the leader's clock learned better) is not drift.
-        if self.readings.back().is_some_and(|&(at, last)| (u - last - self.drift * (now_us - at) as f64 / 1000.0).abs() > STEP_MS) {
-            self.readings.clear();
+    fn read(&mut self, now_us: i64, u: f64) -> Reading {
+        let off = |at: i64, was: f64| (u - was - self.drift * (now_us - at) as f64 / 1000.0).abs() > STEP_MS;
+        let mut reading = Reading::Kept;
+        if self.readings.back().is_some_and(|&(at, last)| off(at, last)) {
+            // Off the line: a step (the output's own delay said anew, the leader's clock learned better),
+            // which is not drift, once the next reading agrees; else a misreading, passed over.
+            match self.odd.take() {
+                Some((at, was)) if !off(at, was) => {
+                    self.readings.clear();
+                    self.readings.push_back((at, was));
+                    reading = Reading::Stepped;
+                }
+                _ => {
+                    self.odd = Some((now_us, u));
+                    return Reading::Odd;
+                }
+            }
+        } else {
+            self.odd = None;
         }
         self.readings.push_back((now_us, u));
         while self.readings.front().is_some_and(|r| now_us - r.0 > DRIFT_OVER_US) {
@@ -303,7 +369,7 @@ impl Following {
         }
         let first = self.readings[0].0;
         if now_us - first < DRIFT_FROM_US {
-            return;
+            return reading;
         }
         let n = self.readings.len() as f64;
         let (mt, mu) = self.readings.iter().fold((0.0, 0.0), |(t, u), r| (t + (r.0 - first) as f64 / 1000.0 / n, u + r.1 / n));
@@ -314,6 +380,7 @@ impl Following {
         if den > 0.0 {
             self.drift = num / den;
         }
+        reading
     }
 }
 
@@ -322,7 +389,8 @@ mod tests {
     use super::*;
 
     fn led(ms: f64, at_us: i64) -> Led {
-        Led { index: 2, ms, at_us, rate: 1.25, playing: true }
+        // The leader's clock reads seven seconds ahead of this one's.
+        Led { index: 2, ms, at_us, there_us: at_us + 7_000_000, rate: 1.25, playing: true }
     }
 
     fn here(at: Option<(usize, f64)>) -> Here {
@@ -348,14 +416,14 @@ mod tests {
     #[test]
     fn small_gaps_are_slipped_away_and_large_ones_started_again() {
         // (ms ahead of the leader, what is done): ahead, a frame is slipped in now and then (it plays
-        // slower); behind, one left out.
+        // slower); behind, one left out; in what is written next, never in what the output holds.
         let owes = |owed: f64, ms: f64| (owed - ms).abs() < 0.01;
         let cases: &[(f64, &dyn Fn(Step) -> bool)] = &[
             (1.5, &|s| matches!(s, Step::Slip { owed_ms, remake: false, .. } if owes(owed_ms, 1.5))),
             (-1.5, &|s| matches!(s, Step::Slip { owed_ms, remake: false, .. } if owes(owed_ms, -1.5))),
-            (20.0, &|s| matches!(s, Step::Slip { owed_ms, remake: true, .. } if owes(owed_ms, 20.0))),
+            (20.0, &|s| matches!(s, Step::Slip { owed_ms, remake: false, .. } if owes(owed_ms, 20.0))),
             (0.3, &|s| s == Step::Stay),
-            (300.0, &|s| matches!(s, Step::Slip { owed_ms, remake: true, .. } if owes(owed_ms, 300.0))),
+            (300.0, &|s| matches!(s, Step::Slip { owed_ms, remake: false, .. } if owes(owed_ms, 300.0))),
             (600.0, &|s| matches!(s, Step::Start { .. })),
         ];
         for (ahead, done) in cases {
@@ -401,6 +469,9 @@ mod tests {
     fn a_leap_is_followed_at_once_and_a_song_change_after_a_grace() {
         let mut f = Following::new(led(10_000.0, 0));
         f.leapt = false;
+        // Its clock read 40 ms better here: the same word, timed anew. Not a jump.
+        f.lead(Led { at_us: 40_000, ..led(10_000.0, 0) }, 1_000_000);
+        assert!(!matches!(f.step(1_000_000, here(Some((2, 11_250.0)))), Step::Start { .. }), "not a jump");
         f.lead(led(10_040.0, 0), 1_000_000);
         assert!(matches!(f.step(1_000_000, here(Some((2, 11_250.0)))), Step::Start { .. }), "the leader jumped 40 ms");
         f.lead(Led { index: 3, ..led(0.0, 2_000_000) }, 2_000_000);
@@ -434,5 +505,24 @@ mod tests {
         assert_eq!(f.step(1_000_000, here(Some((2, 11_250.0)))), Step::Pause);
         f.lead(led(10_500.0, 2_000_000), 2_000_000);
         assert!(matches!(f.step(2_000_000, here(None)), Step::Start { ms, .. } if (ms - (10_500.0 + 375.0)).abs() < 1e-6));
+    }
+
+    #[test]
+    fn an_odd_reading_waits_for_the_next() {
+        // In step for a while, then the output's delay is misread by 120 ms for one reading.
+        let settled = |gaps: &[f64]| {
+            let mut f = Following::new(Led { rate: 1.0, ..led(0.0, 0) });
+            f.leapt = false;
+            gaps.iter().enumerate().map(|(k, gap)| {
+                let now = k as i64 * LOOK_EVERY_US;
+                f.step(now, here(Some((2, gap + now as f64 / 1000.0))))
+            }).collect::<Vec<_>>()
+        };
+        let steps = settled(&[0.0, 0.0, 0.0, 120.0, 0.0, 0.0]);
+        assert!(steps.iter().all(|s| *s == Step::Stay), "{steps:?}");
+        // The gap stepped (two readings agree): closed from then on.
+        let steps = settled(&[0.0, 0.0, 0.0, 120.0, 120.0]);
+        assert_eq!(steps[3], Step::Stay);
+        assert!(matches!(steps[4], Step::Slip { owed_ms, remake: false, .. } if (owed_ms - 120.0).abs() < 0.01), "{steps:?}");
     }
 }

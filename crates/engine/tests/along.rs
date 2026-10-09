@@ -187,6 +187,16 @@ struct Pull {
     pulled_at: Option<i64>,
     /// How much faster than the clock the card plays (its own crystal), parts per million.
     ppm: f64,
+    /// Every this many seconds the card misreads its delay by `spike_ns` for a second (an emulator's
+    /// AudioTrack latency estimate jumping); 0: never.
+    spike_every_s: i64,
+    spike_ns: i64,
+    /// How much the card holds ahead of what it plays, ns ([`Pull::fill`]); 0: it takes each block as
+    /// it plays it.
+    holds_ns: i64,
+    /// When what it holds is all played, ns.
+    queued_until_ns: i64,
+    paused_ns: i64,
 }
 
 impl Pull {
@@ -203,6 +213,9 @@ impl common::Device for Pull {
 
     fn tick(&mut self, now_ns: i64) -> bool {
         self.due_ns = now_ns + self.block_ns();
+        if self.holds_ns > 0 {
+            return self.fill(now_ns);
+        }
         let Some(feed) = self.feed.as_mut() else { return false };
         if !self.playing || (feed.available() < BLOCK && !feed.ending()) {
             return false;
@@ -214,6 +227,40 @@ impl common::Device for Pull {
         self.pulled_at = Some(now_ns);
         self.pulls.push((now_ns + self.delay_ns, self.heard.len() / ch));
         self.heard.extend_from_slice(&self.block[..got * ch]);
+        waits && !feed.engine_waits()
+    }
+}
+
+impl Pull {
+    /// A card that holds `holds_ns` (a phone's deep track): pulls until it holds that much, plays it on in
+    /// order, and drops what it holds unplayed at a flush, giving it back.
+    fn fill(&mut self, now_ns: i64) -> bool {
+        let block_ns = self.block_ns();
+        let Some(feed) = self.feed.as_mut() else { return false };
+        if !self.playing {
+            return false;
+        }
+        let ch = feed.format().channels;
+        self.block.resize(BLOCK * ch, 0.0);
+        let waits = feed.engine_waits();
+        while self.queued_until_ns.max(now_ns) - now_ns < self.holds_ns && (feed.available() >= BLOCK || feed.ending() && feed.available() > 0) {
+            let got = feed.pull(&mut self.block);
+            if feed.flushed() {
+                let kept = self.pulls.partition_point(|&(t, _)| t <= now_ns + self.delay_ns);
+                let frame = self.pulls.get(kept).map_or(self.heard.len() / ch, |p| p.1);
+                let dropped = self.heard.len() / ch - frame;
+                self.pulls.truncate(kept);
+                self.heard.truncate(frame * ch);
+                feed.rewind((dropped + got) as u64);
+                self.queued_until_ns = now_ns;
+                continue;
+            }
+            let from = self.queued_until_ns.max(now_ns);
+            self.pulls.push((from + self.delay_ns, self.heard.len() / ch));
+            self.heard.extend_from_slice(&self.block[..got * ch]);
+            self.queued_until_ns = from + block_ns * got as i64 / BLOCK as i64;
+            self.pulled_at = Some(now_ns);
+        }
         waits && !feed.engine_waits()
     }
 }
@@ -232,12 +279,21 @@ impl AudioOutput for Card {
         Ok(())
     }
     fn pause(&mut self) {
-        self.0.lock().playing = false;
+        let mut p = self.0.lock();
+        p.playing = false;
+        p.paused_ns = self.1.now_ns();
     }
     fn resume(&mut self) {
         let mut p = self.0.lock();
+        let now = self.1.now_ns();
+        // What a deep card holds plays on from where it paused.
+        if p.holds_ns > 0 && p.queued_until_ns > p.paused_ns {
+            let (paused, by) = (p.paused_ns + p.delay_ns, now - p.paused_ns);
+            p.pulls.iter_mut().filter(|(t, _)| *t > paused).for_each(|(t, _)| *t += by);
+            p.queued_until_ns += by;
+        }
         p.playing = true;
-        p.resumed_ns = self.1.now_ns();
+        p.resumed_ns = now;
         p.resumes += 1;
     }
     /// The block pulled plays from the pull on, after the output's delay: what is left of it.
@@ -246,8 +302,15 @@ impl AudioOutput for Card {
         let Some(at) = p.pulled_at else { return 0 };
         let now = self.1.now_ns();
         let delay = if now < p.resumed_ns + p.unsure_ns { 0 } else { p.delay_ns };
+        let spike = if p.spike_every_s > 0 && now / 1_000_000_000 % p.spike_every_s == 0 { p.spike_ns } else { 0 };
+        if p.holds_ns > 0 {
+            // As a phone's track says it: the frames it holds, at their nominal rate.
+            let until = if p.playing { p.queued_until_ns } else { p.queued_until_ns + now - p.paused_ns };
+            let held = ((until - now).max(0) as f64 * (1.0 + p.ppm / 1e6)) as i64;
+            return (held + delay + spike) as u64 / 1000;
+        }
         let block = p.block_ns();
-        ((at + block + delay - now).clamp(0, block + delay) / 1000) as u64
+        ((at + block + delay - now).clamp(0, block + delay) / 1000) as u64 + (spike / 1000) as u64
     }
     fn takes_float(&mut self) -> bool {
         true
@@ -574,7 +637,7 @@ impl Jam {
                     // The host's clock minus this one's.
                     let off = g.sync.offset_at(here_us).expect("the clock learned");
                     let mix = self.mix.clone().map(|p| ("a".to_string(), p));
-                    g.rig.engine.follow(Some(Lead { index: w.index, ms: w.ms, ago_us: here_us - (w.at_us - off), rate: w.rate, playing: w.playing, speed: w.speed, pitch: 1.0, mix }));
+                    g.rig.engine.follow(Some(Lead { index: w.index, ms: w.ms, ago_us: here_us - (w.at_us - off), there_us: w.at_us, rate: w.rate, playing: w.playing, speed: w.speed, pitch: 1.0, mix }));
                 }
             }
         }
@@ -804,18 +867,25 @@ fn a_guest_whose_output_settles_late_slips_rather_than_restarts() {
 }
 
 /// Guests whose cards play a little fast or slow against their clocks (each its own crystal), for five
-/// minutes of steady playback: each starts once, never runs dry, and stays within a few ms of the host.
+/// minutes of steady playback: each starts once, never runs dry, never writes again what its output
+/// holds (each time it would, a phone's deep track drops what it holds), and stays within a few ms of the
+/// host. One holds ten seconds, as a phone's track does with the screen off, and misreads its delay by
+/// 150 ms now and then (an emulator's latency estimate jumping).
 #[test]
 fn guests_with_drifting_cards_stay_in_step_for_minutes() {
-    let a = song(330.0, 1, None);
+    let a = song(360.0, 1, None);
     let mut jam = Jam::new(&[("a", &a)], None, Settings::default(), &two_ways());
-    jam.guests[0].rig.card.0.lock().ppm = 300.0;
+    {
+        let mut card = jam.guests[0].rig.card.0.lock();
+        (card.ppm, card.holds_ns, card.spike_every_s, card.spike_ns) = (300.0, 10_000_000_000, 23, 150_000_000);
+    }
     jam.guests[1].rig.card.0.lock().ppm = -150.0;
     jam.host.engine.play_at(0, 0);
     jam.run(1_000);
     jam.join(0);
     jam.join(1);
-    jam.run(10_000);
+    // Until a correction made after the drift is learned (eight seconds) is heard through the deep card.
+    jam.run(30_000);
     // Five minutes, each guest read every other five seconds.
     let mut gaps = [Gaps::default(), Gaps::default()];
     for _ in 0..30 {
@@ -828,9 +898,12 @@ fn guests_with_drifting_cards_stay_in_step_for_minutes() {
         let logs = rig.logs.lock();
         let starts = logs.iter().filter(|l| l.starts_with("following: Start")).count();
         let slips = logs.iter().filter(|l| l.starts_with("following: Slip")).count();
+        // Once, at most, as the start settles.
+        let rewritten = logs.iter().filter(|l| l.starts_with("the track changes")).count();
         let underruns = rig.engine.status().underruns;
-        eprintln!("guest {g}: {gaps}; {starts} starts, {slips} slips, {underruns} underruns");
+        eprintln!("guest {g}: {gaps}; {starts} starts, {slips} slips, {rewritten} written again, {underruns} underruns");
         assert_eq!((starts, underruns), (1, 0), "guest {g}: started once, never ran dry");
+        assert!(rewritten <= 1, "guest {g}: written again {rewritten} times");
         assert!(gaps.within(2_500, 1.5, 3.0), "guest {g}: {gaps}");
     }
 }
@@ -841,7 +914,7 @@ fn guests_with_drifting_cards_stay_in_step_for_minutes() {
 fn a_guest_follows_its_host_past_the_end_of_a_song() {
     let (a, b) = (song(10.0, 1, None), song(30.0, 2, None));
     let guest = Rig::new(&[("a", &a), ("b", &b)], None, Settings::default());
-    guest.engine.follow(Some(Lead { index: 0, ms: 6_000.0, ago_us: 0, rate: 1.0, playing: true, speed: 1.0, pitch: 1.0, mix: None }));
+    guest.engine.follow(Some(Lead { index: 0, ms: 6_000.0, ago_us: 0, there_us: 0, rate: 1.0, playing: true, speed: 1.0, pitch: 1.0, mix: None }));
     guest.run(10_000);
     let starts = || guest.logs.lock().iter().filter(|l| l.starts_with("following: Start")).count();
     let before = starts();
