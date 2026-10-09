@@ -1,8 +1,9 @@
 //! Time between devices. A device says where its song was together with when, on its own clock
 //! ([`now_us`]); a controller learns how that clock stands to its own from time exchanges, as NTP does:
 //! it sends at `t1`, the device receives at `t2` and answers at `t3`, the answer arrives at `t4`. Of the
-//! exchanges kept, the quarter with the shortest round trips are the ones least delayed one way more than
-//! the other; their median offset is taken, carried along the clocks' drift.
+//! exchanges kept, those with the shortest round trips are the ones least delayed one way more than the
+//! other: a line through their offsets, the faster weighing more, gives the offset and the clocks'
+//! drift. One more exchange moves it a little, never by what one exchange's delays say.
 
 use std::collections::VecDeque;
 
@@ -70,9 +71,12 @@ const KEPT: usize = 32;
 pub const BURST: usize = 8;
 pub const EVERY_US: i64 = 15_000_000;
 
-/// Drift is reckoned once the best exchanges span this long (the burst and two more); before that, the
+/// Drift is reckoned once the exchanges used span this long (the burst and two more); before that, the
 /// clocks are taken as running at one pace.
 const DRIFT_SPAN_US: i64 = 30_000_000;
+
+/// Exchanges whose round trip took this much (or half again) more than the fastest's are not used, µs.
+const NEAR_US: i64 = 2_000;
 
 /// An exchange this far off the estimate, beyond what its own round trip explains, means the device's
 /// clock started again (it restarted): what was learned of the old one is dropped.
@@ -98,49 +102,24 @@ impl ClockSync {
 
     /// The device's clock minus this one's, at this one's time `at`; None before any exchange.
     pub fn offset_at(&self, at: i64) -> Option<i64> {
-        let mut best: Vec<Sample> = self.samples.iter().copied().collect();
-        best.sort_by_key(|s| s.round_trip);
-        let slope = drift(&self.samples);
-        let mut offsets: Vec<f64> = best[..best.len().div_ceil(4)].iter().map(|s| s.offset as f64 + slope * (at - s.at) as f64).collect();
-        offsets.sort_by(f64::total_cmp);
-        let n = offsets.len();
-        if n == 0 {
-            return None;
+        let fastest = self.samples.iter().map(|s| s.round_trip).min()?;
+        // An exchange's offset is off by at most half what its round trip took beyond the fastest's:
+        // the slower ones are left out, the rest weigh less the slower they were.
+        let near = fastest + (fastest / 2).max(NEAR_US);
+        let good: Vec<(f64, f64, f64)> = self.samples.iter().filter(|s| s.round_trip <= near).map(|s| (s.at as f64, s.offset as f64, 1.0 / ((s.round_trip - fastest + 1_000) as f64).powi(2))).collect();
+        let total: f64 = good.iter().map(|g| g.2).sum();
+        let mean_at = good.iter().map(|g| g.2 * g.0).sum::<f64>() / total;
+        let mean = good.iter().map(|g| g.2 * g.1).sum::<f64>() / total;
+        let span = good.iter().map(|g| g.0).fold(f64::MIN, f64::max) - good.iter().map(|g| g.0).fold(f64::MAX, f64::min);
+        // The drift, once the exchanges span long enough to tell it from their jitter.
+        let (mut num, mut den) = (0.0, 0.0);
+        for g in good.iter().filter(|_| span >= DRIFT_SPAN_US as f64) {
+            num += g.2 * (g.0 - mean_at) * (g.1 - mean);
+            den += g.2 * (g.0 - mean_at).powi(2);
         }
-        Some((if n % 2 == 1 { offsets[n / 2] } else { (offsets[n / 2 - 1] + offsets[n / 2]) / 2.0 }).round() as i64)
+        let slope = if den > 0.0 { num / den } else { 0.0 };
+        Some((mean + slope * (at as f64 - mean_at)).round() as i64)
     }
-}
-
-/// The offset's change per µs over `samples` (in time order): a least squares line through the best
-/// exchange of each half of [`EVERY_US`] (a burst counts once), the shorter round trips weighing more;
-/// zero while they span too short a time.
-fn drift(samples: &VecDeque<Sample>) -> f64 {
-    let mut best: Vec<Sample> = Vec::new();
-    for s in samples {
-        match best.last_mut() {
-            Some(b) if s.at - b.at < EVERY_US / 2 => {
-                if s.round_trip < b.round_trip {
-                    *b = *s;
-                }
-            }
-            _ => best.push(*s),
-        }
-    }
-    let span = best.last().zip(best.first()).map_or(0, |(l, f)| l.at - f.at);
-    if best.len() < 3 || span < DRIFT_SPAN_US {
-        return 0.0;
-    }
-    let weight = |s: &Sample| 1.0 / ((s.round_trip + 1_000) as f64).powi(2);
-    let total: f64 = best.iter().map(weight).sum();
-    let mean_at = best.iter().map(|s| weight(s) * s.at as f64).sum::<f64>() / total;
-    let mean_offset = best.iter().map(|s| weight(s) * s.offset as f64).sum::<f64>() / total;
-    let (mut num, mut den) = (0.0, 0.0);
-    for s in &best {
-        let dx = s.at as f64 - mean_at;
-        num += weight(s) * dx * (s.offset as f64 - mean_offset);
-        den += weight(s) * dx * dx;
-    }
-    if den > 0.0 { num / den } else { 0.0 }
 }
 
 #[cfg(test)]
@@ -193,6 +172,31 @@ mod tests {
             let err = sync.offset_at(at).unwrap() - (device(at) - at);
             assert!(err.abs() <= most, "{ppm} ppm, {n} exchanges: {err} µs off");
         }
+    }
+
+    #[test]
+    fn each_exchange_moves_the_offset_little() {
+        // Through a relay: 30 to 70 ms either way, two answers in three waiting up to 200 ms more for a
+        // poll. An exchange faster than those before may move it by what it shows; the rest hardly do.
+        let device = |t: i64| t + 5_000_000 + (t as f64 * 40.0 / 1e6) as i64;
+        let mut sync = ClockSync::default();
+        let mut moves = Vec::new();
+        for (k, t1) in sent(1_000_000, 60).enumerate() {
+            let there = 30_000 + jitter(k, 1, 40_000);
+            let back = 30_000 + jitter(k, 2, 40_000) + if k % 3 == 0 { 0 } else { jitter(k, 3, 200_000) };
+            let t2 = device(t1 + there);
+            let was = sync.offset_at(t1);
+            sync.add(Exchange { t1, t2, t3: t2 + 300, t4: t1 + there + 300 + back });
+            let offset = sync.offset_at(t1).unwrap();
+            let err = offset - (device(t1) - t1);
+            assert!(err.abs() <= 20_000, "exchange {k}: {err} µs off");
+            if let Some(was) = was.filter(|_| k >= BURST) {
+                moves.push((offset - was).abs());
+            }
+        }
+        let mean = moves.iter().sum::<i64>() / moves.len() as i64;
+        let most = moves.iter().max().unwrap();
+        assert!(mean <= 2_000 && *most <= 15_000, "moved {mean} µs on average, {most} µs at most");
     }
 
     #[test]
