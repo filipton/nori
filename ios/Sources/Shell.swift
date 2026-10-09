@@ -19,6 +19,7 @@ final class ShellController: UITabBarController {
         NotificationCenter.default.addObserver(self, selector: #selector(lay), name: .noriOpened, object: nil)
         mini.opened = { [weak self] in self?.openPlayer() }
         mini.dragged = { [weak self] in self?.dragPlayer($0) }
+        mini.devicesOpened = { [weak self] in self?.present(DevicesSheet(), animated: true) }
         view.addSubview(mini)
     }
 
@@ -86,12 +87,16 @@ final class MiniPlayer: UIView {
 
     var opened: (() -> Void)?
     var dragged: ((UIPanGestureRecognizer) -> Void)?
+    /// The speaker was tapped: the devices.
+    var devicesOpened: (() -> Void)?
     private let cover = CoverView()
     private let title = UILabel()
     private let artist = UILabel()
+    /// Shown while another device plays: its speaker, filled while it sounds.
+    private let speaker = UIButton(type: .system)
     private let heart = UIButton(type: .system)
     private let play = UIButton(type: .system)
-    private let skipButton = UIButton(type: .system)
+    private var speakerWidth: NSLayoutConstraint!
     /// Which way the drag under way goes, decided as it starts: up for the card, sideways to skip.
     private var sideways = false
     /// The cover and the song's lines: what follows a sideways swipe.
@@ -118,10 +123,8 @@ final class MiniPlayer: UIView {
         play.setImage(Glyph.play, for: .normal)
         play.tintColor = Theme.label
         play.addTarget(self, action: #selector(toggle), for: .touchUpInside)
-        skipButton.setImage(Glyph.next, for: .normal)
-        skipButton.accessibilityLabel = Say.next
-        skipButton.tintColor = Theme.label
-        skipButton.addTarget(self, action: #selector(skip), for: .touchUpInside)
+        speaker.tintColor = Theme.label
+        speaker.addTarget(self, action: #selector(speakerTapped), for: .touchUpInside)
         heart.tintColor = Theme.label
         heart.accessibilityLabel = Say.favorite
         heart.addTarget(self, action: #selector(heartTapped), for: .touchUpInside)
@@ -129,11 +132,11 @@ final class MiniPlayer: UIView {
 
         sliding = [cover, text]
         // The song's side, clipped where the controls start: a swiped song leaves at that edge rather
-        // than passing under the heart and the buttons.
+        // than passing under the speaker, the heart and the button.
         let lane = UIView()
         lane.clipsToBounds = true
         lane.isUserInteractionEnabled = false
-        for v in [hairline, lane, heart, play, skipButton, progress] {
+        for v in [hairline, lane, speaker, heart, play, progress] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
@@ -142,13 +145,14 @@ final class MiniPlayer: UIView {
             lane.addSubview(v)
         }
         progressWidth = progress.widthAnchor.constraint(equalToConstant: 0)
+        speakerWidth = speaker.widthAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             hairline.leadingAnchor.constraint(equalTo: leadingAnchor),
             hairline.trailingAnchor.constraint(equalTo: trailingAnchor),
             hairline.topAnchor.constraint(equalTo: topAnchor),
             hairline.heightAnchor.constraint(equalToConstant: 1.0 / UIScreen.main.scale),
             lane.leadingAnchor.constraint(equalTo: leadingAnchor),
-            lane.trailingAnchor.constraint(equalTo: heart.leadingAnchor),
+            lane.trailingAnchor.constraint(equalTo: speaker.leadingAnchor),
             lane.topAnchor.constraint(equalTo: topAnchor),
             lane.bottomAnchor.constraint(equalTo: bottomAnchor),
             cover.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
@@ -157,16 +161,16 @@ final class MiniPlayer: UIView {
             cover.heightAnchor.constraint(equalToConstant: 40),
             text.leadingAnchor.constraint(equalTo: cover.trailingAnchor, constant: 10),
             text.centerYAnchor.constraint(equalTo: centerYAnchor),
-            text.trailingAnchor.constraint(lessThanOrEqualTo: heart.leadingAnchor, constant: -4),
+            text.trailingAnchor.constraint(lessThanOrEqualTo: speaker.leadingAnchor, constant: -4),
+            speaker.trailingAnchor.constraint(equalTo: heart.leadingAnchor),
+            speaker.centerYAnchor.constraint(equalTo: centerYAnchor),
+            speakerWidth,
+            speaker.heightAnchor.constraint(equalToConstant: 44),
             heart.trailingAnchor.constraint(equalTo: play.leadingAnchor),
             heart.centerYAnchor.constraint(equalTo: centerYAnchor),
             heart.widthAnchor.constraint(equalToConstant: 40),
             heart.heightAnchor.constraint(equalToConstant: 44),
-            skipButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            skipButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            skipButton.widthAnchor.constraint(equalToConstant: 44),
-            skipButton.heightAnchor.constraint(equalToConstant: 44),
-            play.trailingAnchor.constraint(equalTo: skipButton.leadingAnchor),
+            play.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             play.centerYAnchor.constraint(equalTo: centerYAnchor),
             play.widthAnchor.constraint(equalToConstant: 44),
             play.heightAnchor.constraint(equalToConstant: 44),
@@ -191,7 +195,7 @@ final class MiniPlayer: UIView {
         let now = Core.shared.now
         if let song = now.song {
             title.text = song.title
-            artist.text = now.device.map(Say.playingOn) ?? song.subtitle
+            artist.text = song.subtitle
             artist.isHidden = false
             cover.show(song.cover, points: 40)
         } else {
@@ -200,10 +204,14 @@ final class MiniPlayer: UIView {
             cover.show("", points: 40)
         }
         play.isEnabled = now.song != nil
-        skipButton.isEnabled = now.song != nil
         // A jam's music is its host's to play and skip.
         play.isHidden = now.jam
-        skipButton.isHidden = now.jam
+        // Another device plays: only its speaker says so, filled while it sounds.
+        let elsewhere = now.device != nil && !now.jam
+        speaker.isHidden = !elsewhere
+        speakerWidth.constant = elsewhere ? 40 : 0
+        speaker.setImage(now.playing ? Glyph.speakerSmall : Glyph.speakerSmallOutline, for: .normal)
+        speaker.accessibilityLabel = now.device.map(Say.playingOn)
         paintHeart()
         play.setImage(now.playing ? Glyph.pause : Glyph.play, for: .normal)
         play.accessibilityLabel = now.playing ? Say.pause : Say.play
@@ -252,8 +260,8 @@ final class MiniPlayer: UIView {
         paintHeart()
     }
 
-    @objc private func skip() {
-        nori_ios_next()
+    @objc private func speakerTapped() {
+        devicesOpened?()
     }
 
     @objc private func tapped() {

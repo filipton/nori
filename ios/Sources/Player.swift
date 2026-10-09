@@ -34,7 +34,6 @@ final class PlayerCard: UIViewController {
     private let volume = MPVolumeView()
     /// The volume of the device playing, in the iPod's volume's place while the music plays elsewhere.
     private let deviceVolume = UISlider()
-    private let playingOn = UIButton(type: .system)
     private let devices = UIButton(type: .system)
     private let outputs = OutputPicker()
     private var ticker: Timer?
@@ -100,19 +99,12 @@ final class PlayerCard: UIViewController {
             l.textColor = Theme.Card.secondary
         }
         remaining.textAlignment = .right
-        // Between the times, which device plays: the row keeps its height with or without it.
-        playingOn.titleLabel?.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
-        playingOn.titleLabel?.lineBreakMode = .byTruncatingTail
-        playingOn.tintColor = Theme.Card.label
-        playingOn.addTarget(self, action: #selector(devicesTapped), for: .touchUpInside)
-        playingOn.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        playingOn.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for l in [elapsed, remaining] {
             l.setContentHuggingPriority(.required, for: .horizontal)
             l.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
-        let times = UIStackView(arrangedSubviews: [elapsed, playingOn, remaining])
-        times.distribution = .fill
+        let times = UIStackView(arrangedSubviews: [elapsed, remaining])
+        times.distribution = .equalSpacing
         times.spacing = 8
 
         previous.setImage(Glyph.bigPrevious, for: .normal)
@@ -243,15 +235,10 @@ final class PlayerCard: UIViewController {
         let now = Core.shared.now
         devices.tintColor = now.device == nil ? Theme.Card.secondary : Theme.Card.label
         let elsewhere = now.device != nil
-        if volume.isHidden != elsewhere || playingOn.title(for: .normal) != now.device.map(Say.playingOn) {
+        if volume.isHidden != elsewhere {
             let swap = {
                 self.volume.isHidden = elsewhere
                 self.deviceVolume.isHidden = !elsewhere
-                UIView.performWithoutAnimation {
-                    self.playingOn.setTitle(now.device.map(Say.playingOn), for: .normal)
-                    self.playingOn.layoutIfNeeded()
-                }
-                self.playingOn.alpha = elsewhere ? 1 : 0
             }
             if view.window != nil && !UIAccessibility.isReduceMotionEnabled {
                 UIView.animate(withDuration: 0.25, animations: swap)
@@ -259,7 +246,6 @@ final class PlayerCard: UIViewController {
                 swap()
             }
         }
-        playingOn.isUserInteractionEnabled = elsewhere
         deviceVolume.isEnabled = now.volume != nil
         if !deviceVolume.isTracking { deviceVolume.value = Float(now.volume ?? 0) / 100 }
         transport.isHidden = now.jam
