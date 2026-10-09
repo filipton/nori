@@ -151,6 +151,8 @@ owner's decisions), `docs/perf-build.md`.
 
 - `tools/apk.sh [x86_64] [--install]`: release APK into `build/`. `./gradlew :app:assemblePerf
   -PrustTargets=arm64-v8a`: perf build ("nori dev"), see docs/perf-build.md.
+- `./gradlew :app:assemblePreview -PrustTargets=arm64-v8a`: a release build named "nori preview" (id
+  `dev.nori.music.preview`) that installs beside the real app, for trying a change on a phone.
 - `tools/app.sh` drives a debug build over adb (`open`, `play`, `do`, `set`, `state`).
 - `tools/release.sh` is the whole release, step by step. The changelog comes from `feat`/`fix`/`perf`
   commit subjects, so write those for users. Signing key `nori-release.jks` + `keystore.properties`

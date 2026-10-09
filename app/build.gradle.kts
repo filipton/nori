@@ -84,6 +84,15 @@ android {
             signingConfig = signingConfigs.getByName("debug")
             matchingFallbacks += "release"
         }
+        // A release build to try a change on a phone beside the real app: its own id and name, so nothing
+        // of the installed app is touched.
+        create("preview") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".preview"
+            isDebuggable = false
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
+        }
     }
 
     // The benchmarks: run over adb in a debug build (TestBridge), from the Performance page in a perf build.
@@ -95,6 +104,7 @@ android {
         // drives the app by itself and needs none of the bridge.
         getByName("release").kotlin.srcDir("src/noTest/kotlin")
         getByName("perf").kotlin.srcDir("src/noTest/kotlin")
+        getByName("preview").kotlin.srcDir("src/noTest/kotlin")
         // The self test's plain logic (no Android in it): built into the perf build, and tested on the JVM
         // with the unit tests, which AGP runs for the debug build only.
         getByName("perf").kotlin.srcDir("src/perf/logic")

@@ -21,7 +21,7 @@ plugins {
 // Which ABIs the Rust core is built for. Asked explicitly with -PrustTargets; otherwise a debug build is for the
 // emulator (x86_64) and a perf or release build for phones (arm64-v8a): building both every time doubled
 // each build for a chip nobody was going to run it on.
-val shipping = gradle.startParameter.taskNames.any { t -> listOf("release", "perf", "bundle").any { t.contains(it, ignoreCase = true) } }
+val shipping = gradle.startParameter.taskNames.any { t -> listOf("release", "perf", "preview", "bundle").any { t.contains(it, ignoreCase = true) } }
 val rustTargets = (project.findProperty("rustTargets") as String? ?: if (shipping) "arm64-v8a" else "x86_64").split(",")
 val rustProfile = project.findProperty("rustProfile") as String? ?: "release"
 // Cargo features of the core. `neural-beats` builds in tract for "Better beat detection" (docs/research/analysis.md)
