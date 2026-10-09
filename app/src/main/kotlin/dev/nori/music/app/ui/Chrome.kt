@@ -1,7 +1,6 @@
 package dev.nori.music.app.ui
 
 import androidx.compose.foundation.layout.height
-import dev.nori.music.app.R
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.background
 import androidx.compose.ui.draw.drawBehind
@@ -73,8 +72,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Speaker
-import androidx.compose.material.icons.outlined.Speaker
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Favorite
 import dev.nori.music.app.vm.ActionsViewModel
@@ -495,20 +492,16 @@ fun MiniPlayer(vm: PlayerViewModel, actions: ActionsViewModel, onOpen: () -> Uni
                 modifier = Modifier.weight(1f),
                 item = track,
             )
-            // Another device plays: its speaker, filled while it sounds, a tap away from the devices. Then the
-            // one judgement worth making without opening the player: whether this is a song to keep. Apple
-            // has only the transport here; the owner asked for the heart, and the bar has the room for it
-            // because the title beside it is already allowed to run out of space gracefully. The skip is a
-            // swipe away. A jam guest controls nothing: the host plays.
+            // Where the sound goes: the speaker, filled in the accent while another device plays, a tap away from
+            // the devices. Then the one judgement worth making without opening the player: whether this is a
+            // song to keep. Apple has only the transport here; the owner asked for the heart, and the bar has
+            // the room for it because the title beside it is already allowed to run out of space gracefully.
+            // The skip is a swipe away. A jam guest controls nothing: the host plays.
             if (!state.jamGuest) {
-                state.playingOn?.let { device ->
-                    IconButton(LocalDevices.current) {
-                        Icon(
-                            if (state.playing) Icons.Filled.Speaker else Icons.Outlined.Speaker,
-                            words(R.string.devices_playing_on, device), Modifier.size(24.dp), tint = look.color(CoverLook.ACCENT),
-                        )
-                    }
-                }
+                OutputButton(
+                    state.playingOn != null, 24.dp,
+                    idle = { look.color(CoverLook.CHROME_CONTENT_75) }, lit = { look.color(CoverLook.ACCENT) },
+                )
                 song?.let { s ->
                     val starred = LocalStarMarks.current.effectiveStar(dev.nori.music.data.StarKind.SONG, s.id, s.starred)
                     FavoriteHeart(starred, tint = content, muted = look.color(CoverLook.CHROME_CONTENT_75)) { actions.star(s, !starred) }

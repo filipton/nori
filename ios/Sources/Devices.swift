@@ -9,6 +9,8 @@ final class OutputPicker {
     /// Puts the picker into `host`, where it must be for its button to answer, out of sight.
     func attach(to host: UIView) {
         picker.alpha = 0.011
+        // Out of sight and out of the way: the host's own touches are its own.
+        picker.isUserInteractionEnabled = false
         picker.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
         host.addSubview(picker)
     }

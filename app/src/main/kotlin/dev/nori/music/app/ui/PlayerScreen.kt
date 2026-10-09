@@ -743,7 +743,11 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                     // which is where a setting for the evening belongs.
                     Column(Modifier.weight(1.6f), horizontalAlignment = Alignment.CenterHorizontally) {
                         if (!state.jamGuest) {
-                            OutputButton(state.playingOn != null, state.playing)
+                            val panel = LocalLook.current
+                            OutputButton(
+                                state.playingOn != null, 27.dp,
+                                idle = { panel.color(CoverLook.ON_VARIANT) }, lit = { panel.color(CoverLook.ACCENT) },
+                            )
                             Text(
                                 state.playingOn?.let { words(R.string.devices_playing_on, it) }.orEmpty(), Modifier.height(OUTPUT_LINE),
                                 style = MaterialTheme.typography.labelSmall, color = live.color(CoverLook.ACCENT), maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -844,15 +848,18 @@ private fun playerTitleMeta(song: dev.nori.music.ffi.model.Song?, radio: String?
  * through rather than being left with a button that does nothing.
  */
 @Composable
-private fun OutputButton(otherDevice: Boolean, playing: Boolean) {
+internal fun OutputButton(
+    otherDevice: Boolean, size: androidx.compose.ui.unit.Dp,
+    idle: androidx.compose.ui.graphics.ColorProducer, lit: androidx.compose.ui.graphics.ColorProducer,
+) {
     val settings: SettingsViewModel = viewModel()
     val output by settings.currentOutput.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    val look = LocalLook.current
     // Whether the sound has gone elsewhere is the core's (`output_look`).
     val o = remember(output) { dev.nori.music.ffi.devices.outputLook(output) }
-    // One speaker for every output, lit in the accent while the sound is elsewhere, filled while it sounds there.
-    val icon = if (otherDevice && playing) Icons.Filled.Speaker else Icons.Outlined.Speaker
+    // One speaker for every output: filled and lit while the sound is elsewhere, an outline while it is here.
+    val elsewhere = o.elsewhere || otherDevice
+    val icon = if (elsewhere) Icons.Filled.Speaker else Icons.Outlined.Speaker
     val description = remember(o) { say.outputDescription(o.port, o.name) }
     // With remote control or jams on, the button opens nori's own devices first (RemoteScreens); this
     // phone's outputs are one row of it.
@@ -861,7 +868,7 @@ private fun OutputButton(otherDevice: Boolean, playing: Boolean) {
     val openDevices = LocalDevices.current
     val tell = LocalMessages.current
     IconButton({ if (devices) openDevices() else openOutputPicker(context, output, tell) }) {
-        LookIcon(icon, description, Modifier.size(27.dp)) { look.color(if (o.elsewhere || otherDevice) CoverLook.ACCENT else CoverLook.ON_VARIANT) }
+        LookIcon(icon, description, Modifier.size(size)) { if (elsewhere) lit() else idle() }
     }
 }
 
