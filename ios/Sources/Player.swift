@@ -34,6 +34,7 @@ final class PlayerCard: UIViewController {
     private let volume = MPVolumeView()
     private let playingOn = UIButton(type: .system)
     private let devices = UIButton(type: .system)
+    private let outputs = OutputPicker()
     private var ticker: Timer?
     private var scrubbing = false
     private var paintedCover = ""
@@ -129,17 +130,14 @@ final class PlayerCard: UIViewController {
         lyrics.accessibilityLabel = Say.lyrics
         lyrics.tintColor = Theme.Card.secondary
         lyrics.addTarget(self, action: #selector(lyricsTapped), for: .touchUpInside)
-        let route = AVRoutePickerView()
-        route.tintColor = Theme.Card.secondary
-        route.activeTintColor = Theme.Card.label
-        route.accessibilityLabel = Say.output
         let queue = UIButton(type: .system)
         queue.setImage(Glyph.queue, for: .normal)
         queue.accessibilityLabel = Say.queue
         queue.tintColor = Theme.Card.secondary
         queue.addTarget(self, action: #selector(queueTapped), for: .touchUpInside)
         devices.setImage(Glyph.speaker, for: .normal)
-        devices.accessibilityLabel = Say.playOn
+        devices.accessibilityLabel = Say.output
+        outputs.attach(to: view)
         devices.tintColor = Theme.Card.secondary
         devices.addTarget(self, action: #selector(devicesTapped), for: .touchUpInside)
         playingOn.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
@@ -147,7 +145,7 @@ final class PlayerCard: UIViewController {
         playingOn.addTarget(self, action: #selector(devicesTapped), for: .touchUpInside)
         // The volume's row: the iPod's volume, or which device plays.
         let level = UIStackView(arrangedSubviews: [volume, playingOn])
-        let bottom = UIStackView(arrangedSubviews: [lyrics, route, devices, queue])
+        let bottom = UIStackView(arrangedSubviews: [lyrics, devices, queue])
         bottom.distribution = .equalSpacing
         bottom.alignment = .center
 
@@ -199,8 +197,6 @@ final class PlayerCard: UIViewController {
             transport.heightAnchor.constraint(equalToConstant: 56),
             jamStrip.heightAnchor.constraint(equalToConstant: 56),
             level.heightAnchor.constraint(equalToConstant: 30),
-            route.widthAnchor.constraint(equalToConstant: 36),
-            route.heightAnchor.constraint(equalToConstant: 36),
             lyrics.widthAnchor.constraint(equalToConstant: 36),
             devices.widthAnchor.constraint(equalToConstant: 36),
             queue.widthAnchor.constraint(equalToConstant: 36),
@@ -227,7 +223,6 @@ final class PlayerCard: UIViewController {
 
     @objc private func changed() {
         let now = Core.shared.now
-        devices.isHidden = !now.remote
         devices.tintColor = now.device == nil ? Theme.Card.secondary : Theme.Card.label
         volume.isHidden = now.device != nil
         playingOn.isHidden = now.device == nil
@@ -384,8 +379,14 @@ final class PlayerCard: UIViewController {
         present(QueueSheet(), animated: true)
     }
 
+    /// The output button: nori's devices with this iPod's outputs among them, or just the outputs with
+    /// remote control off.
     @objc private func devicesTapped() {
-        present(DevicesSheet(), animated: true)
+        if Core.shared.now.remote {
+            present(DevicesSheet(), animated: true)
+        } else {
+            outputs.show()
+        }
     }
 }
 
