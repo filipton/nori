@@ -834,7 +834,10 @@ class PageController: UITableViewController {
             return
         }
         if let code = a.error {
-            if rows.isEmpty { showEmpty(Say.couldNotLoad, Say.failure(code, a.detail)) }
+            if rows.isEmpty {
+                let said = Say.pageFailure(code, a.detail)
+                showEmpty(said.title, said.detail)
+            }
             return
         }
         more = a.raw["more"] as? Bool ?? false

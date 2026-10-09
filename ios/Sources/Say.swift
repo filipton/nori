@@ -194,6 +194,16 @@ enum Say {
     static let noServer = "No server yet"
     static let noServerDetail = "Add your server in Settings → Server."
     static let couldNotLoad = "Could not load this page"
+    static let offline = "You're offline"
+    static let offlineDetail = "Connect to the internet to see this page. Downloaded songs still play."
+
+    /// What an empty page says for a failed read: the network being gone is not a page that is broken.
+    static func pageFailure(_ code: Int32, _ detail: String?) -> (title: String, detail: String) {
+        switch code {
+        case NORI_LOGIN_NOT_FOUND, NORI_LOGIN_UNREACHABLE, NORI_LOGIN_TIMEOUT: return (offline, offlineDetail)
+        default: return (couldNotLoad, failure(code, detail))
+        }
+    }
     static let nothingHere = "Nothing here yet"
     static let playNext = "Play next"
     static let addToQueue = "Add to queue"
