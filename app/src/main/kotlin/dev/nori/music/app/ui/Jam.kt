@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Speaker
@@ -87,14 +88,15 @@ internal fun jamLabel(jam: PlayerViewModel.JamStripState): String {
 
 /**
  * The jam's button, where the output's speaker stands while a jam is on (the player's bottom row, the bar):
- * the host's opens the devices, a guest's the queue with the jam's header.
+ * filled while someone listens, an outline while no one does. The host's opens the devices, a guest's the
+ * queue with the jam's header.
  */
 @Composable
 internal fun JamButton(jam: PlayerViewModel.JamStripState, size: Dp, tint: ColorProducer) {
     val nav = LocalNav.current
     val devices = LocalDevices.current
     IconButton({ if (jam.host == null) devices() else nav.player(Panel.QUEUE) }) {
-        LookIcon(Icons.Filled.Groups, jamLabel(jam), Modifier.size(size), tint)
+        LookIcon(if (jam.listening > 0) Icons.Filled.Groups else Icons.Outlined.Groups, jamLabel(jam), Modifier.size(size), tint)
     }
 }
 

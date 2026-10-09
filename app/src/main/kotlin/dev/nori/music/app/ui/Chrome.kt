@@ -501,7 +501,7 @@ fun MiniPlayer(vm: PlayerViewModel, actions: ActionsViewModel, onOpen: () -> Uni
             // The skip is a swipe away. A jam guest's speaker and heart would be the host's; its play is the
             // one its role offers.
             // While a jam is on it stands in the speaker's place: a jam plays on this device only.
-            jam?.let { JamButton(it, 24.dp) { look.color(CoverLook.ACCENT) } }
+            jam?.let { JamButton(it, 24.dp) { look.color(CoverLook.CHROME_CONTENT_75) } }
             if (!state.jamGuest) {
                 if (jam == null) OutputButton(
                     state.playingOn != null, 24.dp,

@@ -749,10 +749,10 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                         val jamOn = jam
                         // While a jam is on it stands here instead of the speaker: a jam plays on this device only.
                         if (jamOn != null) {
-                            JamButton(jamOn, 27.dp) { panel.color(CoverLook.ACCENT) }
+                            JamButton(jamOn, 27.dp) { panel.color(CoverLook.ON_VARIANT) }
                             Text(
                                 jamLabel(jamOn), Modifier.height(OUTPUT_LINE),
-                                style = MaterialTheme.typography.labelSmall, color = live.color(CoverLook.ACCENT), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.labelSmall, color = live.color(CoverLook.ON_VARIANT), maxLines = 1, overflow = TextOverflow.Ellipsis,
                             )
                         } else if (!state.jamGuest) {
                             OutputButton(
