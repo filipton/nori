@@ -2,12 +2,14 @@
 //! tests without a server, sound card or terminal. The window has a sidebar, a page, a right panel and
 //! a player bar; [`Focus`] says which of the first three takes the keys.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+use nori_core::browse::{LibrarySection, ProfileRules};
 use nori_core::client::Starrable;
 use nori_core::playlist::PlaylistView;
-use nori_core::remote::{JamView, RemoteDevice};
+use nori_core::remote::wire::Pending;
+use nori_core::remote::{JamView, Listening, RemoteDevice};
 use nori_core::search::SearchView;
 use nori_core::settings::{EqLevel, SavedServer, SoundBand, StoredPrefs, TapAction};
 use nori_core::settings_store::SoundTool;
@@ -169,6 +171,11 @@ pub enum Cmd {
     JamEnd,
     /// Accepts (true) or refuses a jam request.
     JamDecide(u64, bool),
+    /// Joins the jam this invite link is to.
+    JoinJam(String),
+    LeaveJam,
+    /// A jam guest listens along (plays the host's music here, in step), or only watches.
+    Listen(bool),
     Quit,
 }
 
@@ -201,6 +208,9 @@ impl Cmd {
             Cmd::JamStart => "start a jam".into(),
             Cmd::JamEnd => "end the jam".into(),
             Cmd::JamDecide(r, yes) => format!("jam request {r} accepted={yes}"),
+            Cmd::JoinJam(_) => "join a jam".into(),
+            Cmd::LeaveJam => "leave the jam".into(),
+            Cmd::Listen(on) => format!("listen along {on}"),
             Cmd::Quit => "quit".into(),
             _ => "an edit".into(),
         }
@@ -505,7 +515,7 @@ pub struct Devices {
     pub active: Option<(String, String)>,
     /// Hearts as the device playing shows them, by song id, while it is another one.
     pub hearts: HashMap<String, bool>,
-    /// The jam this computer hosts.
+    /// The jam this computer hosts, or is a guest in.
     pub jam: Option<JamView>,
     /// Who asked for each song that came in through the jam, by song id.
     pub added: HashMap<String, String>,
@@ -520,6 +530,8 @@ pub enum DeviceRow {
     Playing(usize),
     /// Starts a jam, or shows the one hosted.
     Jam,
+    /// Joins someone's jam.
+    Join,
 }
 
 impl Devices {
@@ -529,6 +541,7 @@ impl Devices {
         if self.jams || self.jam.is_some() {
             rows.push(DeviceRow::Jam);
         }
+        rows.push(DeviceRow::Join);
         rows
     }
 
@@ -543,7 +556,35 @@ impl Devices {
 
     /// The jam's guests, the host left out.
     pub fn listeners(&self) -> Vec<&nori_core::remote::wire::JamMember> {
-        self.jam.as_ref().map_or_else(Vec::new, |j| j.members.iter().filter(|m| m.role != nori_core::remote::wire::Role::Host).collect())
+        self.jam.as_ref().map_or_else(Vec::new, |j| j.listeners().collect())
+    }
+
+    /// The jam's host's name.
+    pub fn host(&self) -> &str {
+        self.jam.as_ref().map_or("", JamView::host)
+    }
+
+    /// The jam as the player bar and the queue say it: "Jam · 2 listening", a guest's with its host.
+    pub fn jam_strip(&self) -> Option<String> {
+        let j = self.jam.as_ref()?;
+        let n = self.listeners().len();
+        Some(if j.hosting { crate::text::jam_strip(n) } else { crate::text::jam_guest_strip(self.host(), n) })
+    }
+
+    /// The requests the queue lists ([`JamView::asks`]).
+    pub fn asks(&self) -> Vec<&Pending> {
+        self.jam.as_ref().map_or_else(Vec::new, |j| j.asks().collect())
+    }
+
+    /// The songs this guest asked for that wait for the host, by id.
+    pub fn asked(&self) -> HashSet<&str> {
+        let guest = self.jam.as_ref().is_some_and(|j| !j.hosting);
+        self.asks().into_iter().filter(|_| guest).map(|p| p.song.id.as_str()).collect()
+    }
+
+    /// How this guest listens along; Watching while hosting or in no jam.
+    pub fn listening(&self) -> Listening {
+        self.jam.as_ref().filter(|j| !j.hosting).map_or(Listening::Watching, |j| j.listening)
     }
 }
 
@@ -553,7 +594,13 @@ pub enum QueueRow {
     /// How many listen; opens the invite, as the line of their names under it does.
     Jam,
     Listeners,
-    /// A request, by index into the jam's pending list.
+    /// A guest's switch for listening along.
+    Listen,
+    /// A line of why a guest who asked to listen along does not.
+    AlongNote(usize),
+    /// A guest's heading over its requests.
+    Asking,
+    /// A request, by index into [`Devices::asks`].
     Ask(usize),
     /// A line of the note under a provider's song asked for: request, line.
     Downloads(usize, usize),
@@ -581,6 +628,8 @@ pub enum Overlay {
     Input { title: String, text: String, secret: bool, name: String },
     /// The jam's invite: its link and QR code.
     Invite { link: String },
+    /// An invite link pasted to join someone's jam, and why joining failed.
+    Join { text: String, error: Option<String>, busy: bool },
 }
 
 /// What a picker sets.
@@ -748,6 +797,8 @@ pub struct App {
     /// This session's star marks, drawn over the records' flags.
     pub marks: StarMarks,
     pub devices: Devices,
+    /// What the open profile offers (a jam guest's: the host's library, its picks asked of the host).
+    pub rules: ProfileRules,
     /// The planned transition out of `song`.
     pub transition: Option<nori_core::automix::planner::TransitionNote>,
     /// The transition that brought `song` in, while still mixing.
@@ -847,10 +898,35 @@ impl App {
         let playlists = self.library.playlists.ready().map_or(0, Vec::len);
         let mut v = Vec::with_capacity(8 + playlists);
         v.extend(NAV_TOP);
-        v.extend(NAV_LIBRARY);
+        v.extend(self.nav_library());
         v.extend((0..playlists).map(Nav::Playlist));
-        v.extend(NAV_BOTTOM);
+        v.extend(self.nav_bottom());
         v
+    }
+
+    /// The library's entries the profile has.
+    pub fn nav_library(&self) -> Vec<Nav> {
+        let has = |n: Nav| {
+            let section = match n {
+                Nav::Albums => LibrarySection::Albums,
+                Nav::Artists => LibrarySection::Artists,
+                Nav::Songs => LibrarySection::Songs,
+                _ => LibrarySection::Downloads,
+            };
+            self.rules.sections.contains(&section)
+        };
+        NAV_LIBRARY.into_iter().filter(|n| has(*n)).collect()
+    }
+
+    /// The equalizer and the settings, where the profile is the account's.
+    pub fn nav_bottom(&self) -> &'static [Nav] {
+        if self.rules.account { &NAV_BOTTOM } else { &[] }
+    }
+
+    /// A jam guest's: its picks are asked of the host, and the player shows the jam, which it controls
+    /// none of.
+    pub fn guest(&self) -> bool {
+        self.rules.asks
     }
 
     /// Opens a root view, closing any opened pages, and requests its data if needed.
@@ -863,16 +939,7 @@ impl App {
         self.full = false;
         self.tune();
         self.dirty = true;
-        self.root = match view {
-            View::Home | View::Login => Nav::Home,
-            View::Search => Nav::Search,
-            View::Albums => Nav::Albums,
-            View::Artists => Nav::Artists,
-            View::Songs => Nav::Songs,
-            View::Downloads => Nav::Downloads,
-            View::Equalizer => Nav::Equalizer,
-            View::Settings => Nav::Settings,
-        };
+        self.root = nav_of(view);
         if let Some(i) = self.nav().iter().position(|n| *n == self.root) {
             self.side.at = i;
         }
@@ -908,9 +975,9 @@ impl App {
         }
     }
 
-    /// Requests the sidebar's playlists once.
+    /// Requests the sidebar's playlists once, where the profile has them.
     fn want_playlists(&mut self) {
-        if matches!(self.library.playlists, Load::Idle) && self.view != View::Login {
+        if matches!(self.library.playlists, Load::Idle) && self.view != View::Login && self.rules.sections.contains(&LibrarySection::Playlists) {
             self.library.playlists = Load::Loading;
             self.cmds.push(Cmd::Load(Req::Playlists));
         }
@@ -1103,8 +1170,15 @@ impl App {
                 self.invite();
             }
             Msg::Jam(Err(e)) => self.say(format!("{} ({e})", crate::text::JAM_FAILED), true),
-            // The runner opens these.
-            Msg::From(..) => {}
+            Msg::Joined(Err(e)) => match &mut self.overlay {
+                Some(Overlay::Join { error, busy, .. }) => {
+                    *error = Some(crate::text::jam_join_failed(&e));
+                    *busy = false;
+                }
+                _ => self.say(crate::text::jam_join_failed(&e), true),
+            },
+            // The runner opens these, and the profiles a jam is joined and left with.
+            Msg::From(..) | Msg::Joined(Ok(_)) | Msg::Left => {}
         }
     }
 
@@ -1350,10 +1424,13 @@ impl App {
 
     fn paste(&mut self, text: &str) {
         let text: String = text.chars().filter(|c| !c.is_control()).collect();
-        if let Some(Overlay::Input { text: t, .. }) = &mut self.overlay {
+        if let Some(Overlay::Input { text: t, .. } | Overlay::Join { text: t, .. }) = &mut self.overlay {
             t.push_str(&text);
         } else if self.view == View::Login {
             self.login.fields[self.login.focus].push_str(&text);
+        } else if nori_core::remote::is_invite(&text) {
+            // An invite pasted anywhere offers to join its jam.
+            self.overlay = Some(Overlay::Join { text, error: None, busy: false });
         } else {
             if self.view != View::Search {
                 self.go(View::Search);
@@ -1486,6 +1563,23 @@ impl App {
                 _ => {}
             },
             Overlay::Invite { .. } => self.overlay = None,
+            Overlay::Join { busy: true, .. } if k.code != KeyCode::Esc => self.dirty = false,
+            Overlay::Join { text, error, busy } => match k.code {
+                KeyCode::Enter if nori_core::remote::is_invite(text) => {
+                    *busy = true;
+                    *error = None;
+                    let link = text.trim().to_string();
+                    self.cmds.push(Cmd::JoinJam(link));
+                }
+                KeyCode::Enter => *error = Some(crate::text::NOT_AN_INVITE.into()),
+                KeyCode::Esc => self.overlay = None,
+                KeyCode::Backspace => {
+                    text.pop();
+                }
+                KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => text.clear(),
+                KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) => text.push(c),
+                _ => {}
+            },
             Overlay::Input { text, name, .. } => match k.code {
                 KeyCode::Enter => {
                     let (name, value) = (name.clone(), text.clone());
@@ -1510,6 +1604,10 @@ impl App {
                 self.cmds.push(Cmd::Quit);
             }
             Action::Help => self.overlay = Some(Overlay::Help { scroll: 0 }),
+            Action::Join => self.join(),
+            // The jam's playback is its host's.
+            Action::TogglePlay | Action::Next | Action::Previous | Action::SeekBack | Action::SeekForward | Action::SeekBackLong | Action::SeekForwardLong | Action::Shuffle | Action::Repeat if self.guest() => self.dirty = false,
+            Action::Remove | Action::Undo | Action::MoveUp | Action::MoveDown if self.guest() && self.queue_in_focus() => self.dirty = false,
             Action::TogglePlay => self.cmds.push(Cmd::Toggle),
             Action::Next => self.cmds.push(Cmd::Next),
             Action::Previous => self.cmds.push(Cmd::Previous),
@@ -1545,7 +1643,7 @@ impl App {
                 self.say(said, false);
             }
             Action::Go(n) => {
-                if let Some(v) = GO.get(n as usize) {
+                if let Some(v) = GO.get(n as usize).filter(|v| self.nav().contains(&nav_of(**v))) {
                     self.go(*v);
                     self.focus = Focus::Main;
                 }
@@ -1899,8 +1997,11 @@ impl App {
             Focus::Panel if a == Action::Open => {
                 let i = match self.panel {
                     Some(Panel::Queue) => match self.queue_rows().get(self.queue_sel.at).copied() {
+                        Some(QueueRow::Song(_)) if self.guest() => None,
                         Some(QueueRow::Song(i)) => Some(i),
                         Some(QueueRow::Jam | QueueRow::Listeners) => return self.invite(),
+                        Some(QueueRow::Listen | QueueRow::AlongNote(_)) => return self.cmds.push(Cmd::Listen(self.devices.listening() == Listening::Watching)),
+                        Some(QueueRow::End) if self.guest() => return self.cmds.push(Cmd::LeaveJam),
                         Some(QueueRow::End) => return self.cmds.push(Cmd::JamEnd),
                         Some(row) => {
                             if let Some(request) = row.ask().and_then(|k| self.ask_request(k)) {
@@ -1951,6 +2052,8 @@ impl App {
                     Item::Playlist(p) => self.cmds.push(Cmd::EnqueueFetch(Fetch::Playlist(p.id), next)),
                 }
             }
+            // Hearts and downloads are the account's.
+            (Action::Download | Action::Star, _) if !self.rules.account => self.dirty = false,
             (Action::Download, item) => match item {
                 Item::Song(songs, i) => self.cmds.push(Cmd::Download(vec![songs[i].clone()])),
                 Item::Album(al) => self.cmds.push(Cmd::DownloadFetch(Fetch::Album(al.id))),
@@ -2090,9 +2193,18 @@ impl App {
             if !self.devices.listeners().is_empty() {
                 rows.push(QueueRow::Listeners);
             }
-            for (k, p) in j.pending.iter().enumerate() {
+            let asks = self.devices.asks();
+            if !j.hosting {
+                rows.push(QueueRow::Listen);
+                rows.extend((0..self.along_note().len()).map(QueueRow::AlongNote));
+                if !asks.is_empty() {
+                    rows.push(QueueRow::Asking);
+                }
+            }
+            for (k, p) in asks.iter().enumerate() {
                 rows.push(QueueRow::Ask(k));
-                if p.provider {
+                // The host decides, and its server downloads the song.
+                if p.provider && j.hosting {
                     rows.extend((0..self.downloads_note().len()).map(|n| QueueRow::Downloads(k, n)));
                 }
             }
@@ -2107,9 +2219,19 @@ impl App {
         crate::ui::wrap(crate::text::JAM_DOWNLOADS, (self.shown.panel_w as usize).saturating_sub(QUEUE_NOTE_INDENT + 1).max(12))
     }
 
-    /// The request id of the jam's pending request `k`.
+    /// Why this guest, having asked to listen along, does not, in the lines the queue panel has room for.
+    pub fn along_note(&self) -> Vec<String> {
+        let note = crate::text::jam_along(self.devices.listening());
+        if note.is_empty() {
+            return Vec::new();
+        }
+        crate::ui::wrap(note, (self.shown.panel_w as usize).saturating_sub(QUEUE_NOTE_INDENT + 1).max(12))
+    }
+
+    /// The request id of the jam's request `k` ([`Devices::asks`]) while hosting: only the host decides.
     fn ask_request(&self, k: usize) -> Option<u64> {
-        self.devices.jam.as_ref()?.pending.get(k).map(|p| p.request)
+        self.devices.jam.as_ref().filter(|j| j.hosting)?;
+        self.devices.asks().get(k).map(|p| p.request)
     }
 
     fn queue_move(&mut self, down: bool) {
@@ -2151,6 +2273,7 @@ impl App {
             }
             Some(DeviceRow::Jam) if d.jam.is_some() => self.invite(),
             Some(DeviceRow::Jam) => self.jam_start(),
+            Some(DeviceRow::Join) => self.join(),
             None => self.dirty = false,
         }
     }
@@ -2162,9 +2285,17 @@ impl App {
         }
     }
 
-    /// Starts a jam; the one hosted shows its invite instead, and where jams cannot start, why.
+    /// Asks for an invite link, to join someone's jam.
+    fn join(&mut self) {
+        self.overlay = Some(Overlay::Join { text: String::new(), error: None, busy: false });
+    }
+
+    /// Starts a jam; the one hosted shows its invite instead, and where jams cannot start, why. A guest
+    /// starts none.
     fn jam_start(&mut self) {
-        if self.devices.jam.is_some() {
+        if self.guest() {
+            self.dirty = false;
+        } else if self.devices.jam.is_some() {
             self.invite();
         } else if self.devices.jams {
             self.cmds.push(Cmd::JamStart);
@@ -2495,7 +2626,7 @@ impl App {
                 self.say("Downloading…", false);
             }
             Button::StarSong => {
-                if let Some(s) = &self.song {
+                if let Some(s) = self.song.as_ref().filter(|_| self.rules.account) {
                     let (id, listed) = (s.id.clone(), s.starred);
                     self.star(Starrable::Song, id, listed);
                 }
@@ -2554,6 +2685,20 @@ impl App {
         if again || l.opens_on_click() || artist_cards || settings_now {
             self.act_on_selected(Action::Open);
         }
+    }
+}
+
+/// The sidebar entry of a root view.
+fn nav_of(view: View) -> Nav {
+    match view {
+        View::Home | View::Login => Nav::Home,
+        View::Search => Nav::Search,
+        View::Albums => Nav::Albums,
+        View::Artists => Nav::Artists,
+        View::Songs => Nav::Songs,
+        View::Downloads => Nav::Downloads,
+        View::Equalizer => Nav::Equalizer,
+        View::Settings => Nav::Settings,
     }
 }
 

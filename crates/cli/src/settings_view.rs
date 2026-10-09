@@ -57,6 +57,8 @@ pub enum Act {
     Downloads,
     /// The login, for another server.
     AddServer,
+    /// The invite link of someone's jam, to join it.
+    JoinJam,
     Chore(Chore),
 }
 
@@ -241,6 +243,7 @@ impl SettingsView {
                 Act::Equalizer => Opened::View(View::Equalizer),
                 Act::Downloads => Opened::View(View::Downloads),
                 Act::AddServer => Opened::Login,
+                Act::JoinJam => Opened::Overlay(Overlay::Join { text: String::new(), error: None, busy: false }),
                 Act::Chore(c) => Opened::Cmds(vec![Cmd::Action(c)]),
             },
             Row::Server { id, active, .. } => {
@@ -602,6 +605,7 @@ fn library(b: &Build, f: &Facts) -> Vec<Section> {
         b.toggle("remoteControl", "Remote control", "Your other devices with nori control what plays here, and this computer controls them (C): on this network directly, elsewhere through octo-fiesta"),
         b.toggle("jam", "Jams", "Start a jam from the devices (C) or on a song, album or playlist (i): others join with a link or QR code and ask for songs, and this computer plays them. Needs octo-fiesta"),
         b.toggle("jamAlong", "  Let guests listen along", "A jam's guests can play its music on their own devices, in step with this computer"),
+        Row::Button { title: text::JAM_JOIN.into(), action: Act::JoinJam },
     ];
     vec![section("Index and search", index), section("History", history), section("Online", online), section("Other devices", devices)]
 }

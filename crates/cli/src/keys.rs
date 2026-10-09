@@ -50,6 +50,8 @@ pub enum Action {
     ShuffleAll,
     /// Starts a jam around the selected item.
     Jam,
+    /// Joins someone's jam with its invite link.
+    Join,
     // Card grids
     Left,
     Right,
@@ -146,6 +148,7 @@ pub const BINDINGS: &[Binding] = &[
     b!(Global, "", Action::Panel(Panel::Queue), "", [(Char('Q'), S), (Char('Q'), N)]),
     b!(Global, "", Action::Panel(Panel::Lyrics), "", [(Char('L'), S), (Char('L'), N)]),
     b!(Global, "C", Action::Panel(Panel::Devices), "Devices: play on another one, or start a jam (remote control or jams on)", [(Char('C'), S), (Char('C'), N)]),
+    b!(Global, "o", Action::Join, "Join a jam: paste the invite link (pasting it anywhere does too)", [(Char('o'), N)]),
     b!(Global, "F", Action::Full, "The player over the whole window", [(Char('F'), S), (Char('F'), N)]),
     b!(Global, "esc / h / ⌫", Action::Back, "Back: out of a page, to the sidebar", [(Esc, N), (Char('h'), N), (Backspace, N)]),
     b!(Global, "R", Action::Refresh, "Ask the server again", [(Char('R'), S), (Char('R'), N)]),

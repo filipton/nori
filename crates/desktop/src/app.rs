@@ -1149,11 +1149,8 @@ impl App {
         }
         ui.set_join_busy(true);
         ui.set_join_error("".into());
-        let prefs = session::app().settings.current().unwrap_or_default();
-        let user = prefs.servers.iter().find(|s| s.id == prefs.active_server_id).map(|s| s.user.clone()).filter(|u| !u.is_empty());
-        let name = user.unwrap_or_else(nori_host::device_name);
         let (http, tx) = (self.http.clone(), self.tx.clone());
-        nori_host::spawn("nori-jam-join", move || tx.send(Msg::Joined(session::block_on(nori_core::remote::jam_join(http, link, name)).map_err(|e| words::net_error(&e)))));
+        nori_host::spawn("nori-jam-join", move || tx.send(Msg::Joined(nori_host::jam_join(http, &session::app().settings, link, &nori_host::device_name()).map_err(|e| words::net_error(&e)))));
     }
 
     /// The guest profile joined with: opened in place of the user's own, which is opened again on leaving.
@@ -1162,13 +1159,7 @@ impl App {
         ui.set_join_busy(false);
         ui.set_join_open(false);
         ui.set_join_link("".into());
-        let mut prefs = session::app().settings.current().unwrap_or_default();
-        session::own::keep(session::own::BEFORE_JAM, prefs.active_server_id.clone());
-        let guest = SavedServer { id: nori_core::settings::new_server_id(), name: words::JAM_GUEST.into(), url: pass.url, api_key: pass.api_key, ..Default::default() };
-        prefs.servers.retain(|s| !nori_core::remote::is_guest_key(&s.api_key));
-        prefs.servers.push(guest.clone());
-        prefs.active_server_id = guest.id.clone();
-        session::app().settings.put(prefs);
+        let guest = nori_host::jam_joined(&session::app().settings, pass, words::JAM_GUEST);
         self.open(guest);
     }
 
@@ -1183,12 +1174,7 @@ impl App {
 
     /// The guest profile is dropped, and the user's own opened again.
     fn left(&mut self) {
-        let mut prefs = session::app().settings.current().unwrap_or_default();
-        prefs.servers.retain(|s| !nori_core::remote::is_guest_key(&s.api_key));
-        let before = session::own::text(session::own::BEFORE_JAM).filter(|id| prefs.servers.iter().any(|s| s.id == *id));
-        let back = before.and_then(|id| prefs.servers.iter().find(|s| s.id == id)).or(prefs.servers.first()).cloned();
-        prefs.active_server_id = back.as_ref().map(|s| s.id.clone()).unwrap_or_default();
-        session::app().settings.put(prefs);
+        let back = nori_host::jam_left(&session::app().settings);
         self.jam_now = None;
         self.asked.clear();
         match back {

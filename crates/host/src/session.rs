@@ -258,7 +258,9 @@ impl Session {
         let covers = o.covers.then(|| Arc::new(Loader::new(CoverConfig::new(o.data.join("covers")), cover_net)));
         let remotes = Arc::new(crate::remote::Remotes::new(level.clone()));
         let keeper = Keeper::start(core.clone(), engine.clone());
-        let s = Session { core, client, engine, store, downloader, covers, level, search: SearchSession::new(), offline: o.offline, #[cfg(feature = "desktop")] mpris: o.mpris, keeper, db: PathBuf::from(db), remotes, device: o.device, guest, rules, discovery: o.discovery, out: o.out };
+        // A jam guest is no device of the account's: the jam lists it as a guest.
+        let device = if guest { nori_core::remote::RemoteMe { kind: nori_remote::wire::DeviceKind::Guest, ..o.device } } else { o.device };
+        let s = Session { core, client, engine, store, downloader, covers, level, search: SearchSession::new(), offline: o.offline, #[cfg(feature = "desktop")] mpris: o.mpris, keeper, db: PathBuf::from(db), remotes, device, guest, rules, discovery: o.discovery, out: o.out };
         #[cfg(feature = "desktop")]
         if let Some(m) = &s.mpris {
             let cover = crate::remote::NowCover::new(s.covers.clone(), s.core.clone(), Arc::downgrade(m));
@@ -383,6 +385,12 @@ impl Session {
     /// here acts on.
     pub fn elsewhere(&self) -> Option<crate::remote::Elsewhere> {
         self.remotes.elsewhere()
+    }
+
+    /// The jam this profile is a guest in, as the player shows it in place of this device's own playback:
+    /// the host's song, its queue around it and the playhead. A guest's controls reach no device.
+    pub fn jam_playing(&self) -> Option<crate::remote::Elsewhere> {
+        self.remotes.jam_playing()
     }
 
     /// Plays or pauses; a queue restored but never started starts where it was.

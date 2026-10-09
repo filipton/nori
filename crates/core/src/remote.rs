@@ -223,6 +223,24 @@ pub struct JamView {
     pub listening: Listening,
 }
 
+impl JamView {
+    /// The jam's host's name.
+    pub fn host(&self) -> &str {
+        self.members.iter().find(|m| m.role == Role::Host).map_or("", |m| m.name.as_str())
+    }
+
+    /// Who listens: every member but the host.
+    pub fn listeners(&self) -> impl Iterator<Item = &JamMember> {
+        self.members.iter().filter(|m| m.role != Role::Host)
+    }
+
+    /// The requests this device shows: every one waiting while hosting; a guest's own, which wait for the
+    /// host.
+    pub fn asks(&self) -> impl Iterator<Item = &Pending> {
+        self.pending.iter().filter(|p| self.hosting || p.from == self.you)
+    }
+}
+
 /// Whether a jam guest plays the host's music along with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]

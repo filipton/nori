@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 
 use nori_core::cache_policy::{Page, Read};
 use nori_core::client::{Client, NetProfile};
+use nori_core::remote::JamPass;
 use nori_core::settings::SavedServer;
+use nori_core::settings_store::Settings;
 use nori_core::transport::{block_on, NetError};
 use nori_core::{Core, IngestStats, OriginKind, PageOrigin, ServerConfig, Song};
 use nori_covers::memory::Image;
@@ -43,6 +45,43 @@ pub fn device_name() -> String {
     let name = if ok { String::from_utf8_lossy(buf.split(|b| *b == 0).next().unwrap_or_default()).into_owned() } else { String::new() };
     let name = name.trim_end_matches(".local").to_string();
     if name.is_empty() { "nori".into() } else { name }
+}
+
+/// The profile open before a jam was joined, opened again on leaving it (an app value).
+const BEFORE_JAM: &str = "host.beforeJam";
+
+/// Joins the jam `link` invites to (blocking), named as the active profile's user, else `device`.
+pub fn jam_join(transport: Arc<dyn nori_core::transport::Transport>, settings: &Settings, link: String, device: &str) -> Result<JamPass, NetError> {
+    let user = settings.prefs(|p| p.servers.iter().find(|s| s.id == p.active_server_id).map(|s| s.user.clone()).filter(|u| !u.is_empty()));
+    block_on(nori_core::remote::jam_join(transport, link, user.unwrap_or_else(|| device.into())))
+}
+
+/// The guest profile `pass` signs in with, called `name`, made the active one in place of any guest
+/// profile before it. The account's profile active until now is opened again by [`jam_left`].
+pub fn jam_joined(settings: &Settings, pass: JamPass, name: &str) -> SavedServer {
+    let mut prefs = settings.current().unwrap_or_default();
+    let active = prefs.servers.iter().find(|s| s.id == prefs.active_server_id);
+    if active.is_some_and(|s| !nori_remote::is_guest_key(&s.api_key)) {
+        settings.keep_app_value(BEFORE_JAM, prefs.active_server_id.clone());
+    }
+    let guest = SavedServer { id: nori_core::settings::new_server_id(), name: name.into(), url: pass.url, api_key: pass.api_key, ..Default::default() };
+    prefs.servers.retain(|s| !nori_remote::is_guest_key(&s.api_key));
+    prefs.servers.push(guest.clone());
+    prefs.active_server_id = guest.id.clone();
+    settings.put(prefs);
+    guest
+}
+
+/// Drops the jam's guest profile; the profile to open now: the one open before the jam, else the first
+/// saved, else none (the login).
+pub fn jam_left(settings: &Settings) -> Option<SavedServer> {
+    let mut prefs = settings.current().unwrap_or_default();
+    prefs.servers.retain(|s| !nori_remote::is_guest_key(&s.api_key));
+    let before = settings.app_value(BEFORE_JAM).and_then(|id| prefs.servers.iter().find(|s| s.id == id));
+    let back = before.or(prefs.servers.first()).cloned();
+    prefs.active_server_id = back.as_ref().map(|s| s.id.clone()).unwrap_or_default();
+    settings.put(prefs);
+    back
 }
 
 /// Runs `f` on a named thread.
@@ -246,5 +285,38 @@ impl nori_mpris::Controls for Controls {
             starred: song.starred,
             art: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A guest profile takes the active one's place while in a jam; leaving drops it and opens the
+    /// account's again, also after a second jam joined from the first.
+    #[test]
+    fn a_jam_guest_profile_comes_and_goes() {
+        let dir = nori_testdir::TempDir::new("host-jam");
+        let settings = Settings::new();
+        let mut prefs = settings.open(&db_path(dir.path())).unwrap();
+        let own = |id: &str| SavedServer { id: id.into(), url: format!("http://{id}"), user: "ann".into(), password: "pw".into(), ..Default::default() };
+        prefs.servers = vec![own("home"), own("work")];
+        prefs.active_server_id = "work".into();
+        settings.put(prefs);
+        let pass = |n: u8| JamPass { url: "http://friend".into(), api_key: nori_remote::guest_key(&format!("key{n}")) };
+
+        let first = jam_joined(&settings, pass(1), "Jam");
+        nori_core::background::flush();
+        let second = jam_joined(&settings, pass(2), "Jam");
+        nori_core::background::flush();
+        let p = settings.current().unwrap();
+        let ids: Vec<&str> = p.servers.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["home", "work", second.id.as_str()], "one guest profile, the latest");
+        assert_ne!(first.id, second.id);
+        assert_eq!((p.active_server_id.as_str(), second.name.as_str()), (second.id.as_str(), "Jam"));
+
+        assert_eq!(jam_left(&settings).map(|s| s.id), Some("work".into()), "the profile open before the jams");
+        let p = settings.current().unwrap();
+        assert_eq!((p.servers.len(), p.active_server_id.as_str()), (2, "work"));
     }
 }

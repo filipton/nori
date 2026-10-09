@@ -56,6 +56,10 @@ pub enum Msg {
     Remote,
     /// Whether the jam asked for opened, or why not.
     Jam(Result<(), String>),
+    /// Someone's jam joined (what the guest profile signs in with), or why not.
+    Joined(Result<nori_core::remote::JamPass, String>),
+    /// This guest left its jam.
+    Left,
     /// A message from the session with this id; dropped once another session is open.
     From(u64, Box<Msg>),
 }
@@ -81,6 +85,8 @@ impl Msg {
             Msg::Starred(_) => "star marks".into(),
             Msg::Remote => "remote".into(),
             Msg::Jam(r) => format!("jam opened: {}", r.is_ok()),
+            Msg::Joined(r) => format!("jam joined: {}", r.is_ok()),
+            Msg::Left => "jam left".into(),
             Msg::From(id, m) => format!("session {id}: {}", m.brief()),
         }
     }
@@ -272,7 +278,13 @@ impl Session {
             };
             match &req {
                 Req::Home => {
+                    // The favourites are the account's: a jam guest's Home is the host's shelves.
+                    let account = core.rules().account;
                     for (i, (title, kind)) in HOME_ROWS.iter().enumerate() {
+                        if *kind == AlbumSort::Starred && !account {
+                            send(Ok(Data::HomeRow(i, title, Vec::new())));
+                            continue;
+                        }
                         let read = if *kind == AlbumSort::Starred { Read::FavouriteAlbums { size: 40 } } else { Read::AlbumList { kind: *kind, size: 40, offset: 0, genre: None } };
                         if let Err(e) = read_pages(&client, read, |p| {
                             if let Page::Albums { v } = p {
@@ -292,7 +304,7 @@ impl Session {
                 Req::Album(id) => pages(Read::AlbumById { id: id.clone() }, &|p| if let Page::AlbumPage { v } = p { Some(Data::Album(Box::new(v))) } else { None }),
                 Req::Artist(id) => pages(Read::ArtistById { id: id.clone() }, &|p| if let Page::ArtistPage { v } = p { Some(Data::Artist(Box::new(v))) } else { None }),
                 Req::Playlist(id) => pages(Read::PlaylistById { id: id.clone() }, &|p| if let Page::PlaylistPage { v } = p { Some(Data::Playlist(Box::new(v))) } else { None }),
-                Req::Songs { offset } => send(core.songs_page("title".into(), false, 0, 0, *offset).map(|p| Data::Songs(p.songs, p.exhausted)).map_err(|e| e.to_string())),
+                Req::Songs { offset } => send(block_on(client.songs_listed("title".into(), false, 0, 0, *offset)).map(|p| Data::Songs(p.songs, p.exhausted)).map_err(|e| unreachable(&e))),
                 Req::Downloads => {
                     let stored = core.downloads(true).unwrap_or_default();
                     send(core.download_sections().map(|s| Data::Downloads(Box::new(Downloads { active: s.active, queued: s.queued, failed: s.failed, stored }))).map_err(|e| e.to_string()));
@@ -330,6 +342,17 @@ impl Session {
         nori_host::spawn("nori-jam", move || {
             let opened = block_on(r.jam_open()).map(drop).map_err(|e| net_error(&e));
             let _ = tx.send(Msg::From(me, Box::new(Msg::Jam(opened))));
+        });
+    }
+
+    /// Leaves the jam this guest is in; [`Msg::Left`] once the relay was told (or could not be).
+    pub fn jam_leave(&self) {
+        let (remote, tx) = (self.remote(), self.tx.clone());
+        nori_host::spawn("nori-jam-leave", move || {
+            if let Some(r) = remote {
+                let _ = block_on(r.jam_leave());
+            }
+            let _ = tx.send(Msg::Left);
         });
     }
 }

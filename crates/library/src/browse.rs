@@ -260,6 +260,13 @@ pub struct ProfileRules {
     pub sections: Vec<LibrarySection>,
 }
 
+/// An account's.
+impl Default for ProfileRules {
+    fn default() -> Self {
+        profile_rules(false)
+    }
+}
+
 /// The rules of a jam `guest`'s profile, or of an account's.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn profile_rules(guest: bool) -> ProfileRules {

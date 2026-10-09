@@ -24,11 +24,9 @@ pub struct Shown {
 }
 
 pub fn shown(v: &JamView) -> Shown {
-    let host = v.members.iter().find(|m| m.role == Role::Host).map(|m| m.name.clone()).unwrap_or_default();
+    let host = v.host().to_string();
     let people: Vec<JamPerson> = v
-        .members
-        .iter()
-        .filter(|m| m.role != Role::Host)
+        .listeners()
         .map(|m| JamPerson {
             id: m.id.as_str().into(),
             name: m.name.as_str().into(),
@@ -37,11 +35,8 @@ pub fn shown(v: &JamView) -> Shown {
             admin: m.role == Role::Admin,
         })
         .collect();
-    let mine = |from: &str| v.hosting || from == v.you;
     let asks = v
-        .pending
-        .iter()
-        .filter(|p| mine(&p.from))
+        .asks()
         .map(|p| JamAsk {
             request: p.request.to_string().into(),
             title: p.song.title.as_str().into(),
@@ -50,7 +45,7 @@ pub fn shown(v: &JamView) -> Shown {
             art: p.song.cover_art.clone().unwrap_or_default().into(),
         })
         .collect();
-    let asked = if v.hosting { HashSet::new() } else { v.pending.iter().filter(|p| p.from == v.you).map(|p| p.song.id.clone()).collect() };
+    let asked = if v.hosting { HashSet::new() } else { v.asks().map(|p| p.song.id.clone()).collect() };
     let strip = if v.hosting { words::jam_strip(people.len()) } else { words::jam_guest_strip(&host, people.len()) };
     Shown { strip, listening: words::jam_listening(people.len()), people, asks, host, asked }
 }

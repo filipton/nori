@@ -3,6 +3,7 @@
 //! recorded in `App::hits` as it is drawn. Lists and grids draw only visible rows.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::time::Instant;
 
 use nori_core::client::Starrable;
@@ -18,7 +19,7 @@ use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::{Resize, StatefulImage};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, Button, DeviceRow, Focus, Hit, ListRef, Load, Nav, Overlay, Page, Panel, QueueRow, SearchRow, Sel, View, LOGIN_FIELDS, NAV_BOTTOM, NAV_LIBRARY, NAV_TOP, PANELS};
+use crate::app::{App, Button, DeviceRow, Focus, Hit, ListRef, Load, Nav, Overlay, Page, Panel, QueueRow, SearchRow, Sel, View, LOGIN_FIELDS, NAV_TOP, PANELS};
 use crate::art::{Art, Theme};
 use crate::keys::{Scope, BINDINGS};
 use crate::settings_view::{self, EqRow, Line as SLine, SettingsView};
@@ -304,8 +305,32 @@ fn table_head(f: &mut Frame, area: Rect, t: &Theme, album: bool) -> Rect {
     Rect { y: area.y + 2, height: area.height - 2, ..area }
 }
 
-/// A song table row; `number` 0 shows none, `playing` shows a marker instead; the heart as `marks` show it.
-fn song_line(s: &Song, marks: &StarMarks, number: usize, w: usize, t: &Theme, playing: bool, album: bool) -> Line<'static> {
+/// What a song row marks after its title: that a jam guest asked for the song, else its heart where the
+/// profile has hearts, as the session's star marks show it.
+struct Marks<'a> {
+    stars: &'a StarMarks,
+    hearts: bool,
+    asked: HashSet<&'a str>,
+}
+
+impl<'a> Marks<'a> {
+    fn of(stars: &'a StarMarks, rules: &nori_core::browse::ProfileRules, devices: &'a crate::app::Devices) -> Marks<'a> {
+        Marks { stars, hearts: rules.account, asked: devices.asked() }
+    }
+
+    fn mark(&self, s: &Song) -> String {
+        if self.asked.contains(s.id.as_str()) {
+            format!(" {}", crate::text::ASKED)
+        } else if self.hearts && self.stars.starred(Starrable::Song, &s.id, s.starred) {
+            " ♥".into()
+        } else {
+            String::new()
+        }
+    }
+}
+
+/// A song table row; `number` 0 shows none, `playing` shows a marker instead; its mark as `marks` say.
+fn song_line(s: &Song, marks: &Marks, number: usize, w: usize, t: &Theme, playing: bool, album: bool) -> Line<'static> {
     let c = columns(w, album);
     let num = if playing {
         Span::styled(pad("  ▶", c[0]), Style::default().fg(t.accent).add_modifier(Modifier::BOLD))
@@ -318,10 +343,10 @@ fn song_line(s: &Song, marks: &StarMarks, number: usize, w: usize, t: &Theme, pl
     if s.is_provider() {
         title.push_str(" ☁");
     }
-    let mark = if marks.starred(Starrable::Song, &s.id, s.starred) { " ♥" } else { "" };
+    let mark = marks.mark(s);
     let title_style = if playing { Style::default().fg(t.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(t.text) };
     let tw = c[1].saturating_sub(mark.width() + 2);
-    let mut spans = vec![num, Span::styled(pad(&title, tw), title_style), Span::styled(pad(mark, mark.width() + 2), Style::default().fg(t.accent))];
+    let mut spans = vec![num, Span::styled(pad(&title, tw), title_style), Span::styled(pad(&mark, mark.width() + 2), Style::default().fg(t.accent))];
     if c[2] > 0 {
         spans.push(Span::styled(pad(&s.artist, c[2].saturating_sub(2)), dim(t)));
         spans.push(Span::raw("  "));
@@ -445,20 +470,23 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
     y += 1;
     label(f, y, "LIBRARY");
     y += 1;
-    for n in NAV_LIBRARY {
+    for n in app.nav_library() {
         item(f, &mut app.hits, y, i, n, n.name());
         y += 1;
         i += 1;
     }
     y += 1;
-    label(f, y, "PLAYLISTS");
-    y += 1;
+    let lists = app.rules.sections.contains(&nori_core::browse::LibrarySection::Playlists);
+    if lists {
+        label(f, y, "PLAYLISTS");
+        y += 1;
+    }
     // Playlists fill the space above the foot, scrolled to keep the selection visible.
     let foot = 5u16;
     let room = bottom.saturating_sub(y + foot) as usize;
     let names: Vec<String> = app.library.playlists.ready().map_or_else(Vec::new, |v| v.iter().map(|p| p.name.clone()).collect());
     let first = i;
-    if names.is_empty() {
+    if names.is_empty() && lists {
         let what = match &app.library.playlists {
             Load::Loading => "Loading…",
             Load::Failed(_) => "Could not load",
@@ -496,7 +524,7 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
         return;
     }
     put(f, Paragraph::new(Span::styled("─".repeat(w), dim(t))), Rect { y: fy, height: 1, ..area });
-    for (k, n) in NAV_BOTTOM.iter().enumerate() {
+    for (k, n) in app.nav_bottom().iter().enumerate() {
         item(f, &mut app.hits, fy + 1 + k as u16, i + k, *n, n.name());
     }
     let (dot, colour, word) = if app.offline {
@@ -661,6 +689,7 @@ fn albums(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool, pi
 }
 
 fn artists(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) {
+    let hearts = app.rules.account;
     let App { library: l, marks, hits, .. } = app;
     let caption = l.artists.ready().map_or(String::new(), |v| crate::text::count(v.len() as u64, "artist", "artists"));
     let body = heading(f, area, "Artists", &caption, t);
@@ -669,7 +698,7 @@ fn artists(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) {
         Load::Ready(v) => {
             let row = |i: usize, w: usize| {
                 let a = &v[i];
-                let heart = if marks.starred(Starrable::Artist, &a.id, a.starred) { " ♥" } else { "" };
+                let heart = if hearts && marks.starred(Starrable::Artist, &a.id, a.starred) { " ♥" } else { "" };
                 spread(vec![Span::styled("  ◉  ", Style::default().fg(t.accent)), Span::styled(a.name.as_str(), bold()), Span::styled(heart, Style::default().fg(t.accent))], Span::styled(crate::text::albums(a.album_count) + " ", dim(t)), w)
             };
             list(f, body, &mut l.artists_sel, v.len(), ListRef::Artists, hits, t, focused, &row);
@@ -681,14 +710,15 @@ fn artists(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) {
 
 fn songs(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) {
     let playing = app.song.as_ref().map(|s| s.id.clone());
-    let App { library: l, marks, hits, .. } = app;
+    let App { library: l, hits, marks, rules, devices, .. } = app;
+    let marks = Marks::of(marks, rules, devices);
     let caption = l.songs.ready().map_or(String::new(), |v| crate::text::count(v.len() as u64, "song", "songs") + if l.songs_more { "+" } else { "" });
     let body = heading(f, area, "Songs", &caption, t);
     match &l.songs {
         Load::Ready(v) if v.is_empty() => empty(f, body, t, "Nothing here yet"),
         Load::Ready(v) => {
             let body = table_head(f, body, t, true);
-            let row = |i: usize, w: usize| song_line(&v[i], marks, i + 1, w, t, playing.as_deref() == Some(v[i].id.as_str()), true);
+            let row = |i: usize, w: usize| song_line(&v[i], &marks, i + 1, w, t, playing.as_deref() == Some(v[i].id.as_str()), true);
             list(f, body, &mut l.songs_sel, v.len(), ListRef::Songs, hits, t, focused, &row);
         }
         Load::Failed(e) => failed(f, body, t, e),
@@ -726,7 +756,8 @@ fn search(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) {
     text(f, Rect { x: note.x + 1, width: note.width.saturating_sub(1), ..note }, &words, style);
     let body = Rect { y: area.y + 5, height: area.height.saturating_sub(5), ..area };
     let playing = app.song.as_ref().map(|s| s.id.clone());
-    let App { search: s, hits, marks, .. } = app;
+    let App { search: s, hits, marks, rules, devices, .. } = app;
+    let marks = Marks::of(marks, rules, devices);
     let lit = focused && !s.editing;
     let mut sel = s.sel;
     let rows = s.rows();
@@ -736,7 +767,7 @@ fn search(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) {
     let len = rows.len();
     let row = |i: usize, w: usize| match &rows[i] {
         SearchRow::Title(title, n) => spread(vec![Span::styled(title.to_string(), bold().fg(t.text))], Span::styled(format!("{n} "), dim(t)), w),
-        SearchRow::Song(song) => song_line(song, marks, 0, w, t, playing.as_deref() == Some(song.id.as_str()), true),
+        SearchRow::Song(song) => song_line(song, &marks, 0, w, t, playing.as_deref() == Some(song.id.as_str()), true),
         SearchRow::Album(a) => {
             let year = if a.year > 0 { format!("{} ", a.year) } else { String::new() };
             spread(vec![Span::styled("  ◫  ", Style::default().fg(t.accent)), Span::styled(a.name.clone(), Style::default().fg(t.text)), Span::styled(format!("  {}", a.artist), dim(t))], Span::styled(year, dim(t)), w)
@@ -820,12 +851,14 @@ fn pill(f: &mut Frame, hits: &mut Vec<(Rect, Hit)>, x: &mut u16, y: u16, end: u1
 fn page(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool, pics: &mut Pics) {
     let images = app.images;
     let playing = app.song.as_ref().map(|s| s.id.clone());
-    let App { pages, hits, shown, marks, .. } = app;
+    let account = app.rules.account;
+    let App { pages, hits, shown, marks, rules, devices, .. } = app;
+    let marks = Marks::of(marks, rules, devices);
     let Some(p) = pages.last_mut() else { return };
     // star: None when the page cannot be starred.
     let (kind, title, sub, caption, art_key, star): (&str, String, String, String, Option<String>, Option<bool>) = match p {
-        Page::Album { detail: Load::Ready(d), .. } => ("ALBUM", d.album.name.clone(), d.album.artist.clone(), crate::text::album_caption(d), d.album.cover_art.clone(), Some(marks.starred(Starrable::Album, &d.album.id, d.album.starred))),
-        Page::Artist { detail: Load::Ready(d), .. } => ("ARTIST", d.artist.name.clone(), crate::text::albums(d.artist.album_count), String::new(), None, Some(marks.starred(Starrable::Artist, &d.artist.id, d.artist.starred))),
+        Page::Album { detail: Load::Ready(d), .. } => ("ALBUM", d.album.name.clone(), d.album.artist.clone(), crate::text::album_caption(d), d.album.cover_art.clone(), Some(marks.stars.starred(Starrable::Album, &d.album.id, d.album.starred))),
+        Page::Artist { detail: Load::Ready(d), .. } => ("ARTIST", d.artist.name.clone(), crate::text::albums(d.artist.album_count), String::new(), None, Some(marks.stars.starred(Starrable::Artist, &d.artist.id, d.artist.starred))),
         Page::Playlist { detail: Load::Ready(d), .. } => ("PLAYLIST", d.playlist.name.clone(), d.playlist.owner.clone().unwrap_or_default(), crate::text::playlist_caption(d), None, None),
         Page::Album { detail: Load::Failed(e), .. } | Page::Artist { detail: Load::Failed(e), .. } | Page::Playlist { detail: Load::Failed(e), .. } => {
             return failed(f, area, t, e);
@@ -855,10 +888,13 @@ fn page(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool, pics
         let end = words.x + words.width;
         pill(f, hits, &mut x, y, end, "▶ Play", true, Button::PlayAll, t);
         pill(f, hits, &mut x, y, end, "⤮ Shuffle", false, Button::ShuffleAll, t);
-        if let Some(on) = star {
+        // Hearts and downloads are the account's.
+        if let Some(on) = star.filter(|_| account) {
             pill(f, hits, &mut x, y, end, if on { "♥ Favorite" } else { "♡ Favorite" }, false, Button::Star, t);
         }
-        pill(f, hits, &mut x, y, end, "↓ Download", false, Button::Download, t);
+        if account {
+            pill(f, hits, &mut x, y, end, "↓ Download", false, Button::Download, t);
+        }
         let back = "‹ Back";
         if x + back.width() as u16 <= end {
             let r = Rect { x, y, width: back.width() as u16, height: 1 };
@@ -874,13 +910,13 @@ fn page(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool, pics
             let body = table_head(f, body, t, false);
             list(f, body, sel, songs.len(), ListRef::Page, hits, t, focused, &|i, w| {
                 let n = if multi { songs[i].disc_number as usize * 100 + songs[i].track as usize } else { songs[i].track as usize };
-                song_line(&songs[i], marks, if n > 0 { n } else { i + 1 }, w, t, playing.as_deref() == Some(songs[i].id.as_str()), false)
+                song_line(&songs[i], &marks, if n > 0 { n } else { i + 1 }, w, t, playing.as_deref() == Some(songs[i].id.as_str()), false)
             });
         }
         Page::Playlist { detail: Load::Ready(d), sel, .. } => {
             let songs = &d.songs;
             let body = table_head(f, body, t, true);
-            list(f, body, sel, songs.len(), ListRef::Page, hits, t, focused, &|i, w| song_line(&songs[i], marks, i + 1, w, t, playing.as_deref() == Some(songs[i].id.as_str()), true));
+            list(f, body, sel, songs.len(), ListRef::Page, hits, t, focused, &|i, w| song_line(&songs[i], &marks, i + 1, w, t, playing.as_deref() == Some(songs[i].id.as_str()), true));
         }
         Page::Artist { detail: Load::Ready(d), sel, .. } => {
             let albums = &d.albums;
@@ -1236,6 +1272,7 @@ fn devices(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
         }
         DeviceRow::Jam if d.jam.is_some() => spread(vec![Span::styled("◉ ", Style::default().fg(t.accent)), name(&crate::text::jam_strip(listeners), true)], Span::styled(crate::text::JAM_INVITE, dim(&t)), w),
         DeviceRow::Jam => Line::from(vec![Span::styled("◉ ", Style::default().fg(t.accent)), Span::styled(crate::text::JAM_START, Style::default().fg(t.text))]),
+        DeviceRow::Join => Line::from(vec![Span::styled("+ ", Style::default().fg(t.accent)), Span::styled(crate::text::JAM_JOIN, Style::default().fg(t.text))]),
     });
     devices.sel = sel;
     let mut y = body.y + body.height + 1;
@@ -1363,50 +1400,65 @@ fn words_kind(kind: nori_core::automix::planner::TransitionKind) -> &'static str
 
 fn queue(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     let t = app.theme;
-    let Some(q) = app.queue.as_ref().filter(|q| q.len > 0 || app.devices.jam.is_some()) else {
+    let rows = app.queue_rows();
+    if rows.is_empty() {
         let lines = vec![Line::from(Span::styled("The queue is empty", bold())), Line::from(Span::styled("enter plays, a adds to the queue", dim(&t)))];
         put(f, Paragraph::new(lines).alignment(Alignment::Center), centred(area, area.width, 2));
         return;
-    };
-    let secs: u64 = q.songs.iter().map(|s| s.duration as u64).sum();
-    let mut modes = String::new();
-    if q.shuffle {
-        modes.push_str(" · shuffle");
     }
-    match q.repeat {
-        crate::app::REPEAT_ONE => modes.push_str(" · repeat one"),
-        crate::app::REPEAT_ALL => modes.push_str(" · repeat all"),
-        _ => {}
+    if let Some(q) = &app.queue {
+        let secs: u64 = q.songs.iter().map(|s| s.duration as u64).sum();
+        let mut modes = String::new();
+        if q.shuffle {
+            modes.push_str(" · shuffle");
+        }
+        match q.repeat {
+            crate::app::REPEAT_ONE => modes.push_str(" · repeat one"),
+            crate::app::REPEAT_ALL => modes.push_str(" · repeat all"),
+            _ => {}
+        }
+        text(f, Rect { height: 1, ..area }, &format!("{}{modes}", crate::text::songs_caption(q.len, secs)), dim(&t));
     }
-    text(f, Rect { height: 1, ..area }, &format!("{}{modes}", crate::text::songs_caption(q.len, secs)), dim(&t));
     let body = Rect { y: area.y + 2, height: area.height.saturating_sub(2), ..area };
-    let rows = app.queue_rows();
     let listeners: Vec<String> = app.devices.listeners().iter().map(|m| crate::text::jam_member(&m.name, m.role)).collect();
     let note = app.downloads_note();
+    let along = app.along_note();
     let chosen = app.queue_sel.at;
     let App { queue, queue_sel, hits, devices, .. } = app;
-    let q = queue.as_ref().expect("checked");
-    let current = q.index;
-    let by_hand: std::collections::HashSet<u32> = q.queued.iter().copied().collect();
-    let pending = devices.jam.as_ref().map_or(&[][..], |j| j.pending.as_slice());
+    let current = queue.as_ref().map_or(-1, |q| q.index);
+    let by_hand: HashSet<u32> = queue.as_ref().map_or_else(HashSet::new, |q| q.queued.iter().copied().collect());
+    let asks = devices.asks();
+    let hosting = devices.jam.as_ref().is_some_and(|j| j.hosting);
+    let strip = devices.jam_strip().unwrap_or_default();
+    let here = devices.listening() != nori_core::remote::Listening::Watching;
+    let playing_here = devices.listening() == nori_core::remote::Listening::Playing;
     let accent = Style::default().fg(t.accent);
     list(f, body, queue_sel, rows.len(), ListRef::Queue, hits, &t, focused, &|row, w| match rows[row] {
-        QueueRow::Jam => spread(vec![Span::styled("◉ ", accent), Span::styled(crate::text::jam_strip(listeners.len()), accent.add_modifier(Modifier::BOLD))], Span::styled(crate::text::JAM_INVITE, dim(&t)), w),
+        QueueRow::Jam => spread(vec![Span::styled("◉ ", accent), Span::styled(strip.clone(), accent.add_modifier(Modifier::BOLD))], Span::styled(if hosting { crate::text::JAM_INVITE } else { "" }, dim(&t)), w),
         QueueRow::Listeners => Line::from(Span::styled(fit(&format!("  {}", listeners.join(", ")), w).into_owned(), Style::default().fg(t.text))),
+        QueueRow::Listen => {
+            // Asked for, it is lit whether or not the host lets it play (the note under it says why not).
+            let words = if playing_here { crate::text::PLAYING_HERE } else { crate::text::LISTEN_HERE };
+            let (keys, style) = if here { (crate::text::STOP_KEYS, accent.add_modifier(Modifier::BOLD)) } else { (crate::text::LISTEN_KEYS, Style::default().fg(t.text)) };
+            spread(vec![Span::styled("  ♪ ", accent), Span::styled(words, style)], Span::styled(if row == chosen { keys } else { "" }, dim(&t)), w)
+        }
+        QueueRow::AlongNote(n) => Line::from(Span::styled(format!("{:>w$}{}", "", along[n], w = crate::app::QUEUE_NOTE_INDENT), dim(&t))),
+        QueueRow::Asking => Line::from(Span::styled(format!("  {}", crate::text::YOU_ASKED), dim(&t).add_modifier(Modifier::BOLD))),
         // The keys show on the request chosen.
         QueueRow::Ask(k) => {
-            let p = &pending[k];
-            let keys = if rows.get(chosen).and_then(|r| r.ask()) == Some(k) { crate::text::JAM_DECIDE } else { "" };
-            let asked = vec![Span::styled("  ? ", accent), Span::styled(p.song.title.clone(), Style::default().fg(t.text)), Span::styled(crate::text::jam_asked(&p.from_name), dim(&t))];
+            let p = asks[k];
+            let keys = if hosting && rows.get(chosen).and_then(|r| r.ask()) == Some(k) { crate::text::JAM_DECIDE } else { "" };
+            let who = if hosting { crate::text::jam_asked(&p.from_name) } else { crate::text::jam_waiting(devices.host()) };
+            let asked = vec![Span::styled("  ? ", accent), Span::styled(p.song.title.clone(), Style::default().fg(t.text)), Span::styled(who, dim(&t))];
             spread(asked, Span::styled(keys, dim(&t)), w)
         }
         QueueRow::Downloads(_, n) => {
             let mark = if n == 0 { "☁ " } else { "  " };
             Line::from(Span::styled(format!("{:>w$}{}", mark, note[n], w = crate::app::QUEUE_NOTE_INDENT), dim(&t)))
         }
-        QueueRow::End => Line::from(vec![Span::styled("  ✕ ", dim(&t)), Span::styled(crate::text::JAM_END, dim(&t))]),
+        QueueRow::End => Line::from(vec![Span::styled("  ✕ ", dim(&t)), Span::styled(if hosting { crate::text::JAM_END } else { crate::text::JAM_LEAVE }, dim(&t))]),
         QueueRow::Song(i) => {
-            let Some(s) = q.songs.get(i) else { return Line::from("") };
+            let Some(s) = queue.as_ref().and_then(|q| q.songs.get(i)) else { return Line::from("") };
             let playing = i as i32 == current;
             let mark = if playing { "▶ " } else if by_hand.contains(&(i as u32)) { "+ " } else { "  " };
             let title_style = if playing { Style::default().fg(t.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(t.text) };
@@ -1590,14 +1642,15 @@ fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
     if let Some((_, name)) = &app.devices.active {
         said.push(format!("⇄ {}", crate::text::playing_on(name)));
     }
-    if app.devices.jam.is_some() {
-        said.push(format!("◉ {}", crate::text::jam_strip(app.devices.listeners().len())));
+    if let Some(strip) = app.devices.jam_strip() {
+        said.push(format!("◉ {strip}"));
     }
     if !said.is_empty() {
         let line = format!(" {} ", said.join(" · "));
         let r = Rect { x: area.x + 2, width: (line.width() as u16).min(area.width.saturating_sub(4)), height: 1, ..area };
         text(f, r, &line, Style::default().fg(t.accent).add_modifier(Modifier::BOLD));
-        app.hits.push((r, Hit::Button(Button::Panel(Panel::Devices))));
+        // A guest's jam is in the queue panel.
+        app.hits.push((r, Hit::Button(Button::Panel(if app.guest() { Panel::Queue } else { Panel::Devices }))));
     }
     let l1 = Rect { y: area.y + 1, height: 1, ..area };
     let l2 = Rect { y: area.y + 2, height: 1, ..area };
@@ -1610,10 +1663,12 @@ fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
         let lw = left_w as usize - 2;
         match &app.song {
             Some(s) => {
-                let on = app.starred(Starrable::Song, &s.id, s.starred);
-                let hr = Rect { x: area.x + 1, width: 2, ..l1 };
-                put(f, Paragraph::new(Span::styled(if on { "♥ " } else { "♡ " }, Style::default().fg(if on { t.accent } else { t.dim }))), hr);
-                app.hits.push((hr, Hit::Button(Button::StarSong)));
+                if app.rules.account {
+                    let on = app.starred(Starrable::Song, &s.id, s.starred);
+                    let hr = Rect { x: area.x + 1, width: 2, ..l1 };
+                    put(f, Paragraph::new(Span::styled(if on { "♥ " } else { "♡ " }, Style::default().fg(if on { t.accent } else { t.dim }))), hr);
+                    app.hits.push((hr, Hit::Button(Button::StarSong)));
+                }
                 put(f, Paragraph::new(Span::styled(fit(&s.title, lw.saturating_sub(2)).into_owned(), bold())), Rect { x: area.x + 3, width: left_w.saturating_sub(3), ..l1 });
                 text(f, Rect { x: area.x + 3, width: left_w.saturating_sub(3), ..l2 }, &s.artist, dim(&t));
             }
@@ -1631,10 +1686,12 @@ fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
         ("⏭", Style::default().fg(t.text), Button::Next),
         (repeat, lit(app.repeat() != crate::app::REPEAT_OFF), Button::Repeat),
     ];
+    // The jam's playback is its host's: a guest has no controls.
+    let controls = if app.guest() { &controls[..0] } else { &controls[..] };
     let gap = 3u16;
     let total: u16 = controls.iter().map(|c| c.0.width() as u16).sum::<u16>() + gap * 4;
     let mut x = mid.x + mid.width.saturating_sub(total) / 2;
-    for (label, style, b) in controls {
+    for &(label, style, b) in controls {
         let cw = label.width() as u16;
         if x + cw > mid.x + mid.width {
             break;
@@ -1668,7 +1725,9 @@ fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
         let r = Rect { x, width: bar_w, ..l2 };
         put(f, Paragraph::new(bar), r);
         app.seek_rect = r;
-        app.hits.push((r, Hit::Seek));
+        if !app.guest() {
+            app.hits.push((r, Hit::Seek));
+        }
         x += bar_w + 1;
     }
     text(f, Rect { x, width: b.width() as u16, ..l2 }, &b, dim(&t));
@@ -1815,6 +1874,26 @@ fn overlay(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
             let r = centred(area, w, lines.len() as u16 + 4);
             let inner = popup(f, r, Span::styled(crate::text::INVITE_TITLE, Style::default().fg(t.accent).add_modifier(Modifier::BOLD)), t);
             put(f, Paragraph::new(lines).alignment(Alignment::Center), Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner });
+        }
+        Overlay::Join { text: typed, error, busy } => {
+            let w = 72.min(area.width);
+            let r = centred(area, w, 7);
+            let inner = popup(f, r, Span::styled(crate::text::JOIN_TITLE, Style::default().fg(t.accent).add_modifier(Modifier::BOLD)), t);
+            let iw = inner.width.saturating_sub(2) as usize;
+            // The end of a long link, where typing goes.
+            let shown: String = typed.chars().rev().take(iw.saturating_sub(1)).collect::<Vec<_>>().into_iter().rev().collect();
+            let (said, style) = match (error, *busy) {
+                (Some(e), _) => (e.clone(), Style::default().fg(Color::LightRed)),
+                (None, true) => (crate::text::JOINING.to_string(), dim(t)),
+                (None, false) => (String::new(), dim(t)),
+            };
+            let lines = vec![
+                Line::from(Span::styled(crate::text::JOIN_HOW, dim(t))),
+                Line::from(Span::styled(format!("{shown}▏"), Style::default().fg(t.text))),
+                Line::from(""),
+                Line::from(Span::styled(said, style)),
+            ];
+            put(f, Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }), Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner });
         }
         Overlay::Input { title, text: typed, secret, .. } => {
             let r = centred(area, 60, 3);

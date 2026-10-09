@@ -143,8 +143,6 @@ pub mod own {
     pub const VOLUME: &str = "desktop.volume";
     /// Output device name; empty for the system default.
     pub const DEVICE: &str = "desktop.device";
-    /// The profile open before a jam was joined, opened again on leaving it.
-    pub const BEFORE_JAM: &str = "desktop.beforeJam";
 
     pub fn text(key: &str) -> Option<String> {
         crate::session::app().settings.app_value(key).filter(|v| !v.is_empty())
@@ -200,7 +198,6 @@ impl Session {
         let out = Arc::new(move |s: Said| to.send(Msg::From(id, Box::new(worded(s)))));
         let v = own::number(own::VOLUME, 1.0);
         let (output, level) = sound(own::text(own::DEVICE).as_deref(), v);
-        let kind = if nori_core::remote::is_guest_key(&profile.api_key) { DeviceKind::Guest } else { DeviceKind::Desktop };
         let o = nori_host::session::Open {
             queue: app().clone(),
             data,
@@ -212,7 +209,7 @@ impl Session {
             covers: true,
             offline: false,
             mpris,
-            device: nori_core::remote::RemoteMe { name: nori_host::device_name(), kind },
+            device: nori_core::remote::RemoteMe { name: nori_host::device_name(), kind: DeviceKind::Desktop },
             discovery: None,
             out,
         };

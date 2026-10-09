@@ -231,6 +231,7 @@ impl Runner {
                 let keep = (app.mouse, app.images, app.card_covers, app.volume, app.protocol, app.offline, app.server.clone(), app.settings.own.data.clone());
                 *app = App::new(prefs);
                 (app.mouse, app.images, app.card_covers, app.volume, app.protocol, app.offline, app.server, app.settings.own.data) = keep;
+                app.rules = self.session.as_ref().map(|s| s.rules.clone()).unwrap_or_default();
                 self.remote_read(app);
                 self.follow(app);
             }
@@ -313,6 +314,31 @@ impl Runner {
                 }
             }
             Msg::Remote | Msg::Jam(_) => self.remote_read(app),
+            // The guest profile opens in place of the user's own, which opens again on leaving.
+            Msg::Joined(Ok(pass)) => {
+                let guest = nori_host::jam_joined(&crate::backend::app().settings, pass.clone(), crate::text::JAM_GUEST);
+                prefs_changed(app);
+                self.open(app, guest);
+                app.go(View::Home);
+                return;
+            }
+            Msg::Left => {
+                match nori_host::jam_left(&crate::backend::app().settings) {
+                    Some(p) => {
+                        prefs_changed(app);
+                        self.open(app, p);
+                        app.go(View::Home);
+                    }
+                    None => {
+                        if let Some(s) = self.session.take() {
+                            s.close();
+                        }
+                        prefs_changed(app);
+                        app.view = View::Login;
+                    }
+                }
+                return app.say(crate::text::JAM_LEFT, false);
+            }
             Msg::LoggedIn(Ok(p)) => {
                 let mut prefs = crate::backend::app().settings.current().unwrap_or_default();
                 prefs.servers.retain(|s| !(s.url == p.url && s.user == p.user));
@@ -329,28 +355,32 @@ impl Runner {
         app.handle(m);
     }
 
-    /// Reads the other devices, the device playing and the hosted jam into `app`. Playback moving to
-    /// another device or back starts the player over from what it then shows.
+    /// Reads the other devices, the device playing and the jam hosted or joined into `app`. Playback
+    /// moving to another device or back starts the player over from what it then shows; a jam guest's
+    /// player shows the jam.
     fn remote_read(&mut self, app: &mut App) {
         let Some(s) = &self.session else { return };
         let remote = s.remote();
-        let jams = crate::backend::app().settings.prefs(|p| p.jam);
+        let guest = s.guest;
+        let jams = guest || crate::backend::app().settings.prefs(|p| p.jam);
         let unsupported = remote.as_ref().is_some_and(|r| r.relay() == RelaySupport::Unsupported);
         let d = &mut app.devices;
-        d.on = remote.is_some();
+        // A guest's music is the jam's: it moves to no other device.
+        d.on = remote.is_some() && !guest;
         d.jams = jams && d.on && !unsupported;
-        d.jams_unsupported = jams && unsupported;
-        d.list = remote.as_ref().map(|r| r.devices()).unwrap_or_default();
+        d.jams_unsupported = jams && d.on && unsupported;
+        d.list = remote.as_ref().filter(|_| d.on).map(|r| r.devices()).unwrap_or_default();
         if let Some(r) = &remote {
             let names = nori_core::remote::device_names(d.list.clone(), r.me(), crate::text::kind_words());
             d.list.iter_mut().zip(names).for_each(|(x, name)| x.name = name);
         }
-        let jam = remote.as_ref().filter(|_| jams).and_then(|r| r.jam_view().filter(|v| v.hosting).map(|v| (v, r.jam_added())));
+        let jam = remote.as_ref().filter(|_| jams).and_then(|r| r.jam_view().filter(|v| v.hosting || guest).map(|v| (v, r.jam_added())));
         (d.jam, d.added) = jam.map_or_else(Default::default, |(v, added)| (Some(v), added));
-        let e = s.elsewhere();
+        let e = if guest { s.jam_playing() } else { s.elsewhere() };
         let moved = e.is_some() != self.elsewhere.is_some();
-        d.active = e.as_ref().map(|e| (e.mirror.id.clone(), e.mirror.name.clone()));
-        d.hearts = e.as_ref().map(|e| e.mirror.rows.iter().map(|r| (r.song.id.clone(), r.song.starred)).collect()).unwrap_or_default();
+        let device = e.as_ref().filter(|_| !guest);
+        d.active = device.map(|e| (e.mirror.id.clone(), e.mirror.name.clone()));
+        d.hearts = device.map(|e| e.mirror.rows.iter().map(|r| (r.song.id.clone(), r.song.starred)).collect()).unwrap_or_default();
         match &e {
             Some(e) => {
                 app.queue = Some(e.view());
@@ -378,7 +408,8 @@ impl Runner {
     /// song changed; or another device's while it plays.
     fn follow(&mut self, app: &mut App) {
         let Some(s) = &self.session else { return };
-        if let Some(r) = s.remote() {
+        // A guest follows its jam all along.
+        if let Some(r) = s.remote().filter(|_| !s.guest) {
             r.watch(app.panel == Some(Panel::Devices));
         }
         if let Some(e) = &self.elsewhere {
@@ -502,6 +533,14 @@ impl Runner {
                 app.say(if on { "Covers on (from the next song or page; restart to fetch covers again)" } else { "Covers off" }, false);
                 return;
             }
+            Cmd::JoinJam(link) => {
+                let (http, tx) = (self.http.clone(), self.tx.clone());
+                nori_host::spawn("nori-jam-join", move || {
+                    let joined = nori_host::jam_join(http, &crate::backend::app().settings, link, &nori_host::device_name());
+                    let _ = tx.send(Msg::Joined(joined.map_err(|e| crate::text::net_error(&e))));
+                });
+                return;
+            }
             Cmd::Login(draft) => {
                 let (http, tx) = (self.http.clone(), self.tx.clone());
                 std::thread::spawn(move || {
@@ -545,7 +584,8 @@ impl Runner {
             Cmd::Seek(ms) => s.seek(ms),
             Cmd::Volume(v) => {
                 s.set_volume(v);
-                if self.elsewhere.is_none() {
+                // A guest's volume is this computer's, while the player shows the jam.
+                if self.elsewhere.is_none() || s.guest {
                     own::keep(own::VOLUME, v.to_string());
                 }
                 app.volume = v;
@@ -579,6 +619,12 @@ impl Runner {
             Cmd::JamDecide(request, accept) => {
                 if let Some(r) = s.remote() {
                     r.jam_act(Op::Decide { request, accept });
+                }
+            }
+            Cmd::LeaveJam => s.jam_leave(),
+            Cmd::Listen(on) => {
+                if let Some(r) = s.remote() {
+                    r.listen(on);
                 }
             }
             Cmd::Level(level, v) => sound_edited(s, app, crate::backend::app().settings.edit_level(level, v).map(|(e, _)| e)),
@@ -624,7 +670,7 @@ impl Runner {
                     }
                 }
             }
-            Cmd::Quit | Cmd::Mouse(_) | Cmd::Images(_) | Cmd::CardCovers(_) | Cmd::Device(_) | Cmd::Login(_) | Cmd::SwitchServer(_) | Cmd::Setting(..) => {}
+            Cmd::Quit | Cmd::Mouse(_) | Cmd::Images(_) | Cmd::CardCovers(_) | Cmd::Device(_) | Cmd::Login(_) | Cmd::SwitchServer(_) | Cmd::Setting(..) | Cmd::JoinJam(_) => {}
         }
     }
 

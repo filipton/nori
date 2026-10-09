@@ -42,6 +42,13 @@ impl Remotes {
         Some(Elsewhere { mirror, remote })
     }
 
+    /// The jam this device is a guest in, as [`crate::session::Session::jam_playing`] shows it.
+    pub(crate) fn jam_playing(&self) -> Option<Elsewhere> {
+        let remote = self.get()?;
+        let mirror = remote.jam_playing()?;
+        Some(Elsewhere { mirror, remote })
+    }
+
     /// Notes whether another device plays now; true when it just started to.
     fn mirroring(&self, on: bool) -> bool {
         let was = self.mirroring.swap(on, Ordering::Relaxed);

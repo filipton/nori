@@ -5,7 +5,7 @@ use nori_core::lyrics_sources::LyricsOrigin;
 use nori_core::settings::{BandMark, EqBypass};
 use nori_core::transport::{FailureKind, NetError};
 use nori_core::remote::wire::{DeviceKind, Refusal, Role};
-use nori_core::remote::{KindWords, RemoteDevice};
+use nori_core::remote::{KindWords, Listening, RemoteDevice};
 use nori_core::{AlbumDetail, PlaylistDetail, PresetKind, Song};
 
 /// "3:07", or "1:02:03" from an hour.
@@ -307,6 +307,46 @@ pub const JAM_FAILED: &str = "Couldn't start the jam. Jams need octo-fiesta in f
 pub const INVITE_TITLE: &str = " Invite to the jam · any key closes ";
 pub const INVITE_HOW: &str = "Scan with a phone's camera, or send the link:";
 pub const INVITE_ROOM: &str = "Make the window bigger to show the QR code.";
+
+// A guest's.
+pub const JAM_GUEST: &str = "Jam";
+pub const JAM_JOIN: &str = "Join a jam";
+pub const JOIN_TITLE: &str = " Join a jam · enter joins, esc drops ";
+pub const JOIN_HOW: &str = "Paste the invite link the host sent you:";
+pub const JOINING: &str = "Joining…";
+pub const NOT_AN_INVITE: &str = "That is not a jam invite. Paste the whole link the host sent you.";
+pub const JAM_LEAVE: &str = "Leave the jam";
+pub const JAM_LEFT: &str = "You left the jam";
+pub const LISTEN_HERE: &str = "Listen here";
+pub const PLAYING_HERE: &str = "Playing here";
+pub const LISTEN_KEYS: &str = "⏎ listen";
+pub const STOP_KEYS: &str = "⏎ stop";
+pub const YOU_ASKED: &str = "You asked for";
+/// Beside a song a guest asked for, until the host takes it.
+pub const ASKED: &str = "Asked";
+
+pub fn jam_join_failed(e: &str) -> String {
+    format!("Couldn't join the jam ({e})")
+}
+
+/// The jam a guest is in, as the player bar and the queue say it: "Jam · Desk · 2 listening".
+pub fn jam_guest_strip(host: &str, n: usize) -> String {
+    format!("Jam · {host} · {}", jam_listening(n))
+}
+
+/// Beside a song a guest asked for: " · waiting for Desk".
+pub fn jam_waiting(host: &str) -> String {
+    format!(" · waiting for {host}")
+}
+
+/// Why a guest who asked to listen along does not.
+pub fn jam_along(l: Listening) -> &'static str {
+    match l {
+        Listening::Watching | Listening::Playing => "",
+        Listening::HostOff => "The host doesn't let guests listen along right now. You can still ask for songs.",
+        Listening::ServerOff => "This server doesn't let guests listen along. You can still ask for songs.",
+    }
+}
 
 /// Who listens in the jam: "2 listening".
 pub fn jam_listening(n: usize) -> String {
