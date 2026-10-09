@@ -524,7 +524,7 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
         return;
     }
     put(f, Paragraph::new(Span::styled("─".repeat(w), dim(t))), Rect { y: fy, height: 1, ..area });
-    for (k, n) in app.nav_bottom().iter().enumerate() {
+    for (k, n) in crate::app::NAV_BOTTOM.iter().enumerate() {
         item(f, &mut app.hits, fy + 1 + k as u16, i + k, *n, n.name());
     }
     let (dot, colour, word) = if app.offline {

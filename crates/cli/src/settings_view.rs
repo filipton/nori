@@ -123,6 +123,8 @@ pub struct Facts {
     pub folders: Vec<MusicFolder>,
     /// Output device names.
     pub devices: Vec<String>,
+    /// What the open profile offers: a jam guest's settings are this device's own.
+    pub rules: nori_core::browse::ProfileRules,
 }
 
 /// A page line: group heading, section title or row.
@@ -406,7 +408,19 @@ fn off_or(v: &str, words: impl Fn(&str) -> String) -> String {
 pub fn page(id: &str, p: &StoredPrefs, s: &SettingsState, f: &Facts, own: &Own) -> Page {
     let b = Build { p, s };
     let title = GROUPS.iter().find(|g| g.id == id).map_or(id, |g| g.title).to_string();
+    use nori_core::browse::SettingsPart;
+    let part = match id {
+        OWN => SettingsPart::Look,
+        "sound" => SettingsPart::Sound,
+        "playback" => SettingsPart::Playback,
+        "library" => SettingsPart::Library,
+        "lyrics" => SettingsPart::Lyrics,
+        "server" => SettingsPart::Profiles,
+        "storage" => SettingsPart::Storage,
+        _ => SettingsPart::About,
+    };
     let sections = match id {
+        _ if !f.rules.settings.contains(&part) => Vec::new(),
         OWN => own_page(&b, own, f),
         "sound" => sound(&b),
         "playback" => playback(&b, f),
@@ -676,6 +690,9 @@ fn server(b: &Build, f: &Facts) -> Vec<Section> {
             Row::Server { id: s.id.clone(), label: nori_core::settings::label(&s.name, &s.url), detail, active }
         })
         .collect();
+    if !f.rules.settings.contains(&nori_core::browse::SettingsPart::ServerOptions) {
+        return vec![section("Accounts", accounts)];
+    }
     accounts.push(Row::Button { title: "Add a server".into(), action: Act::AddServer });
     let mut out = vec![section("Accounts", accounts)];
     let mut this = Vec::new();
@@ -701,13 +718,15 @@ fn quality(v: &str) -> String {
 fn storage(b: &Build, f: &Facts) -> Vec<Section> {
     let s = &f.storage;
     let bytes = text::bytes;
-    let quality_rows = vec![
-        b.choice("wifi", "Streaming quality", true, quality),
-        b.choice("download", "Download quality", true, quality),
-        b.choice("parallelDownloads", "Parallel downloads", true, |v| v.to_string()),
-        action("Download everything", "Every indexed song".into(), "Download", f.indexed.0 > 0, Chore::DownloadLibrary),
-        Row::Link { title: "Downloads".into(), status: format!("{} songs, {}", s.download_songs, bytes(s.downloads)), action: Act::Downloads },
-    ];
+    let mut quality_rows = vec![b.choice("wifi", "Streaming quality", true, quality)];
+    if f.rules.settings.contains(&nori_core::browse::SettingsPart::Downloads) {
+        quality_rows.extend([
+            b.choice("download", "Download quality", true, quality),
+            b.choice("parallelDownloads", "Parallel downloads", true, |v| v.to_string()),
+            action("Download everything", "Every indexed song".into(), "Download", f.indexed.0 > 0, Chore::DownloadLibrary),
+            Row::Link { title: "Downloads".into(), status: format!("{} songs, {}", s.download_songs, bytes(s.downloads)), action: Act::Downloads },
+        ]);
+    }
     let cache = vec![
         b.choice("cacheMb", "Stream cache limit", true, |v| match v.parse::<i32>() {
             Ok(mb) if mb % 1024 == 0 => format!("{} GB", mb / 1024),
@@ -1014,6 +1033,28 @@ impl EqRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A jam guest's settings are this computer's: the profiles to switch back with, sound, look and
+    /// caches, but nothing of the account's or the host's server.
+    #[test]
+    fn a_guest_sees_only_this_computers_settings() {
+        let prefs = StoredPrefs::default();
+        let state = settings_model::state(&prefs, settings_model::Output::default(), &crate::backend::app().settings.model);
+        let titles = |rules: nori_core::browse::ProfileRules| -> Vec<String> {
+            let facts = Facts { folders: vec![MusicFolder { id: "1".into(), name: "A".into() }, MusicFolder { id: "2".into(), name: "B".into() }], rules, ..Facts::default() };
+            let pages = GROUPS.iter().map(|g| page(g.id, &prefs, &state, &facts, &Own::default()));
+            pages.flat_map(|p| p.sections.into_iter().flat_map(|s| std::iter::once(s.title.clone()).chain(s.rows.iter().map(|r| row_words(r).0)).collect::<Vec<_>>())).collect()
+        };
+        let account = titles(nori_core::browse::profile_rules(false));
+        let guest = titles(nori_core::browse::profile_rules(true));
+        for kept in ["Accounts", "Streaming quality", "Stream cache", "Colors from the cover"] {
+            assert!(account.iter().any(|t| t == kept) && guest.iter().any(|t| t == kept), "{kept}");
+        }
+        for gone in ["Music folder", "Download quality", "Downloads"] {
+            assert!(account.iter().any(|t| t == gone) && !guest.iter().any(|t| t == gone), "{gone}");
+        }
+        assert!(guest.len() < account.len());
+    }
 
     fn every_row(prefs: &StoredPrefs) -> Vec<(&'static str, Row)> {
         let state = settings_model::state(prefs, settings_model::Output::default(), &crate::backend::app().settings.model);

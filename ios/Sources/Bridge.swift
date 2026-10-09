@@ -118,12 +118,14 @@ struct Now {
 }
 
 /// What the open profile offers (`nori_ios_rules`): a jam guest's asks the host for what it plays, and has
-/// nothing of the account's (hearts, playlists, downloads, the settings).
+/// nothing of the account's (hearts, playlists, downloads, its settings).
 struct Rules {
     var asks = false
     var account = true
     /// The library's sections, as the core's LibrarySection numbers.
     var sections: Set<Int> = Set(0...11)
+    /// The parts of the settings it opens, as the core's SettingsPart numbers (1: the server's own options).
+    var settings: Set<Int> = Set(0...10)
 
     init() {}
 
@@ -131,6 +133,7 @@ struct Rules {
         asks = d["asks"] as? Bool ?? false
         account = d["account"] as? Bool ?? true
         sections = Set(d["sections"] as? [Int] ?? [])
+        settings = Set(d["settings"] as? [Int] ?? [])
     }
 }
 

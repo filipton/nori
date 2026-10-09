@@ -423,5 +423,6 @@ fn facts(core: &nori_core::Core, client: &nori_core::client::Client, store: &nor
         },
         folders,
         devices: CpalOutput::devices(),
+        rules: core.rules(),
     }
 }

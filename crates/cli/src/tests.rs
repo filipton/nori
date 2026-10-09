@@ -1204,9 +1204,10 @@ fn a_guest_browses_the_hosts_library_and_asks_for_songs() {
     let row = |text: &str| s.lines().find(|l| l.contains(text)).unwrap_or_else(|| panic!("{text} missing:\n{s}")).to_string();
     assert!(row("Two").contains("Asked"), "the song this guest asked for:\n{s}");
     assert!(!row("One ").contains("Asked") && !row("Three").contains('♥'), "another's request, and no hearts:\n{s}");
-    for gone in ["Downloads", "PLAYLISTS", "Equalizer", "Settings"] {
+    for gone in ["Downloads", "PLAYLISTS"] {
         assert!(!s.contains(gone), "{gone} is the account's:\n{s}");
     }
+    assert!(s.contains("Equalizer") && s.contains("Settings"), "this computer's own, a guest's too:\n{s}");
     assert!(s.contains("◉ Jam · Desk · 2 listening") && !s.contains('⏮') && !s.contains('⤮'), "the jam, and no controls:\n{s}");
 
     // Picking a song plays it, which the session asks the host for; the account's keys do nothing.
@@ -1214,7 +1215,7 @@ fn a_guest_browses_the_hosts_library_and_asks_for_songs() {
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.cmds, [Cmd::Play { songs, start: 0, shuffle: false, from: Some(nori_core::PageOrigin::new(nori_core::OriginKind::Songs, "")) }]);
     a.cmds.clear();
-    for k in ['f', 'D', ' ', 'n', 's', 'i', '5', '7'] {
+    for k in ['f', 'D', ' ', 'n', 's', 'i', '5'] {
         key(&mut a, KeyCode::Char(k));
     }
     assert!(a.cmds.is_empty() && a.view == View::Songs, "{:?} {:?}", a.cmds, a.view);

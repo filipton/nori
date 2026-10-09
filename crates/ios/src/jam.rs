@@ -20,10 +20,12 @@ pub const JOIN_CLOSED: i32 = 2;
 /// The invite is to the jam this iPod hosts.
 pub const JOIN_OWN: i32 = 3;
 
-/// `r` for the app: `{"asks", "account", "sections": [LibrarySection as numbers, in order]}`.
+/// `r` for the app: `{"asks", "account", "sections": [LibrarySection as numbers, in order], "settings":
+/// [SettingsPart as numbers]}`.
 fn rules_json(r: &ProfileRules) -> Value {
     let sections: Vec<u8> = r.sections.iter().map(|s| *s as u8).collect();
-    json!({ "asks": r.asks, "account": r.account, "sections": sections })
+    let settings: Vec<u8> = r.settings.iter().map(|s| *s as u8).collect();
+    json!({ "asks": r.asks, "account": r.account, "sections": sections, "settings": settings })
 }
 
 /// What the open profile offers (a jam guest's: the host's library, its picks asked of the host), as JSON
@@ -125,7 +127,7 @@ mod tests {
     #[test]
     fn a_guest_has_the_hosts_library_and_no_account() {
         let guest = rules_json(&nori_core::browse::profile_rules(true));
-        assert_eq!(guest, json!({ "asks": true, "account": false, "sections": [0, 2, 3, 7] }));
+        assert_eq!(guest, json!({ "asks": true, "account": false, "sections": [0, 2, 3, 7], "settings": [0, 2, 3, 4, 5, 7, 9, 10] }));
         let account = rules_json(&nori_core::browse::profile_rules(false));
         assert_eq!((account["asks"].clone(), account["account"].clone(), account["sections"].as_array().map(Vec::len)), (json!(false), json!(true), Some(12)));
     }

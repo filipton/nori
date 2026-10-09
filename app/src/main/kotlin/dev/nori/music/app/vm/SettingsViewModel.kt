@@ -105,7 +105,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     // ---- the settings screen (SettingsPages.kt), on the core's settings model (nori-settings, settings_model.rs) ----
 
     /** The groups the root of Settings lists, in [res]'s language. */
-    fun settingsGroups(res: android.content.res.Resources): List<SettingsGroup> = dev.nori.music.app.vm.settingsGroups(res)
+    fun settingsGroups(res: android.content.res.Resources): List<SettingsGroup> = dev.nori.music.app.vm.settingsGroups(res, nori.rules.settings)
 
     private var search: Pair<android.content.res.Resources, SettingsSearch>? = null
 
@@ -113,7 +113,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     fun searchSettings(query: String, res: android.content.res.Resources): List<SettingsHit> {
         val s = search?.takeIf { it.first === res }?.second
             ?: SettingsSearch(res, nori.settings.core.settingsState(false, false).beatModel !is dev.nori.music.ffi.settings.BeatModel.Unavailable).also { search = res to it }
-        return s.find(query)
+        return s.find(query, nori.rules.settings)
     }
 
     /**
@@ -121,7 +121,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
      * its rules make of the settings, asked only when they or [facts] change.
      */
     fun settingsPage(id: String, p: StoredPrefs, facts: SettingsFacts, res: android.content.res.Resources): SettingsPage? =
-        settingsPage(res, id, p, facts, nori.settings.core.settingsState(facts.dac.bitPerfect, facts.dac.device != null))
+        settingsPage(res, id, p, facts, nori.settings.core.settingsState(facts.dac.bitPerfect, facts.dac.device != null), nori.rules.settings)
 
     /** Whether the settings action [action] asks first, and what it says; null for one done at once. */
     fun actionAsks(action: String, res: android.content.res.Resources): ActionAsk? = settingsActionAsks(res, action, settingsFacts.value)

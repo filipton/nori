@@ -241,6 +241,32 @@ pub enum LibrarySection {
     Downloads,
 }
 
+/// A part of the settings, as each client groups them under its own headings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+#[repr(u8)]
+pub enum SettingsPart {
+    /// The saved profiles, to switch between.
+    Profiles,
+    /// Adding a profile, and the open server's own options (music folder, second address's bitrate,
+    /// syncing its library).
+    ServerOptions,
+    /// Theme, motion, screen and size.
+    Look,
+    /// Transitions, controls, the queue.
+    Playback,
+    Sound,
+    Lyrics,
+    /// The account's lists, playlists, search, history, scrobbling and remote control.
+    Library,
+    /// Streaming quality and what is fetched ahead.
+    Streaming,
+    Downloads,
+    /// The caches on this device.
+    Storage,
+    About,
+}
+
 /// What the app offers over a profile. A jam guest's is the normal app over the host's library, read
 /// only: what it plays or queues is asked of the host, and nothing in it is the account's.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,6 +284,9 @@ pub struct ProfileRules {
     pub indexed: bool,
     /// The library's sections, in the order their pills run.
     pub sections: Vec<LibrarySection>,
+    /// The parts of the settings it opens: a guest's are this device's own, nothing that acts on the
+    /// host's account or server.
+    pub settings: Vec<SettingsPart>,
 }
 
 /// An account's.
@@ -267,12 +296,19 @@ impl Default for ProfileRules {
     }
 }
 
+const SETTINGS_PARTS: [SettingsPart; 11] = {
+    use SettingsPart::*;
+    [Profiles, ServerOptions, Look, Playback, Sound, Lyrics, Library, Streaming, Downloads, Storage, About]
+};
+
 /// The rules of a jam `guest`'s profile, or of an account's.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn profile_rules(guest: bool) -> ProfileRules {
     use LibrarySection::*;
     let sections = if guest { vec![Albums, Artists, Songs, Genres] } else { vec![Albums, Favourites, Artists, Songs, Playlists, Smart, History, Genres, Decades, Folders, Radio, Downloads] };
-    ProfileRules { asks: guest, account: !guest, indexed: !guest, sections }
+    let account_only = [SettingsPart::ServerOptions, SettingsPart::Library, SettingsPart::Downloads];
+    let settings = SETTINGS_PARTS.into_iter().filter(|p| !guest || !account_only.contains(p)).collect();
+    ProfileRules { asks: guest, account: !guest, indexed: !guest, sections, settings }
 }
 
 /// A decade's years, first and last, from its first year.
@@ -425,6 +461,15 @@ mod tests {
         let every = HomeRow::every().to_vec();
         assert_eq!(home_rows_shown(every.clone(), true), every);
         assert_eq!(home_rows_shown(every, false), [HomeRow::Recent, HomeRow::Newest, HomeRow::Frequent, HomeRow::Random]);
+    }
+
+    /// A guest opens this device's settings, and the profiles to switch back with, but nothing of the
+    /// host's account or server.
+    #[test]
+    fn a_guest_opens_only_this_devices_settings() {
+        use SettingsPart::*;
+        assert_eq!(profile_rules(false).settings, SETTINGS_PARTS);
+        assert_eq!(profile_rules(true).settings, [Profiles, Look, Playback, Sound, Lyrics, Streaming, Storage, About]);
     }
 
     #[test]

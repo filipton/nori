@@ -900,7 +900,7 @@ impl App {
         v.extend(NAV_TOP);
         v.extend(self.nav_library());
         v.extend((0..playlists).map(Nav::Playlist));
-        v.extend(self.nav_bottom());
+        v.extend(NAV_BOTTOM);
         v
     }
 
@@ -918,10 +918,6 @@ impl App {
         NAV_LIBRARY.into_iter().filter(|n| has(*n)).collect()
     }
 
-    /// The equalizer and the settings, where the profile is the account's.
-    pub fn nav_bottom(&self) -> &'static [Nav] {
-        if self.rules.account { &NAV_BOTTOM } else { &[] }
-    }
 
     /// A jam guest's: its picks are asked of the host, and the player shows the jam, which it controls
     /// none of.

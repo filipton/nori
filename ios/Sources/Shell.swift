@@ -22,9 +22,9 @@ final class ShellController: UITabBarController {
         view.addSubview(mini)
     }
 
-    /// The tabs the open profile has: the settings are the account's, not a jam guest's.
+    /// The tabs the open profile has: Settings where it opens any (a jam guest's: this iPod's own).
     @objc private func lay() {
-        let shown = tabs.filter { Core.shared.rules.account || !($0.viewControllers.first is SettingsPage) }
+        let shown = tabs.filter { !Core.shared.rules.settings.isEmpty || !($0.viewControllers.first is SettingsPage) }
         guard viewControllers?.count != shown.count else { return }
         setViewControllers(shown, animated: false)
     }
@@ -652,7 +652,7 @@ final class SettingsPage: UITableViewController {
             case 1: navigationController?.pushViewController(EqualizerPage(), animated: true)
             case 2: navigationController?.pushViewController(SoundPage(), animated: true)
             case 4: JamJoin.ask(from: self)
-            default: nori_ios_sync()
+            default: if Core.shared.rules.settings.contains(1) { nori_ios_sync() }
             }
             return
         }

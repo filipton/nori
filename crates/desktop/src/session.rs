@@ -345,6 +345,7 @@ impl Session {
                 devices: CpalOutput::devices(),
                 device: own::text(own::DEVICE).unwrap_or_default(),
                 syncing: false,
+                rules: core.rules(),
             })));
         });
     }

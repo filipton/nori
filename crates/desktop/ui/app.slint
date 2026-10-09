@@ -3383,7 +3383,7 @@ component SidebarContent inherits Rectangle {
         Rectangle {
             height: 6px;
         }
-        if !root.guest: SideItem {
+        SideItem {
             text: "Settings";
             icon: Icons.gear;
             chosen: root.view == 8 || root.view == 9;

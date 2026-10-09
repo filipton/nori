@@ -129,12 +129,7 @@ class Nori private constructor(private val context: Context) {
         val pass = lifted { dev.nori.music.ffi.jamJoin(transport, link, dev.nori.music.remote.Remotes.deviceName(context)) }
         val guest = dev.nori.music.settings.newServer(dev.nori.music.ffi.settings.serverNewId())
             .copy(name = context.getString(dev.nori.music.core.R.string.jam_profile), url = pass.url, apiKey = pass.apiKey)
-        // A guest of one jam at a time: the profile of a jam left behind goes.
-        val before = settings.value.server?.takeIf { dev.nori.music.ffi.remote.isGuestKey(it.apiKey) }
-        withContext(Dispatchers.Main) {
-            activate(guest)
-            before?.let { removeServer(it.id) }
-        }
+        withContext(Dispatchers.Main) { activate(guest) }
     }
 
     /** The invite [joinJam] was given is to the jam this phone hosts. */
@@ -213,8 +208,13 @@ class Nori private constructor(private val context: Context) {
         accepted
     }
 
-    /** Makes [profile] the active server (adding or replacing it in the saved list). */
+    /**
+     * Makes [profile] the active server (adding or replacing it in the saved list). A jam guest's profile
+     * switched away from is left: the jam is told, and the profile goes.
+     */
     fun activate(profile: SavedServer) {
+        val leftJam = settings.value.server?.takeIf { dev.nori.music.ffi.remote.isGuestKey(it.apiKey) && it.id != profile.id }
+        if (leftJam != null) remotes.leave()
         player.clear()
         // The old core is dropped, not closed: a request may still be using it, and the cleaner frees it.
         synchronized(lock) { opened = null }
@@ -223,6 +223,7 @@ class Nori private constructor(private val context: Context) {
         library.onServerChanged()
         library.onProfileChanged()
         remotes.profileChanged()
+        leftJam?.let { removeServer(it.id) }
     }
 
     /** Settings that do not need the server asked again: headers, Wi-Fi only, music folder, name. */

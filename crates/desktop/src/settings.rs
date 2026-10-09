@@ -1,6 +1,7 @@
 //! Settings pages, following Android's SettingsPages.kt minus phone-only settings. Settings, options and
 //! values come from the core's `settings_model`; rows report back the setting name and the picked value.
 
+use nori_core::browse::SettingsPart;
 use nori_core::settings::{EqLevel, GainMode, StoredPrefs, EQ_RANGES};
 use nori_core::settings_model::{self, BeatModel, SettingsState};
 use slint::{Color, ModelRc, SharedString, VecModel};
@@ -37,6 +38,8 @@ pub struct Facts {
     pub devices: Vec<String>,
     pub device: String,
     pub syncing: bool,
+    /// What the open profile offers: a jam guest's settings are this computer's own.
+    pub rules: nori_core::browse::ProfileRules,
 }
 
 /// Row name of the output device choice (a desktop setting, not the core's).
@@ -535,7 +538,9 @@ impl Build<'_> {
                 Row { kind: SERVER, name: sv.id.clone(), title: nori_core::settings::label(&sv.name, &sv.url), detail, on: active, enabled: true, ..Default::default() }
             })
             .collect();
-        accounts.push(Row { kind: BUTTON, name: ADD_SERVER.into(), title: "Add server".into(), enabled: true, ..Default::default() });
+        if self.f.rules.settings.contains(&SettingsPart::ServerOptions) {
+            accounts.push(Row { kind: BUTTON, name: ADD_SERVER.into(), title: "Add server".into(), enabled: true, ..Default::default() });
+        }
         let mut out = vec![("Accounts", accounts)];
         if self.f.folders.len() > 1 {
             let mut o = vec![("All".to_string(), String::new())];
@@ -573,7 +578,7 @@ fn service(id: &str) -> Option<(&'static str, &'static str)> {
 pub fn rows(p: &StoredPrefs, f: &Facts, tab: i32) -> ModelRc<SettingRow> {
     let s = settings_model::state(p, settings_model::Output::default(), &crate::session::app().settings.model);
     let b = Build { p, s: &s, f };
-    let groups = match tab {
+    let mut groups = match tab {
         1 => b.playing(),
         2 => b.sound(),
         3 => b.lyrics(),
@@ -582,6 +587,7 @@ pub fn rows(p: &StoredPrefs, f: &Facts, tab: i32) -> ModelRc<SettingRow> {
         6 => b.servers(),
         _ => b.general(),
     };
+    groups.retain(|(title, _)| f.rules.settings.contains(&part(tab, title)));
     let mut out = Vec::new();
     for (title, rows) in groups {
         out.push(SettingRow { kind: HEADING, title: title.into(), ..Default::default() });
@@ -616,6 +622,22 @@ pub fn rows(p: &StoredPrefs, f: &Facts, tab: i32) -> ModelRc<SettingRow> {
         }
     }
     ModelRc::new(VecModel::from(out))
+}
+
+/// The part of the settings section `title` of tab `tab` is.
+fn part(tab: i32, title: &str) -> SettingsPart {
+    match (tab, title) {
+        (1, _) => SettingsPart::Playback,
+        (2, _) => SettingsPart::Sound,
+        (3, _) => SettingsPart::Lyrics,
+        (4, _) => SettingsPart::Library,
+        (5, "Downloads") => SettingsPart::Downloads,
+        (5, "Storage") => SettingsPart::Storage,
+        (5, _) => SettingsPart::Streaming,
+        (6, "This server") => SettingsPart::ServerOptions,
+        (6, _) => SettingsPart::Profiles,
+        _ => SettingsPart::Look,
+    }
 }
 
 /// The value of option `index` of `target`.
