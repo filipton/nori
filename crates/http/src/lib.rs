@@ -3,14 +3,18 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::Read;
-use std::sync::Arc;
+use std::future::Future;
+use std::io::{self, Read, Write};
+use std::net::{Shutdown, TcpStream};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use nori_core::transport::{Exchange, FailureKind, Transport, TransportError, TransportResponse, USER_AGENT};
 use nori_engine::{Body, ByteSource, Cancel, OpenError};
 use ureq::unversioned::resolver::DefaultResolver;
-use ureq::unversioned::transport::{Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout};
+use ureq::unversioned::transport::{Buffers, ConnectProxyConnector, ConnectionDetails, Connector, Either, LazyBuffers, NextTimeout, RustlsConnector};
 use ureq::{Agent, RequestBuilder};
 
 /// Largest API response body read.
@@ -28,7 +32,8 @@ impl Http {
             .timeout_connect(Some(Duration::from_secs(10)))
             .timeout_recv_response(Some(Duration::from_secs(30)))
             .build();
-        let agent = Agent::with_parts(config, DefaultConnector::new().chain(Cancellable), DefaultResolver::default());
+        let connector = ().chain(ConnectProxyConnector::default()).chain(Sockets).chain(RustlsConnector::default()).chain(Cancellable);
+        let agent = Agent::with_parts(config, connector, DefaultResolver::default());
         Arc::new(Http { agent })
     }
 
@@ -119,20 +124,24 @@ fn response(r: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<
     Ok(TransportResponse { status, body })
 }
 
-/// Blocking inside: desktop clients call the core from their own threads, and a future that is ready on
-/// first poll needs no runtime.
+/// Each request runs on a thread of its own ([`Call`]), so dropping its future ends it.
 #[async_trait::async_trait]
 impl Transport for Http {
     async fn get(&self, url: String, timeout_ms: u32) -> Result<TransportResponse, TransportError> {
-        response(configured(self.agent.get(&url), &HashMap::new(), timeout_ms).call())
+        let agent = self.agent.clone();
+        Call::run(move || response(configured(agent.get(&url), &HashMap::new(), timeout_ms).call())).await
     }
 
     async fn send(&self, request: Exchange) -> Result<TransportResponse, TransportError> {
-        let (headers, timeout) = (&request.headers, request.timeout_ms);
-        response(match &request.json {
-            Some(json) => configured(self.agent.post(&request.url).header("Content-Type", "application/json"), headers, timeout).send(json.as_bytes()),
-            None => configured(self.agent.get(&request.url), headers, timeout).call(),
+        let agent = self.agent.clone();
+        Call::run(move || {
+            let (headers, timeout) = (&request.headers, request.timeout_ms);
+            response(match &request.json {
+                Some(json) => configured(agent.post(&request.url).header("Content-Type", "application/json"), headers, timeout).send(json.as_bytes()),
+                None => configured(agent.get(&request.url), headers, timeout).call(),
+            })
         })
+        .await
     }
 
     fn address_changed(&self) {}
@@ -142,7 +151,91 @@ impl Transport for Http {
     }
 }
 
+type Answer = Result<TransportResponse, TransportError>;
+
+/// A core request on a thread of its own. Its future waits without blocking the caller; dropped before
+/// the answer, it shuts the request's socket, so a held poll ends at once rather than when it is answered.
+#[derive(Default)]
+struct Call(Mutex<CallState>);
+
+#[derive(Default)]
+struct CallState {
+    answer: Option<Answer>,
+    waker: Option<Waker>,
+    /// The socket the request uses now.
+    socket: Option<TcpStream>,
+    given_up: bool,
+}
+
+impl Call {
+    fn run(request: impl FnOnce() -> Answer + Send + 'static) -> Waiting {
+        let call = Arc::new(Call::default());
+        let on = call.clone();
+        let spawned = std::thread::Builder::new().name("nori-http".into()).spawn(move || {
+            CALL.with(|c| *c.borrow_mut() = Some(on.clone()));
+            let answer = request();
+            let mut s = on.state();
+            s.socket = None;
+            s.answer = Some(answer);
+            if let Some(w) = s.waker.take() {
+                w.wake();
+            }
+        });
+        if let Err(e) = spawned {
+            call.state().answer = Some(Err(TransportError::Failed { kind: FailureKind::Other, detail: Some(e.to_string()) }));
+        }
+        Waiting(call)
+    }
+
+    fn state(&self) -> MutexGuard<'_, CallState> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The request goes on over `stream`; Err once it was given up.
+    fn uses(&self, stream: &TcpStream) -> io::Result<()> {
+        let mut s = self.state();
+        if s.given_up {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "given up"));
+        }
+        s.socket = Some(stream.try_clone()?);
+        Ok(())
+    }
+}
+
+/// A [`Call`]'s answer to come.
+struct Waiting(Arc<Call>);
+
+impl Future for Waiting {
+    type Output = Answer;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Answer> {
+        let mut s = self.0.state();
+        match s.answer.take() {
+            Some(a) => Poll::Ready(a),
+            None => {
+                s.waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+    }
+}
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        let mut s = self.0.state();
+        if s.answer.is_none() {
+            s.given_up = true;
+            if let Some(socket) = s.socket.take() {
+                let _ = socket.shutdown(Shutdown::Both);
+            }
+        }
+    }
+}
+
 thread_local! {
+    /// The core request this thread runs: a [`Call`]'s thread.
+    static CALL: RefCell<Option<Arc<Call>>> = const { RefCell::new(None) };
+
     /// The engine request this thread is currently blocked on. Thread-local because ureq pools
     /// connections across requests and has no per-call hook into the transport.
     static CURRENT_CANCEL: RefCell<Option<Cancel>> = const { RefCell::new(None) };
@@ -159,15 +252,120 @@ fn with_cancel<R>(cancel: &Cancel, f: impl FnOnce() -> R) -> R {
 /// Poll interval for cancellation while blocked on a socket (ureq cannot be cancelled from another thread).
 const CANCEL_POLL: Duration = Duration::from_millis(250);
 
+/// Opens TCP connections as [`Socket`]s (ureq's own TCP connector keeps its socket to itself); a CONNECT
+/// proxy's connection, made before, goes on as it is.
+#[derive(Debug)]
+struct Sockets;
+
+impl<In: ureq::unversioned::transport::Transport> Connector<In> for Sockets {
+    type Out = Either<In, Socket>;
+
+    fn connect(&self, details: &ConnectionDetails, chained: Option<In>) -> Result<Option<Self::Out>, ureq::Error> {
+        if let Some(c) = chained {
+            return Ok(Some(Either::A(c)));
+        }
+        let timeout = details.timeout.not_zero().map(|t| *t);
+        let mut failed = None;
+        for addr in &details.addrs {
+            let connected = match timeout {
+                Some(t) => TcpStream::connect_timeout(addr, t),
+                None => TcpStream::connect(addr),
+            };
+            match connected {
+                Ok(stream) => {
+                    stream.set_nodelay(details.config.no_delay())?;
+                    let buffers = LazyBuffers::new(details.config.input_buffer_size(), details.config.output_buffer_size());
+                    return Ok(Some(Either::B(Socket { stream, buffers, call: Weak::new(), read_timeout: None, write_timeout: None })));
+                }
+                Err(e) if e.kind() == io::ErrorKind::TimedOut => failed = Some(ureq::Error::Timeout(ureq::Timeout::Connect)),
+                Err(e) => failed = Some(e.into()),
+            }
+        }
+        Err(failed.unwrap_or(ureq::Error::ConnectionFailed))
+    }
+}
+
+/// A TCP connection that gives the [`Call`] using it a handle to shut it down.
+#[derive(Debug)]
+struct Socket {
+    stream: TcpStream,
+    buffers: LazyBuffers,
+    /// The call last given the handle.
+    call: Weak<Call>,
+    /// The socket's timeouts as last set, so they are set only when they change.
+    read_timeout: Option<Duration>,
+    write_timeout: Option<Duration>,
+}
+
+/// Sets `timeout` through `set` unless `now` already is it.
+fn set_timeout(now: &mut Option<Duration>, timeout: NextTimeout, set: impl FnOnce(Option<Duration>) -> io::Result<()>) -> io::Result<()> {
+    let wanted = timeout.not_zero().map(|t| *t);
+    if *now != wanted {
+        set(wanted)?;
+        *now = wanted;
+    }
+    Ok(())
+}
+
+impl Socket {
+    /// Gives this thread's call (if any) the handle, once; Err when that call was given up meanwhile.
+    fn in_call(&mut self) -> io::Result<()> {
+        CALL.with(|c| {
+            let Some(call) = c.borrow().clone() else { return Ok(()) };
+            if self.call.as_ptr() != Arc::as_ptr(&call) {
+                call.uses(&self.stream)?;
+                self.call = Arc::downgrade(&call);
+            }
+            Ok(())
+        })
+    }
+}
+
+fn timed_out(e: io::Error, timeout: NextTimeout) -> ureq::Error {
+    match e.kind() {
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => ureq::Error::Timeout(timeout.reason),
+        _ => e.into(),
+    }
+}
+
+impl ureq::unversioned::transport::Transport for Socket {
+    fn buffers(&mut self) -> &mut dyn Buffers {
+        &mut self.buffers
+    }
+
+    fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Result<(), ureq::Error> {
+        self.in_call()?;
+        set_timeout(&mut self.write_timeout, timeout, |t| self.stream.set_write_timeout(t))?;
+        self.stream.write_all(&self.buffers.output()[..amount]).map_err(|e| timed_out(e, timeout))
+    }
+
+    fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
+        self.in_call()?;
+        set_timeout(&mut self.read_timeout, timeout, |t| self.stream.set_read_timeout(t))?;
+        let read = self.stream.read(self.buffers.input_append_buf()).map_err(|e| timed_out(e, timeout))?;
+        self.buffers.input_appended(read);
+        Ok(read > 0)
+    }
+
+    /// A connection at rest has nothing to read: anything there, or its end, means it is done.
+    fn is_open(&mut self) -> bool {
+        if self.stream.set_nonblocking(true).is_err() {
+            return false;
+        }
+        let at_rest = matches!(self.stream.read(&mut [0]), Err(e) if e.kind() == io::ErrorKind::WouldBlock);
+        at_rest && self.stream.set_nonblocking(false).is_ok()
+    }
+}
+
 /// Connector wrapping every connection in [`CancellableTransport`].
 #[derive(Debug)]
 struct Cancellable;
 
-impl Connector<Box<dyn ureq::unversioned::transport::Transport>> for Cancellable {
+impl<In: ureq::unversioned::transport::Transport> Connector<In> for Cancellable {
     type Out = CancellableTransport;
 
-    fn connect(&self, _: &ConnectionDetails, chained: Option<Box<dyn ureq::unversioned::transport::Transport>>) -> Result<Option<CancellableTransport>, ureq::Error> {
-        Ok(chained.map(CancellableTransport))
+    fn connect(&self, _: &ConnectionDetails, chained: Option<In>) -> Result<Option<CancellableTransport>, ureq::Error> {
+        Ok(chained.map(|t| CancellableTransport(Box::new(t))))
     }
 }
 
