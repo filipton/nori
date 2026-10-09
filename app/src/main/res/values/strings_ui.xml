@@ -638,6 +638,7 @@
     <string name="jam_added_by">Added by %1$s</string>
     <string name="jam_failed">Couldn’t start the Jam. Jams need octo-fiesta in front of your server.</string>
     <string name="jam_join_failed">Couldn’t join the Jam</string>
+    <string name="jam_own">That’s your own Jam</string>
     <string name="jam_leave">Leave</string>
     <string name="jam_listen_here">Listen here</string>
     <string name="jam_playing_here">Playing here</string>

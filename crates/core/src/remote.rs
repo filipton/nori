@@ -1288,6 +1288,13 @@ impl Remote {
         }
     }
 
+    /// Whether `link` invites to the jam this device hosts: joining it would make this device a guest
+    /// of itself, and the jam would end with the profile it was opened from.
+    pub fn hosts_invite(&self, link: String) -> bool {
+        let Some((_, invite)) = nori_remote::parse_invite(&link) else { return false };
+        self.inner.lock().hosted.as_ref().is_some_and(|h| h.jam.invite == invite)
+    }
+
     /// The jam this device hosts or is a guest in.
     pub fn jam_view(&self) -> Option<JamView> {
         let i = self.inner.lock();

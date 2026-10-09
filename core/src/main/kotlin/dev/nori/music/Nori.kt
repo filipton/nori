@@ -125,6 +125,7 @@ class Nori private constructor(private val context: Context) {
      * leaving drops it again (the profile in use before takes over).
      */
     suspend fun joinJam(link: String) = withContext(Dispatchers.IO) {
+        if (remotes.peek()?.hostsInvite(link) == true) throw OwnJamException()
         val pass = lifted { dev.nori.music.ffi.jamJoin(transport, link, dev.nori.music.remote.Remotes.deviceName(context)) }
         val guest = dev.nori.music.settings.newServer(dev.nori.music.ffi.settings.serverNewId())
             .copy(name = context.getString(dev.nori.music.core.R.string.jam_profile), url = pass.url, apiKey = pass.apiKey)
@@ -135,6 +136,9 @@ class Nori private constructor(private val context: Context) {
             before?.let { removeServer(it.id) }
         }
     }
+
+    /** The invite [joinJam] was given is to the jam this phone hosts. */
+    class OwnJamException : Exception("the jam this device hosts")
 
     /** Leaves the jam this guest profile is in and drops the profile. */
     suspend fun leaveJam() {

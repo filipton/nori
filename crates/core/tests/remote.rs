@@ -1479,3 +1479,19 @@ fn a_guest_leaving_its_jam_stops_playing_along_at_once() {
     assert_eq!(leads.0.lock().len(), given, "the host is followed no more");
     relay.close();
 }
+
+#[test]
+fn a_device_knows_its_own_jams_invite() {
+    let relay = Relay::new();
+    let host = Device::account(&relay, DeviceKind::Phone, "Host");
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    let link = block_on(host.remote.clone().jam_open()).unwrap();
+    let app_link = link.replacen("http://octo:5274/nori/jam#", "nori://jam?", 1);
+    assert!(host.remote.hosts_invite(link.clone()) && host.remote.hosts_invite(app_link));
+    assert!(!desk.remote.hosts_invite(link.clone()), "another device of the account may join");
+    let desks = block_on(desk.remote.clone().jam_open()).unwrap();
+    assert!(!host.remote.hosts_invite(desks));
+    host.remote.clone().jam_close();
+    assert!(!host.remote.hosts_invite(link));
+    relay.close();
+}

@@ -165,6 +165,7 @@ enum JamJoin {
         switch link.withCString({ l in Say.jamGuest.withCString { nori_ios_jam_join(l, $0) } }) {
         case NORI_JOIN_STARTED: Toast.show(Say.joining)
         case NORI_JOIN_NOT_AN_INVITE: Toast.show(Say.notAnInvite)
+        case NORI_JOIN_OWN: Toast.show(Say.ownJam)
         default: waiting = link
         }
     }

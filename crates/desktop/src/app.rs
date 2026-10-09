@@ -1149,8 +1149,11 @@ impl App {
         }
         ui.set_join_busy(true);
         ui.set_join_error("".into());
-        let (http, tx) = (self.http.clone(), self.tx.clone());
-        nori_host::spawn("nori-jam-join", move || tx.send(Msg::Joined(nori_host::jam_join(http, &session::app().settings, link, &nori_host::device_name()).map_err(|e| words::net_error(&e)))));
+        let (http, tx, remote) = (self.http.clone(), self.tx.clone(), self.session.as_ref().and_then(|s| s.remote()));
+        nori_host::spawn("nori-jam-join", move || {
+            let joined = nori_host::jam_join(http, &session::app().settings, link, &nori_host::device_name(), remote.as_deref());
+            tx.send(Msg::Joined(joined.map_err(|e| words::jam_join_failed(&e))))
+        });
     }
 
     /// The guest profile joined with: opened in place of the user's own, which is opened again on leaving.
@@ -1255,7 +1258,7 @@ impl App {
             Msg::Joined(Err(e)) => {
                 let ui = self.ui();
                 ui.set_join_busy(false);
-                ui.set_join_error(words::jam_join_failed(&e).into());
+                ui.set_join_error(e.into());
             }
             Msg::Left => self.left(),
             Msg::Starred => {

@@ -366,6 +366,7 @@ enum Say {
     static let join = "Join"
     static let joining = "Joining…"
     static let notAnInvite = "That is not a jam invite. Paste the whole link the host sent you."
+    static let ownJam = "That's your own jam"
     static func jamJoinFailed(_ why: String) -> String { "Couldn't join the jam (\(why))" }
     static let leaveJam = "Leave"
     static let jamLeft = "You left the jam"

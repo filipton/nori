@@ -331,6 +331,7 @@ int32_t nori_ios_jam_join(const char *link, const char *name);
 #define NORI_JOIN_STARTED 0
 #define NORI_JOIN_NOT_AN_INVITE 1
 #define NORI_JOIN_CLOSED 2
+#define NORI_JOIN_OWN 3
 /// Leaves the jam; report 21 once the guest profile is dropped (flag 1: open the active profile, the
 /// user's own again; 0: none is saved).
 void nori_ios_jam_leave(void);

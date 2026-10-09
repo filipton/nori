@@ -171,8 +171,14 @@ pub const JAM_GUEST: &str = "Jam";
 pub const NOT_AN_INVITE: &str = "That is not a jam invite. Paste the whole link the host sent you.";
 pub const JAM_LEFT: &str = "You left the jam";
 
-pub fn jam_join_failed(e: &str) -> String {
-    format!("Couldn't join the jam ({e})")
+pub const JAM_OWN: &str = "That's your own jam";
+
+/// Why a jam was not joined.
+pub fn jam_join_failed(e: &nori_host::JoinError) -> String {
+    match e {
+        nori_host::JoinError::Own => JAM_OWN.into(),
+        nori_host::JoinError::Failed(e) => format!("Couldn't join the jam ({})", net_error(e)),
+    }
 }
 
 pub fn jam_asked(from: &str) -> String {

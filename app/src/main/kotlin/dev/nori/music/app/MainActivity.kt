@@ -67,7 +67,7 @@ class MainActivity : ComponentActivity() {
         if (!dev.nori.music.ffi.remote.isInvite(link)) return
         lifecycleScope.launch {
             runCatching { Nori.get(this@MainActivity).joinJam(link) }.onFailure {
-                actions.tell(getString(R.string.jam_join_failed))
+                actions.tell(getString(if (it is Nori.OwnJamException) R.string.jam_own else R.string.jam_join_failed))
             }
         }
     }

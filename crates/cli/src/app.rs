@@ -1172,10 +1172,10 @@ impl App {
             Msg::Jam(Err(e)) => self.say(format!("{} ({e})", crate::text::JAM_FAILED), true),
             Msg::Joined(Err(e)) => match &mut self.overlay {
                 Some(Overlay::Join { error, busy, .. }) => {
-                    *error = Some(crate::text::jam_join_failed(&e));
+                    *error = Some(e.clone());
                     *busy = false;
                 }
-                _ => self.say(crate::text::jam_join_failed(&e), true),
+                _ => self.say(e.clone(), true),
             },
             // The runner opens these, and the profiles a jam is joined and left with.
             Msg::From(..) | Msg::Joined(Ok(_)) | Msg::Left => {}

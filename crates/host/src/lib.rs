@@ -50,10 +50,22 @@ pub fn device_name() -> String {
 /// The profile open before a jam was joined, opened again on leaving it (an app value).
 const BEFORE_JAM: &str = "host.beforeJam";
 
-/// Joins the jam `link` invites to (blocking), named as the active profile's user, else `device`.
-pub fn jam_join(transport: Arc<dyn nori_core::transport::Transport>, settings: &Settings, link: String, device: &str) -> Result<JamPass, NetError> {
+/// Why a jam was not joined.
+#[derive(Debug)]
+pub enum JoinError {
+    /// The invite is to the jam this device hosts.
+    Own,
+    Failed(NetError),
+}
+
+/// Joins the jam `link` invites to (blocking), named as the active profile's user, else `device`; never
+/// the one `remote` (this device's) hosts.
+pub fn jam_join(transport: Arc<dyn nori_core::transport::Transport>, settings: &Settings, link: String, device: &str, remote: Option<&nori_core::remote::Remote>) -> Result<JamPass, JoinError> {
+    if remote.is_some_and(|r| r.hosts_invite(link.clone())) {
+        return Err(JoinError::Own);
+    }
     let user = settings.prefs(|p| p.servers.iter().find(|s| s.id == p.active_server_id).map(|s| s.user.clone()).filter(|u| !u.is_empty()));
-    block_on(nori_core::remote::jam_join(transport, link, user.unwrap_or_else(|| device.into())))
+    block_on(nori_core::remote::jam_join(transport, link, user.unwrap_or_else(|| device.into()))).map_err(JoinError::Failed)
 }
 
 /// The guest profile `pass` signs in with, called `name`, made the active one in place of any guest

@@ -1167,7 +1167,7 @@ fn joining_a_jam_with_its_invite_link() {
     assert!(draw(&mut a, 120, 30).contains(crate::text::JOINING));
     key(&mut a, KeyCode::Char('x'));
     assert!(matches!(&a.overlay, Some(Overlay::Join { text, .. }) if text == link), "no typing while it joins");
-    a.handle(Msg::Joined(Err("HTTP 404".into())));
+    a.handle(Msg::Joined(Err(crate::text::jam_join_failed(&nori_host::JoinError::Failed(nori_core::transport::NetError::Http { status: 404 })))));
     let s = draw(&mut a, 120, 30);
     assert!(s.contains("Couldn't join the jam (HTTP 404)") && !s.contains(crate::text::JOINING), "{s}");
     key(&mut a, KeyCode::Esc);
