@@ -429,9 +429,10 @@ native heaps before and after.
   sentence, so each client says it its own way and can be translated. Android
   keeps its words in string resources (`app/` `strings.xml` and `strings_ui.xml`; `core/` `strings.xml`
   for the notifications, the media session and the player's errors), read through `app/ui/Say.kt`, and
-  writes numbers with `core/text/Fmt.kt` (`String.format` in the default locale: Java's rounding and the
-  phone's decimal separator; `FmtTest` runs the vectors the Rust copy was checked against). The terminal
-  client's are `crates/cli/src/text.rs`. Logs, the perf report and the self test are tooling, in English.
+  writes numbers through `core/text/Fmt.kt`, which hands the phone's decimal separator to the core's
+  `nori_model::numbers` (half up on the shortest decimal form, as Java does; its table test holds the
+  vectors) and keeps each second's clock text. The terminal client's words are `crates/cli/src/text.rs`;
+  every client's numbers and unit symbols are `numbers`'. Logs, the perf report and the self test are tooling, in English.
 - **Settings**: the core holds the model only (`nori-settings::settings_model`): every setting's name
   (what `setting_set` takes), its kind (a switch, a choice, a level, text, a colour), its options as
   values ("0.75", "320:mp3", "SYSTEM"), its range and default (`setting_specs`); the values now in the same
@@ -578,7 +579,7 @@ and temporary doors over each twin, three runs, 200 000 calls each after a warm-
 |---|---|---|---|
 | Seek bar step (easing, once-a-pixel pacing) | 14-20 ns | 8 ns (`@CriticalNative`) | Rust (`nori_look::motion`) |
 | One cover-colour blend frame, all 52 colours | 42 µs (Compose `lerp`) | 16 µs | Rust (`nori_look::dress::mix`) |
-| A time label ("3:07"), made the first time a second is shown, then kept (debug build, emulator, 2026-09-25) | 1.2 µs, 120 B (a char array and the string); from the cache 15 ns, nothing | 0.3-0.5 µs, one 24-byte string, over JNI | Kotlin (`Fmt.duration`, cached per second for the process; the seek bar reads the cache) |
+| A time label ("3:07"), made the first time a second is shown, then kept (debug build, emulator, 2026-09-25) | 1.2 µs, 120 B (a char array and the string); from the cache 15 ns, nothing | 0.3-0.5 µs, one 24-byte string, over JNI | Rust (`nori_model::numbers::clock`), cached per second for the process in `Fmt.duration`; the seek bar reads the cache |
 | A small uniffi call | - | 0.1-0.3 µs, no garbage (uniffi's JNI bindings; JNA was 10-25 µs and 1.5-4 KB) | Rust |
 | Decoding a packet | MediaCodec: a hop to the codec process, framework buffer objects per packet | in-process, nothing allocated | Rust (`nori_player::decode`) |
 | Decoding a cover to 300 px (40 real covers, Galaxy S22, arm64, Android 16) | BitmapFactory as Coil drove it: 1.71 ms | `nori-covers`: 0.93 ms decoded whole (0.98 ms with the IDCT shrinking) | Rust (`nori-covers` fetches, keeps and decodes; Kotlin keeps the Bitmaps and draws) |

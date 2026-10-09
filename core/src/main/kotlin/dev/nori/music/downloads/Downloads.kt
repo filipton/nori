@@ -561,7 +561,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
         }
         if (current.isNotEmpty()) part { it.append(current) }
         if (album.isNotEmpty()) part { it.append(res.getString(R.string.notice_album, album)) }
-        part { Fmt.appendSpeed(it, facts[4]) }
+        part { it.append(Fmt.speed(facts[4])) }
         part { appendEta(res, it, facts[5]) }
         return title to text.toString()
     }
@@ -792,7 +792,7 @@ object DownloadLines {
         out.setLength(0)
         out.append(artist)
         if (facts[1] >= 0) out.append(" · ").append(facts[1]).append('%')
-        dotted { Fmt.appendSpeed(it, facts[2]) }
+        dotted { it.append(Fmt.speed(facts[2])) }
         dotted { appendEta(res, it, facts[3]) }
         return out.toString()
     }
@@ -805,7 +805,7 @@ object DownloadLines {
         if (failed > 0) part { it.append(res.getString(R.string.downloads_failed, failed)) }
         if (active > 0) {
             DownloadFacts.speedEta(DownloadsJni.h, facts)
-            part { Fmt.appendSpeed(it, facts[0]) }
+            part { it.append(Fmt.speed(facts[0])) }
             part { appendEta(res, it, facts[1]) }
         }
         if (out.isEmpty()) return res.getString(R.string.downloads_nothing)
@@ -836,7 +836,7 @@ internal fun appendEta(res: Resources, out: StringBuilder, sec: Long) {
     when {
         sec < 0 -> Unit
         sec < 60 -> out.append(res.getString(R.string.eta_seconds, sec.toInt()))
-        else -> out.append(res.getString(R.string.eta_clock, StringBuilder(10).also { Fmt.appendClock(it, sec, false) }))
+        else -> out.append(res.getString(R.string.eta_clock, Fmt.clock(sec, false)))
     }
 }
 

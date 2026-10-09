@@ -2,6 +2,7 @@
 //! values come from the core's `settings_model`; rows report back the setting name and the picked value.
 
 use nori_core::browse::SettingsPart;
+use nori_core::numbers::{self, POINT};
 use nori_core::settings::{EqLevel, GainMode, StoredPrefs, EQ_RANGES};
 use nori_core::settings_model::{self, BeatModel, SettingsState};
 use slint::{Color, ModelRc, SharedString, VecModel};
@@ -136,7 +137,7 @@ fn minus(v: &str) -> String {
 }
 
 fn one(v: f32) -> String {
-    format!("{v:.1}")
+    numbers::fixed(v as f64, 1, false, POINT)
 }
 
 fn percent(v: &str) -> String {
@@ -151,22 +152,6 @@ fn seconds(v: &str) -> String {
 pub fn accent_shown(argb: u32) -> u32 {
     let default = StoredPrefs::default().accent as u32;
     if argb == default { 0xFFFA2D48 } else { argb }
-}
-
-/// "850 B", "38 MB", "2.1 GB".
-pub fn bytes(n: u64) -> String {
-    let n = n as f64;
-    if n < 1024.0 {
-        format!("{n:.0} B")
-    } else if n < 1_048_576.0 {
-        format!("{:.0} KB", n / 1024.0)
-    } else if n < 10_485_760.0 {
-        format!("{:.1} MB", n / 1_048_576.0)
-    } else if n < 1_073_741_824.0 {
-        format!("{:.0} MB", n / 1_048_576.0)
-    } else {
-        format!("{:.1} GB", n / 1_073_741_824.0)
-    }
 }
 
 impl Build<'_> {
@@ -503,12 +488,12 @@ impl Build<'_> {
         ];
         let stored = format!(
             "{} streamed · {} covers · {} lyrics · {} in {} · {} library",
-            bytes(f.stream_bytes),
-            bytes(f.cover_bytes),
-            bytes(f.lyrics_bytes),
-            bytes(f.download_bytes),
+            numbers::bytes(f.stream_bytes as i64, POINT),
+            numbers::bytes(f.cover_bytes as i64, POINT),
+            numbers::bytes(f.lyrics_bytes as i64, POINT),
+            numbers::bytes(f.download_bytes as i64, POINT),
             words::count(f.download_songs, "download", "downloads"),
-            bytes(f.database_bytes)
+            numbers::bytes(f.database_bytes as i64, POINT)
         );
         let storage = vec![
             self.choice("cacheMb", "Space for streamed music", |v| match v.parse::<u32>() {
@@ -518,7 +503,7 @@ impl Build<'_> {
             self.info("Stored on this Mac", stored),
             self.action("Streamed music", "Oldest goes first. Downloads stay.".into(), "Clear", f.stream_bytes > 0, Chore::ClearStream),
             self.action("Covers", "Fetched again when needed.".into(), "Clear", f.cover_bytes > 0, Chore::ClearCovers),
-            self.action("Lyrics", format!("{} found online. Looked up again when needed.", bytes(f.lyrics_bytes)), "Clear", f.lyrics_bytes > 0, Chore::ClearLyrics),
+            self.action("Lyrics", format!("{} found online. Looked up again when needed.", numbers::bytes(f.lyrics_bytes as i64, POINT)), "Clear", f.lyrics_bytes > 0, Chore::ClearLyrics),
         ];
         vec![("Streaming quality", streaming), ("Downloads", downloads), ("Loading ahead", ahead), ("Storage", storage)]
     }

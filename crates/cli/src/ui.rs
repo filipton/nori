@@ -1103,7 +1103,7 @@ fn sliders(f: &mut Frame, area: Rect, rows: &[EqRow], bands: &[usize], p: &nori_
         let cw = (col - 1) as usize;
         let centre = |s: &str| format!("{:^cw$}", fit(s, cw));
         put(f, Paragraph::new(Span::styled(centre(&name), label_style)), Rect { x, y: top + h, width: col - 1, height: 1 });
-        let value = crate::text::signed_db(gain);
+        let value = nori_core::numbers::signed_db(gain, nori_core::numbers::POINT);
         let value_style = if is { Style::default().fg(t.accent) } else { dim(t) };
         put(f, Paragraph::new(Span::styled(centre(&value), value_style)), Rect { x, y: top + h + 1, width: col - 1, height: 1 });
         app.hits.push((Rect { x, y: top, width: col, height: h + 2 }.intersection(area), Hit::Row(ListRef::Eq, i)));

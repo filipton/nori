@@ -1,5 +1,6 @@
 package dev.nori.music.app.vm
 
+import dev.nori.music.text.Fmt
 import android.content.res.Resources
 import dev.nori.music.app.R
 import dev.nori.music.ffi.library.SettingsPart
@@ -107,18 +108,6 @@ fun settingKey(title: String): String {
 /** Each setting's options as values, from the core's model; asked once. */
 private val OPTIONS: Map<String, List<String>> by lazy { settingSpecs().associate { it.name to it.options } }
 private val ACCENTS: List<Long> by lazy { settingSpecs().first { it.kind == SettingKind.COLOUR }.options.map { it.toLong() } }
-
-/** "850 B", "38 MB", "2.1 GB". */
-fun formatBytes(res: Resources, bytes: Long): String = when {
-    bytes < 1024 -> res.getString(R.string.settings_bytes, bytes.toInt())
-    bytes < 1_048_576 -> res.getString(R.string.settings_kilobytes_size, "%.0f".format(bytes / 1024.0))
-    bytes < 10_485_760 -> res.getString(R.string.settings_megabytes_size, "%.1f".format(bytes / 1_048_576.0))
-    bytes < 1_073_741_824 -> res.getString(R.string.settings_megabytes_size, "%.0f".format(bytes / 1_048_576.0))
-    else -> res.getString(R.string.settings_gigabytes_size, "%.1f".format(bytes / 1_073_741_824.0))
-}
-
-/** A decibel figure with its sign, one decimal: "+3.5", "-1.0", and "+0.0" for nothing at all (never "-0.0"). */
-fun signedDb(db: Float): String = "%+.1f".format(if (db == 0f) 0f else db)
 
 /** The groups the root of Settings lists: connect first, then what plays, how it sounds, how it looks; those the profile opens ([parts]). */
 fun settingsGroups(res: Resources, parts: List<SettingsPart>): List<SettingsGroup> =
@@ -376,7 +365,7 @@ fun settingsActionAsks(res: Resources, action: String, f: SettingsFacts): Action
     // What is gone is fetched again from somebody else's services, song by song.
     "clear-lyrics" -> ActionAsk(
         res.getString(R.string.settings_clear_lyrics_title),
-        res.getString(R.string.settings_clear_lyrics_text, formatBytes(res, f.storage.lyricsBytes)),
+        res.getString(R.string.settings_clear_lyrics_text, Fmt.bytes(f.storage.lyricsBytes)),
         res.getString(R.string.settings_clear),
     )
     else -> null
@@ -391,16 +380,16 @@ fun updateWords(res: Resources, s: Updates.State, current: String, installs: Boo
     Updates.State.Checking -> res.getString(R.string.update_checking)
     is Updates.State.UpToDate -> res.getString(R.string.update_latest, current)
     is Updates.State.Available ->
-        if (installs) res.getString(R.string.update_available, s.update.version, formatBytes(res, s.update.apkBytes.toLong()))
+        if (installs) res.getString(R.string.update_available, s.update.version, Fmt.bytes(s.update.apkBytes.toLong()))
         else res.getString(R.string.update_available_elsewhere, s.update.version)
     is Updates.State.NoApk -> res.getString(R.string.update_no_apk, s.version)
     is Updates.State.CheckFailed -> res.getString(R.string.update_check_failed, s.error.said.orEmpty())
-    is Updates.State.Downloading -> res.getString(R.string.update_downloading, formatBytes(res, s.done), formatBytes(res, s.total))
+    is Updates.State.Downloading -> res.getString(R.string.update_downloading, Fmt.bytes(s.done), Fmt.bytes(s.total))
     is Updates.State.Installing -> res.getString(R.string.update_installing)
     is Updates.State.NeedsPermission -> res.getString(R.string.update_needs_permission)
     is Updates.State.Failed -> when (val why = s.why) {
         is Updates.Failure.Download -> res.getString(R.string.update_failed_download, why.error.said.orEmpty())
-        is Updates.Failure.Size -> res.getString(R.string.update_failed_size, formatBytes(res, why.got), formatBytes(res, why.expected))
+        is Updates.Failure.Size -> res.getString(R.string.update_failed_size, Fmt.bytes(why.got), Fmt.bytes(why.expected))
         Updates.Failure.NotThisApp -> res.getString(R.string.update_failed_not_nori)
         // Android's own message is for the log (it says INSTALL_FAILED_... in capitals): each kind is worded here.
         is Updates.Failure.Install -> res.getString(
@@ -601,7 +590,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
         )
         if (p.replayGain != dev.nori.music.ffi.model.GainMode.OFF) {
             val r = dev.nori.music.settings.EQ.eqRanges.replayGainPreamp
-            volume += SettingRow.Slider("preampDb", str(R.string.settings_overall_level, signedDb(p.preampDb)), p.preampDb, r.min, r.max, true, EqLevel.REPLAY_GAIN_PREAMP)
+            volume += SettingRow.Slider("preampDb", str(R.string.settings_overall_level, Fmt.signedDb(p.preampDb)), p.preampDb, r.min, r.max, true, EqLevel.REPLAY_GAIN_PREAMP)
             volume += choice("loudnessTarget", R.string.settings_loudness_target, fallback = { str(R.string.settings_lufs, minus(float(it))) }) {
                 val words = when (it) {
                     "-18" -> R.string.settings_lufs_replay_gain
@@ -634,7 +623,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
 
     /** Bass boost, virtualizer, volume boost and the compressor: sliders edited in place in the core. */
     fun effects(): List<SettingRow> {
-        fun boost(db: Float) = if (db <= 0f) str(R.string.settings_off) else str(R.string.settings_db, signedDb(db))
+        fun boost(db: Float) = if (db <= 0f) str(R.string.settings_off) else str(R.string.settings_db, Fmt.signedDb(db))
         fun one(v: Float) = "%.1f".format(v)
         val rows = mutableListOf<SettingRow>(
             SettingRow.Slider("bassBoostDb", str(R.string.settings_bass_boost, boost(p.bassBoostDb)), p.bassBoostDb, 0f, 12f, false, EqLevel.BASS_BOOST),
@@ -658,7 +647,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             rows += SettingRow.Slider("compRatio", str(R.string.settings_comp_ratio, one(p.compRatio)), p.compRatio.coerceIn(1f, 10f), 1f, 10f, false, EqLevel.COMP_RATIO)
             rows += SettingRow.Slider("compAttackMs", str(R.string.settings_comp_attack, one(p.compAttackMs)), p.compAttackMs.coerceIn(0.1f, 100f), 0.1f, 100f, false, EqLevel.COMP_ATTACK)
             rows += SettingRow.Slider("compReleaseMs", str(R.string.settings_comp_release, p.compReleaseMs.roundToInt().toString()), p.compReleaseMs.coerceIn(10f, 1000f), 10f, 1000f, false, EqLevel.COMP_RELEASE)
-            rows += SettingRow.Slider("compMakeupDb", str(R.string.settings_comp_makeup, signedDb(p.compMakeupDb)), p.compMakeupDb.coerceIn(0f, 12f), 0f, 12f, false, EqLevel.COMP_MAKEUP)
+            rows += SettingRow.Slider("compMakeupDb", str(R.string.settings_comp_makeup, Fmt.signedDb(p.compMakeupDb)), p.compMakeupDb.coerceIn(0f, 12f), 0f, 12f, false, EqLevel.COMP_MAKEUP)
             rows += SettingRow.Slider("compKneeDb", str(R.string.settings_comp_knee, one(p.compKneeDb)), p.compKneeDb.coerceIn(0f, 12f), 0f, 12f, false, EqLevel.COMP_KNEE)
         }
         // Loudness compensation that follows the volume (ISO 226): off unless asked for.
@@ -879,7 +868,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
         // What lives on this device, and a way to throw the throwaway parts out. Downloads are the permanent
         // copy and are removed where they are listed; the streamed music and the covers rebuild themselves.
         val st = f.storage
-        val bytes = { n: Long -> formatBytes(res, n) }
+        val bytes = Fmt::bytes
         val clearing = str(if (st.busy) R.string.settings_clearing else R.string.settings_clear)
         val stored = str(R.string.settings_stored)
         val storage = listOf(

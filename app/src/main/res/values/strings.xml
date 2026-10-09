@@ -45,10 +45,6 @@
     <string name="settings_megabytes">%1$d MB</string>
     <string name="settings_gigabytes">%1$d GB</string>
     <!-- Sizes on this device. -->
-    <string name="settings_bytes">%1$d B</string>
-    <string name="settings_kilobytes_size">%1$s KB</string>
-    <string name="settings_megabytes_size">%1$s MB</string>
-    <string name="settings_gigabytes_size">%1$s GB</string>
     <!-- A row's button while something is being done. -->
     <string name="settings_clear">Clear</string>
     <string name="settings_clearing">Clearing…</string>

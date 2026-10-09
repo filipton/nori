@@ -230,7 +230,7 @@ private fun GraphicBands(vm: SettingsViewModel, sliders: List<Float>, target: Li
     val gain = ranges.gain
     sliders.forEachIndexed { i, v ->
         Row(Modifier.padding(horizontal = Space.gutter), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            val label = remember(count, i) { bands.getOrNull(i)?.let { say.isoBand(it.labelHz) }.orEmpty() }
+            val label = remember(count, i) { bands.getOrNull(i)?.let { dev.nori.music.text.Fmt.isoBand(it.labelHz) }.orEmpty() }
             Text(label, Modifier.width(56.dp), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             NoriSlider(v, gain.min..gain.max, { x -> vm.setGraphic(i, (x * 2f).roundToInt() / 2f) }, Modifier.weight(1f), enabled = enabled, centred = true)
             Text(

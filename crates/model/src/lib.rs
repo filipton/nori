@@ -1,10 +1,11 @@
-//! Shared types: library records (model.rs), derived display lines (lines.rs), `CoreError`, the log
-//! (alog.rs) and the heap counter (heap.rs).
+//! Shared types: library records (model.rs), derived display lines (lines.rs), numbers as every client
+//! writes them (numbers.rs), `CoreError`, the log (alog.rs) and the heap counter (heap.rs).
 
 pub mod alog;
 pub mod heap;
 pub mod lines;
 pub mod model;
+pub mod numbers;
 
 pub use model::*;
 

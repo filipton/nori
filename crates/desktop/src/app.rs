@@ -1930,7 +1930,7 @@ fn row(s: &Song, index: usize, playing: bool, starred: Option<bool>) -> SongRow 
         album: s.album.as_str().into(),
         artist_id: s.artist_id.clone().unwrap_or_default().into(),
         album_id: s.album_id.clone().unwrap_or_default().into(),
-        time: words::duration(s.duration as i64).into(),
+        time: nori_core::numbers::clock(s.duration as i64, false).into(),
         art: s.cover_art.clone().unwrap_or_default().into(),
         index: index as i32,
         playing,

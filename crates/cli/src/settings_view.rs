@@ -5,6 +5,7 @@
 use crate::text;
 use nori_core::settings::{EqLevel, EqMode, SoundBand, StoredPrefs, EQ_RANGES};
 use nori_core::settings_model::{self, BeatModel, LyricsSource, SettingsState};
+use nori_core::numbers::{self, POINT};
 use nori_core::MusicFolder;
 
 use crate::app::{Cmd, Overlay, Sel, SoundToolCmd, Target, View};
@@ -471,7 +472,7 @@ fn sound(b: &Build) -> Vec<Section> {
         let r = EQ_RANGES.replay_gain_preamp;
         levelling.push(Row::Slider {
             name: "preampDb".into(),
-            label: format!("Pre-amp {} dB", text::signed_db(p.preamp_db)),
+            label: format!("Pre-amp {} dB", numbers::signed_db(p.preamp_db, POINT)),
             value: p.preamp_db,
             min: r.min,
             max: r.max,
@@ -717,7 +718,7 @@ fn quality(v: &str) -> String {
 
 fn storage(b: &Build, f: &Facts) -> Vec<Section> {
     let s = &f.storage;
-    let bytes = text::bytes;
+    let bytes = |b| numbers::bytes(b, POINT);
     let mut quality_rows = vec![b.choice("wifi", "Streaming quality", true, quality)];
     if f.rules.settings.contains(&nori_core::browse::SettingsPart::Downloads) {
         quality_rows.extend([
@@ -883,14 +884,14 @@ impl EqRow {
             EqRow::Layout => ("Bands".into(), format!("‹ {} ›", p.eq_graphic.len())),
             EqRow::Slider(i) => {
                 let label = nori_core::dsp::graphic_bands(p.eq_graphic.len() as u32).get(i).map_or(0.0, |b| b.label_hz);
-                (if label.fract() != 0.0 { format!("{label:.1}") } else { text::hz(label) }, format!("{} dB", text::signed_db(p.eq_graphic.get(i).copied().unwrap_or(0.0))))
+                (numbers::iso_band(label, POINT), format!("{} dB", numbers::signed_db(p.eq_graphic.get(i).copied().unwrap_or(0.0), POINT)))
             }
             EqRow::Presets => ("Presets".into(), "choose ›".into()),
             EqRow::AutoPreamp => ("Automatic pre-amp".into(), on(p.eq_preamp_db.is_none())),
             EqRow::Preamp => ("Pre-amp".into(), text::preamp(p.eq_preamp_db.unwrap_or(0.0), false)),
             EqRow::Band(i) => {
                 let b = p.eq_bands.get(i).copied().unwrap_or(nori_core::settings::band_from(0, 0.0, 0.0, 1.0, 0));
-                (text::band(b.freq, nori_core::settings::band_mark(b.kind as i32, b.channel as i32)), format!("{} dB", text::signed_db(b.gain_db)))
+                (text::band(b.freq, nori_core::settings::band_mark(b.kind as i32, b.channel as i32)), format!("{} dB", numbers::signed_db(b.gain_db, POINT)))
             }
             EqRow::AddBand => ("Add a band".into(), "[ Add ]".into()),
             EqRow::Reset => ("Back to flat".into(), "[ Reset ]".into()),
@@ -905,8 +906,8 @@ impl EqRow {
                 };
                 ("Crossfeed".into(), format!("‹ {name} ›"))
             }
-            EqRow::Crossfeed => ("  Level".into(), if p.crossfeed_db > 0.0 { format!("{} dB", text::signed_db(p.crossfeed_db)) } else { "Off".into() }),
-            EqRow::CrossfeedCut => ("  Cutoff".into(), format!("{} Hz", text::hz(p.crossfeed_hz))),
+            EqRow::Crossfeed => ("  Level".into(), if p.crossfeed_db > 0.0 { format!("{} dB", numbers::signed_db(p.crossfeed_db, POINT)) } else { "Off".into() }),
+            EqRow::CrossfeedCut => ("  Cutoff".into(), format!("{} Hz", numbers::hz(p.crossfeed_hz, POINT))),
             EqRow::Mono => ("Mono".into(), on(p.mono)),
             EqRow::Limiter => ("Limiter".into(), on(p.limiter)),
             EqRow::Ceiling => ("Limiter ceiling".into(), text::ceiling(p.limiter_threshold_db)),

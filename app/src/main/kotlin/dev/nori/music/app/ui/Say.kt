@@ -761,8 +761,6 @@ class Say(private val r: Resources) {
     }
     /** "Cutoff 1265 Hz: how high up the other ear hears", in whole hertz as the core keeps it. */
     fun crossfeedCut(hz: Float): String = r.getString(R.string.eq_crossfeed_cut, Fmt.fixed(hz.toDouble(), 0))
-    /** A graphic band's ISO label: "31.5", "63", "1k", "12.5k". */
-    fun isoBand(hz: Float): String = if (hz < 100f && hz != kotlin.math.floor(hz)) Fmt.fixed(hz.toDouble(), 1) else Fmt.hz(hz)
     /** The band dialog's title: "63 Hz", "1k Hz". */
     fun hzTitle(freq: Float): String = r.getString(R.string.eq_hz_title, Fmt.hz(freq))
     /** "Slope 0.71" for a shelf given by its slope, "Q 1.41" for the rest. */
