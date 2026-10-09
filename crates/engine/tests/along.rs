@@ -172,9 +172,18 @@ struct Pull {
     playing: bool,
     due_ns: i64,
     heard: Vec<f32>,
-    /// (ns, the first frame of `heard` it pulled).
+    /// (ns heard from, the first frame of `heard` it pulled).
     pulls: Vec<(i64, usize)>,
     block: Vec<f32>,
+    /// The output's own delay: a block is heard this long after it is pulled, ns.
+    delay_ns: i64,
+    /// For this long after each resume the card says it holds only what it pulled, not its delay (an
+    /// Android track before its first timestamp), ns.
+    unsure_ns: i64,
+    resumed_ns: i64,
+    resumes: usize,
+    /// When each block was pulled, ns.
+    pulled_at: Option<i64>,
 }
 
 impl common::Device for Pull {
@@ -192,7 +201,8 @@ impl common::Device for Pull {
         self.block.resize(BLOCK * ch, 0.0);
         let waits = feed.engine_waits();
         let got = feed.pull(&mut self.block);
-        self.pulls.push((now_ns, self.heard.len() / ch));
+        self.pulled_at = Some(now_ns);
+        self.pulls.push((now_ns + self.delay_ns, self.heard.len() / ch));
         self.heard.extend_from_slice(&self.block[..got * ch]);
         waits && !feed.engine_waits()
     }
@@ -215,14 +225,19 @@ impl AudioOutput for Card {
         self.0.lock().playing = false;
     }
     fn resume(&mut self) {
-        self.0.lock().playing = true;
+        let mut p = self.0.lock();
+        p.playing = true;
+        p.resumed_ns = self.1.now_ns();
+        p.resumes += 1;
     }
-    /// The block pulled plays from the pull on: what is left of it.
+    /// The block pulled plays from the pull on, after the output's delay: what is left of it.
     fn latency_us(&self) -> u64 {
         let p = self.0.lock();
-        let Some(&(at, _)) = p.pulls.last() else { return 0 };
+        let Some(at) = p.pulled_at else { return 0 };
+        let now = self.1.now_ns();
+        let delay = if now < p.resumed_ns + p.unsure_ns { 0 } else { p.delay_ns };
         let block = BLOCK as i64 * 1_000_000_000 / RATE as i64;
-        ((at + block - self.1.now_ns()).clamp(0, block) / 1000) as u64
+        ((at + block + delay - now).clamp(0, block + delay) / 1000) as u64
     }
     fn takes_float(&mut self) -> bool {
         true
@@ -725,4 +740,25 @@ fn a_guests_own_controls_do_not_move_it() {
         assert_eq!(jam.guests[0].rig.engine.status().state, nori_engine::State::Playing, "it plays on");
     }
     in_step(&mut jam, 0, 4_000, 2.5, 5.0);
+}
+
+/// An output that says it holds less than it does at first (an Android track before its first timestamp):
+/// what it says steps by its 80 ms delay a while after it starts. The guest waits for it to settle, then
+/// trims its way into step instead of starting again.
+#[test]
+fn a_guest_whose_output_settles_late_trims_rather_than_restarts() {
+    let a = song(60.0, 1, None);
+    for unsure_ms in [300, 3_000] {
+        let mut jam = Jam::new(&[("a", &a)], None, Settings::default(), &two_ways()[..1]);
+        {
+            let mut card = jam.guests[0].rig.card.0.lock();
+            card.delay_ns = 80_000_000;
+            card.unsure_ns = unsure_ms * 1_000_000;
+        }
+        jam.host.engine.play_at(0, 0);
+        jam.run(1_000);
+        jam.join(0);
+        in_step(&mut jam, 25_000, 6_000, 2.5, 5.0);
+        assert_eq!(jam.guests[0].rig.card.0.lock().resumes, 1, "unsure {unsure_ms} ms: started once");
+    }
 }

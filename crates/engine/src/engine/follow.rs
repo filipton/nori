@@ -16,9 +16,13 @@ const TRIM_EVERY_US: i64 = 2_000_000;
 const TRIM_STEP: f64 = 0.0002;
 /// Further than this from the leader, ms, the place is started again rather than trimmed back.
 const STRAY_MS: f64 = 150.0;
-/// A start heard this far off its place missed it (an output slow to start): started once more, allowing
-/// for it; later gaps are trimmed.
-const MISSED_MS: f64 = 25.0;
+/// After a start the place heard is judged only once two readings this far apart agree (an output's
+/// first readings after it starts are estimates: Android's before its first timestamp), µs.
+const SETTLE_US: i64 = 250_000;
+/// Readings agreeing within this have settled, ms.
+const SETTLED_MS: f64 = 3.0;
+/// A start into a mix heard this far off its place once the mix is over is made again, ms.
+const MIXED_OFF_MS: f64 = 15.0;
 /// Most a start is planned ahead of its moment for an output slow to start, µs.
 const START_DELAY_MAX_US: i64 = 1_000_000;
 /// The leader's place moving this far from where its last word runs on is a jump there (a seek, a
@@ -87,6 +91,16 @@ pub(super) struct Starting {
     pub jump: Option<(usize, f64, i64)>,
 }
 
+/// The place heard after a start, as far as it can be trusted.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Settling {
+    Settled,
+    /// Not read since the start.
+    Started,
+    /// Read at `at_us`, `gap` ms from the leader: compared with the next reading.
+    Read { at_us: i64, gap: f64 },
+}
+
 #[derive(Debug)]
 pub(super) struct Following {
     pub led: Led,
@@ -100,14 +114,12 @@ pub(super) struct Following {
     trimmed_at: i64,
     started_at: i64,
     /// How long after its moment a start is heard (an output starting: a sound server, Bluetooth), as
-    /// starts that missed showed it, µs.
+    /// the settled place heard after a start showed it, µs.
     start_delay_us: i64,
-    /// Nothing was looked at since the last start: what is heard now shows how late it was.
-    just_started: bool,
+    /// Whether the place heard since the last start can be judged.
+    settling: Settling,
     /// How long a start is planned ahead.
     start_lead_us: i64,
-    /// The last start was one more after a miss.
-    retried: bool,
     /// A mix was heard before the last start was looked at.
     mixed: bool,
     /// Since when this one plays another song than the leader's, µs.
@@ -116,7 +128,7 @@ pub(super) struct Following {
 
 impl Following {
     pub fn new(led: Led) -> Following {
-        Following { led, leapt: true, trim: 0.0, starting: None, look_at: None, trimmed_at: i64::MIN / 2, started_at: i64::MIN / 2, start_delay_us: 0, just_started: false, retried: false, mixed: false, start_lead_us: START_LEAD_US, elsewhere: None }
+        Following { led, leapt: true, trim: 0.0, starting: None, look_at: None, trimmed_at: i64::MIN / 2, started_at: i64::MIN / 2, start_delay_us: 0, settling: Settling::Settled, mixed: false, start_lead_us: START_LEAD_US, elsewhere: None }
     }
 
     /// The last start's music was not ready at its moment (the network slow to bring it): the next is
@@ -147,7 +159,7 @@ impl Following {
         self.elsewhere = None;
         let at_us = now_us + self.start_lead_us;
         self.started_at = at_us;
-        self.just_started = true;
+        self.settling = Settling::Started;
         self.mixed = false;
         Step::Start { index: self.led.index, ms: self.led.place_at(at_us + self.start_delay_us), at_us }
     }
@@ -179,18 +191,39 @@ impl Following {
         // Through a mix the place heard is the seek bar's reckoning: looked at again once it is over (a
         // start into a mix is judged then, its gap the mix's, not the output's).
         if here.mixing {
-            self.mixed |= self.just_started;
+            self.mixed |= self.settling != Settling::Settled;
             return Step::Stay;
         }
-        let just_started = std::mem::take(&mut self.just_started);
         let gap = ms - self.led.place_at(now_us);
-        let missed = just_started && !self.retried && gap.abs() > MISSED_MS;
-        self.retried = missed;
-        if missed && !std::mem::take(&mut self.mixed) {
-            // Heard that much late (or early): the next start allows for it.
-            self.start_delay_us = (self.start_delay_us - (gap * 1000.0) as i64 / 2).clamp(0, START_DELAY_MAX_US);
+        if self.settling != Settling::Settled {
+            // The gap a trim playing moves on its own, since the reading compared with.
+            let agrees = |at: i64, was: f64| (gap - was - self.trim * (now_us - at) as f64 / 1000.0).abs() <= SETTLED_MS;
+            match self.settling {
+                Settling::Read { at_us: at, gap: was } if now_us - at >= SETTLE_US && agrees(at, was) => {
+                    self.settling = Settling::Settled;
+                    if std::mem::take(&mut self.mixed) {
+                        // A start into a mix lands as the mix's reckoning had it: off that, it starts
+                        // again out of it.
+                        if gap.abs() > MIXED_OFF_MS {
+                            return self.start(now_us);
+                        }
+                    } else {
+                        // How late (or early) the start was heard: the next one allows for it.
+                        self.start_delay_us = (self.start_delay_us - (gap * 1000.0) as i64).clamp(0, START_DELAY_MAX_US);
+                    }
+                }
+                Settling::Read { at_us: at, .. } if now_us - at < SETTLE_US => {
+                    self.look_at = Some(at + SETTLE_US);
+                    return Step::Stay;
+                }
+                _ => {
+                    self.settling = Settling::Read { at_us: now_us, gap };
+                    self.look_at = Some(now_us + SETTLE_US);
+                    return Step::Stay;
+                }
+            }
         }
-        if gap.abs() > STRAY_MS || missed {
+        if gap.abs() > STRAY_MS {
             return self.start(now_us);
         }
         // The trim playing now holds on until a new one is heard.
@@ -270,17 +303,21 @@ mod tests {
     }
 
     #[test]
-    fn an_output_slow_to_start_is_allowed_for() {
+    fn a_start_is_judged_once_its_place_settles() {
         let mut f = Following::new(led(10_000.0, 0));
         let Step::Start { ms, at_us, .. } = f.step(0, here(None)) else { panic!() };
-        // Heard 120 ms later than planned: started again, half of that further on (a reading may be off).
-        let then = at_us + 500_000;
-        let heard = ms + 500.0 * 1.25 - 120.0;
-        let Step::Start { ms: again, at_us: at2, .. } = f.step(then, here(Some((2, heard)))) else { panic!() };
-        assert!((again - f.led.place_at(at2 + 60_000)).abs() < 0.01, "{again}");
-        // Missing again, it is trimmed rather than started over and over (each start is a gap).
-        let heard = again + 500.0 * 1.25 - 60.0;
-        assert!(matches!(f.step(at2 + 500_000, here(Some((2, heard)))), Step::Trim(_)));
+        // The output's first reading has it on time; a quarter second later it says 120 ms late, and
+        // again later: settled. Trimmed, not started again (each start is a gap).
+        let heard_at = |us: i64, late: f64| here(Some((2, ms + (us - at_us) as f64 / 1000.0 * 1.25 - late)));
+        assert_eq!(f.step(at_us, heard_at(at_us, 0.0)), Step::Stay);
+        assert_eq!(f.step(at_us + SETTLE_US, heard_at(at_us + SETTLE_US, 120.0)), Step::Stay, "not settled yet");
+        assert_eq!(f.look_at, Some(at_us + 2 * SETTLE_US));
+        assert!(matches!(f.step(at_us + 2 * SETTLE_US, heard_at(at_us + 2 * SETTLE_US, 120.0)), Step::Trim(t) if t == TRIM_MAX));
+        // The next start allows for how late this one was heard.
+        f.lead(led(20_000.0, 5_000_000), 5_000_000);
+        f.leapt = true;
+        let Step::Start { ms: again, at_us: at2, .. } = f.step(5_000_000, heard_at(5_000_000, 120.0)) else { panic!() };
+        assert!((again - f.led.place_at(at2 + 120_000)).abs() < 0.01, "{again}");
     }
 
     #[test]
