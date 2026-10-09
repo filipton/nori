@@ -494,7 +494,7 @@ fun MiniPlayer(vm: PlayerViewModel, actions: ActionsViewModel, onOpen: () -> Uni
                 modifier = Modifier.weight(1f),
                 item = track,
             )
-            // Where the sound goes: the speaker, filled in the accent while another device plays, a tap away from
+            // Where the sound goes: the speaker, filled in white like the heart while another device plays, a tap away from
             // the devices. Then the one judgement worth making without opening the player: whether this is a
             // song to keep. Apple has only the transport here; the owner asked for the heart, and the bar has
             // the room for it because the title beside it is already allowed to run out of space gracefully.
@@ -505,7 +505,7 @@ fun MiniPlayer(vm: PlayerViewModel, actions: ActionsViewModel, onOpen: () -> Uni
             if (!state.jamGuest) {
                 if (jam == null) OutputButton(
                     state.playingOn != null, 24.dp,
-                    idle = { look.color(CoverLook.CHROME_CONTENT_75) }, lit = { look.color(CoverLook.ACCENT) },
+                    idle = { look.color(CoverLook.CHROME_CONTENT_75) }, lit = { content },
                 )
                 song?.let { s ->
                     val starred = LocalStarMarks.current.effectiveStar(dev.nori.music.data.StarKind.SONG, s.id, s.starred)
