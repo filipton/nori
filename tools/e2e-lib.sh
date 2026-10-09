@@ -11,12 +11,13 @@
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; app="$here/app.sh"
 export ANDROID_SERIAL=${ANDROID_SERIAL:-emulator-5554}
+# Acquire before touching the device. --list is read-only.
+if [[ " $* " != *" --list "* && ",${NORI_HELD_RESOURCES:-}," != *",device:$ANDROID_SERIAL,"* ]]; then
+  exec python3 "$here/with-resource.py" "device:$ANDROID_SERIAL" bash "$0" "$@"
+fi
 pkg=${NORI_PKG:-dev.nori.music}
 # Other nori builds on the same device (perf, an old release) play and log under the same tag: a second
 # player takes the audio focus and its lines read as this build's. Only the build under test runs.
-for other in dev.nori.music dev.nori.music.perf dev.nori.music.old; do
-  [ "$other" != "$pkg" ] && adb shell am force-stop "$other" >/dev/null 2>&1
-done
 pass=0; fail=0; ONLY=""; LIST=0; t0=$(date +%s)
 
 # ---- arguments -------------------------------------------------------------------------------------------
@@ -45,13 +46,23 @@ list_sections() {
       [[ " ${SECTIONS:-} ${OPT_IN:-} " == *" $s "* ]] || { echo "no section '$s' here; sections: ${SECTIONS:-} ${OPT_IN:-}" >&2; exit 2; }
     done
   fi
+  for other in dev.nori.music dev.nori.music.perf dev.nori.music.old; do
+    [ "$other" != "$pkg" ] && adb shell am force-stop "$other" >/dev/null 2>&1
+  done
 }
 
 # ---- the server ------------------------------------------------------------------------------------------
 # URL/USER/PASS: what this machine asks the server's API with (curl). APP_URL: what the app logs in to.
 NORI_E2E_SERVER=${NORI_E2E_SERVER:-real}
 if [ "$NORI_E2E_SERVER" = local ]; then
-  URL=http://localhost:4534; APP_URL=http://10.0.2.2:4534; USER=admin; PASS=admin
+  proxy_port=${NORI_E2E_PROXY_PORT:-4534}
+  if [[ "$ANDROID_SERIAL" == emulator-* && -z "${NORI_E2E_PROXY_PORT:-}" ]]; then
+    proxy_port=$((4534 + ${ANDROID_SERIAL#emulator-} - 5554))
+  fi
+  URL="http://localhost:$proxy_port"; APP_URL="http://10.0.2.2:$proxy_port"
+  USER="nori-e2e-$ANDROID_SERIAL"; PASS=nori-e2e
+elif [ "$LIST" = 1 ]; then
+  URL=""; USER=""; PASS=""; APP_URL=""
 else
   URL=$(sed -n 1p ~/.music.pass); USER=$(sed -n 3p ~/.music.pass); PASS=$(sed -n 4p ~/.music.pass); APP_URL=$URL
 fi
@@ -99,10 +110,11 @@ print(s['id'])"
 # proxy in front of it. Both are left running for the next run.
 local_server_up() {
   [ "$NORI_E2E_SERVER" = local ] || return 0
-  "$here/dev-server.sh" >/dev/null || { echo "tools/dev-server.sh failed" >&2; exit 1; }
-  if ! curl -sf -m 2 localhost:4534/ping >/dev/null; then
-    nohup python3 "$here/lying-proxy.py" 4534 http://localhost:4533 >/dev/null 2>&1 &
-    for _ in $(seq 20); do curl -sf -m 1 localhost:4534/ping >/dev/null && break; sleep 0.25; done
+  python3 "$here/with-resource.py" local-server "$here/dev-server.sh" >/dev/null || { echo "tools/dev-server.sh failed" >&2; exit 1; }
+  python3 "$here/with-resource.py" local-server python3 "$here/dev-user.py" "$USER" || return 1
+  if ! curl -sf -m 2 "$URL/ping" >/dev/null; then
+    nohup python3 "$here/lying-proxy.py" "$proxy_port" http://localhost:4533 >/dev/null 2>&1 &
+    wait_until 10 curl -sf -m 1 "$URL/ping" >/dev/null || return 1
   fi
 }
 
@@ -140,7 +152,14 @@ wait_until() {
 
 check() { # check <name> <command...>
   local name="$1"; shift
-  if "$@"; then echo "  PASS  $name"; pass=$((pass+1)); else echo "  FAIL  $name"; fail=$((fail+1)); fi
+  if "$@"; then echo "  PASS  $name"; pass=$((pass+1)); else
+    echo "  FAIL  $name"; fail=$((fail+1))
+    local artifacts="$here/../build/e2e/$ANDROID_SERIAL/failures/$t0"
+    mkdir -p "$artifacts"
+    "$here/ui-dump.sh" > "$artifacts/$fail.xml" 2>/dev/null
+    adb exec-out screencap -p > "$artifacts/$fail.png" 2>/dev/null
+    return 1
+  fi
 }
 section() { echo "-- $1 ($(( $(date +%s) - t0 )) s)"; }
 finish() {
@@ -174,14 +193,16 @@ bursts_continue() {
 }
 
 # The app in the foreground, answering, logged in to this run's server.
+fixture_logged_in=0
 app_up() {
   "$app" wake >/dev/null
   "$app" launch >/dev/null
   wait_until 20 bash -c "'$app' state 2>/dev/null | grep -q '\"route\"'" || return 1
-  if [ "$(field server)" != "$APP_URL" ]; then
+  if [ "$(field server)" != "$APP_URL" ] || { [ "$NORI_E2E_SERVER" = local ] && [ "$fixture_logged_in" = 0 ]; }; then
     echo "     logging in to $([ "$NORI_E2E_SERVER" = local ] && echo "$APP_URL" || echo "the real server")"
     "$app" login "$APP_URL|$USER|$PASS" >/dev/null
     wait_for server "$APP_URL" 30 >/dev/null || return 1
+    fixture_logged_in=1
   fi
   wait_for loggedIn True 30 >/dev/null
 }
@@ -194,30 +215,42 @@ watch_from_now() {
   adb logcat -c
   adb logcat -v time -s nori:I > "$watching" 2>/dev/null &
   watcher=$!
-  sleep 0.3
 }
 # And one capture for the whole run, for the player's errors: `adb logcat -d` sees only what came since
 # the last app.sh call, which cleared the log.
 runlog=$(mktemp); runwatcher=""
 whole_run_log() { adb logcat -v brief -s nori:* > "$runlog" 2>/dev/null & runwatcher=$!; }
 run_errors() { grep -cE "rust player error: " "$runlog"; }
-trap '[ -n "$watcher" ] && kill $watcher 2>/dev/null; [ -n "$runwatcher" ] && kill $runwatcher 2>/dev/null; rm -f "$watching" "$runlog"' EXIT
+cleanup_e2e() {
+  restore_settings
+  [ "${network_off:-0}" = 0 ] || online
+  if declare -F cleanup_feature >/dev/null; then cleanup_feature; fi
+  for pid in "$watcher" "$runwatcher"; do
+    if [ -n "$pid" ]; then kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; fi
+  done
+  rm -f "$watching" "$runlog"
+}
+trap cleanup_e2e EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
 
 # The settings a script changes, read at its start and put back at its end (the ones state reports).
 SAVED=()
 remember_settings() { local v; v=$(fields "$@"); local i=0; for k in "$@"; do i=$((i+1)); SAVED+=("$k $(echo "$v" | sed -n "${i}p" | tr 'TF' 'tf')"); done; }
-restore_settings() { local s; for s in "${SAVED[@]+"${SAVED[@]}"}"; do "$app" set $s >/dev/null; done; }
+restore_settings() { local s; for s in "${SAVED[@]+"${SAVED[@]}"}"; do "$app" set $s >/dev/null; done; SAVED=(); }
 logged() { grep -qE "$1" "$watching"; }
 never() { ! logged "$1"; }
 waitfor_log() { wait_until "$2" logged "$1"; }
 
 # The network back on, and the server reachable from the phone again: the emulator's Wi-Fi takes anywhere
 # from two seconds to twenty to come back, and a check made before it has is testing the Wi-Fi, not the app.
-offline() { adb shell svc wifi disable; adb shell svc data disable; }
+network_off=0
+offline() { network_off=1; adb shell svc wifi disable; adb shell svc data disable; }
 online() {
   adb shell svc wifi enable; adb shell svc data enable
   local host; host=$(printf '%s' "$APP_URL" | sed -E 's#https?://##; s#[/:].*##')
-  wait_until 30 adb shell "ping -c 1 -W 1 $host" >/dev/null 2>&1
+  wait_until 30 adb shell "ping -c 1 -W 1 $host" >/dev/null 2>&1 || return 1
+  network_off=0
 }
 
 # Crashes and ANRs of this app since `since` (device time, "YYYY-MM-DD HH:MM:SS"), from the dropbox.

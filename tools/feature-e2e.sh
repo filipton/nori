@@ -14,10 +14,10 @@ list_sections
 json() { python3 -c "import sys,json;d=json.load(sys.stdin)['subsonic-response'];print(eval('d$1',{'d':d}))" 2>/dev/null; }
 # What the screen itself reports, read out of the accessibility tree rather than guessed at from a
 # screenshot: a label to assert on, and a node to press where the UI says the button is.
-ui() { adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1; adb shell cat /sdcard/ui.xml 2>/dev/null; }
+ui() { "$here/ui-dump.sh"; }
 pill() { ui | grep -oE 'text="(Play|Pause)"' | head -1 | cut -d'"' -f2; }
 pill_is() { [ "$(pill)" = "$1" ]; }
-tapnode() { # $1 = text|content-desc, $2 = that value, $3 = which of several (the first by default)
+tapnode_now() { # $1 = text|content-desc, $2 = that value, $3 = which of several (the first by default)
   local c; c=$(ui | python3 -c "
 import sys,re
 found=[]
@@ -30,12 +30,49 @@ if len(found) >= ${3:-1}: print(found[${3:-1}-1])")
   [ -n "$c" ] || return 1
   adb shell input tap $c
 }
+tapnode() { wait_until 10 tapnode_now "$@"; }
 on_screen() { ui | grep -q -- "$1"; }
-off_screen() { ! on_screen "$1"; }
+off_screen() { local tree; tree=$(ui) || return 1; ! printf '%s' "$tree" | grep -q -- "$1"; }
+# Chrome may keep the landing page until its explicit app link is tapped.
+open_invite() {
+  local link="$1"
+  [ -n "$link" ] || return 1
+  if [ "${2:-}" = app ]; then
+    link="nori://jam?${link#*#}"
+    adb shell am start -a android.intent.action.VIEW -d "'$link'" >/dev/null 2>&1 || return 1
+  else
+    adb shell am start -a android.intent.action.VIEW -p com.android.chrome --ez create_new_tab true -d "'$link'" >/dev/null 2>&1 || return 1
+  fi
+  invite_opened() {
+    local tree; tree=$(ui)
+    if [[ "$tree" == *"package=\"$pkg\""* ]]; then return 0; fi
+    for button in "Use without an account" "No thanks" "Got it" "Open in nori"; do
+      if [[ "$tree" == *"text=\"$button\""* ]]; then tapnode text "$button"; break; fi
+    done
+    return 1
+  }
+  wait_until 15 invite_opened
+}
 starred_on_server() { api getStarred2 | python3 -c "
 import sys,json
 d=json.load(sys.stdin)['subsonic-response'].get('starred2',{})
 print(any(s['id']=='$1' for s in d.get('song',[])))"; }
+
+cleanup_feature() {
+  [ "${feature_finished:-0}" = 0 ] || return 0
+  if [ -n "${peer:-}" ]; then
+    "$app" remote pick here >/dev/null
+    "$app" set remoteControl false >/dev/null
+    tmux kill-session -t "$peer" 2>/dev/null
+  fi
+  for guest_pid in "${gus:-}" "${dee:-}" "${host:-}"; do
+    [ -z "$guest_pid" ] || kill "$guest_pid" 2>/dev/null
+  done
+  if [ -n "${app_jam:-}" ]; then
+    "$app" set jam false >/dev/null
+    "$app" login "$APP_URL|$USER|$PASS" >/dev/null
+  fi
+}
 
 whole_run_log
 echo "== features end to end against $([ "$NORI_E2E_SERVER" = local ] && echo "the local server" || echo "the real server")"
@@ -269,8 +306,7 @@ if want foryou; then section "for you: favourites and mixes open as pages"
   # caption and every fully visible row title (rows sit below the Play pill and above the mini player).
   # Which songs a mix holds, and that it stays the same when opened again, is mixes.rs.
   page() {
-    adb shell uiautomator dump /sdcard/nori-ui.xml >/dev/null 2>&1
-    adb shell cat /sdcard/nori-ui.xml | python3 -c "
+    ui | python3 -c "
 import sys,re
 nodes=[(t,d,*map(int,b)) for t,d,b in ((m.group(1),m.group(2),re.findall(r'\d+',m.group(3))) for m in re.finditer(r'text=\"([^\"]*)\"[^>]*content-desc=\"([^\"]*)\"[^>]*bounds=\"([^\"]*)\"',sys.stdin.read()))]
 count=next((int(m.group(1)) for t,*_ in nodes for m in [re.match(r'(\d+) songs? ',t)] if m),0)
@@ -293,9 +329,16 @@ print(sum(1 for s in d.get('song',[]) if not s.get('isExternal') and not s['id']
   check "starring a song adds it while the page is open" wait_until 10 count_is "$((server + 1))"
   "$app" do "star song:$id" >/dev/null   # put it back
   check "and unstarring takes it away again" wait_until 10 count_is "$server"
+  if [ "$NORI_E2E_SERVER" = local ]; then
+    # A fresh fixture profile needs album rows in its local index for Discover.
+    "$app" open "album/$(mix_album)" >/dev/null
+    check "the fixture album loads" wait_until 15 on_screen 'text="Long Track 01"'
+  fi
   "$app" open mix/discover >/dev/null
   wait_until 8 bash -c "'$app' state | grep -q 'mix/{id}'"
-  first=""; for _ in $(seq 10); do first=$(page); [ -n "$(echo "$first" | cut -d'|' -f4)" ] && break; sleep 0.5; done
+  first=""
+  page_ready() { first=$(page) || return 1; [ -n "$(echo "$first" | cut -d'|' -f4)" ]; }
+  wait_until 15 page_ready
   # What you see is what plays: a tap on the third row starts the whole mix at that row.
   n=$(echo "$first" | cut -d'|' -f1); third=$(echo "$first" | cut -d'|' -f4)
   if [ -n "$third" ]; then
@@ -351,53 +394,48 @@ if want device-sound; then section "a sound per output device"
   clean   # nothing of the check stays in the device list or the profiles
 fi
 
-if want remote; then section "playing on another device: the terminal client on this Mac"
+remote_checks() {
+  section "playing on another device: the terminal client on this Mac"
   # Who plays, the queue, the place, the volume and a transfer's order are the core's (crates/core
   # tests/remote.rs). Here: the media session handed to the other device (a remote volume the keys move),
   # this phone's own output let go while it plays there, and the music coming back.
   if [ "$NORI_E2E_SERVER" != local ]; then
     echo "  NOTE  needs the local server: the terminal client signs in to it as the other device"
   else
-    peer=nori-e2e-peer; data="$here/../build/e2e-peer"; cli="$here/../target/release/nori-cli"
-    [ -x "$cli" ] || cargo build -j2 --release -p nori-cli >/dev/null 2>&1
+    peer="nori-e2e-peer-$ANDROID_SERIAL"; data="$here/../build/e2e/$ANDROID_SERIAL/peer"; cli="$here/../target/debug/nori-cli"
+    python3 "$here/with-resource.py" build cargo build -j4 -p nori-cli >/dev/null || return 1
     tmux kill-session -t "$peer" 2>/dev/null; mkdir -p "$data"
-    tmux new-session -d -s "$peer" -x 160 -y 45 "$cli --data $data --url http://localhost:4533 --user admin --password admin --no-images --no-mpris"
+    # Seed the peer's setting before startup; no screen navigation or stale selection.
+    python3 - "$data/nori.db" <<'PY'
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as db:
+    db.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID")
+    db.execute("INSERT OR REPLACE INTO settings VALUES('remoteControl', '{\"b\":true}')")
+PY
+    tmux new-session -d -s "$peer" -x 160 -y 45 "$cli --data $data --url http://localhost:4533 --user $USER --password $PASS --no-images --no-mpris"
     screen() { tmux capture-pane -p -t "$peer"; }
     keys() { tmux send-keys -t "$peer" -- "$@"; }
-    wait_until 15 bash -c "tmux capture-pane -p -t $peer | grep -q 'Nothing playing'"
+    check "the CLI peer starts" wait_until 15 bash -c "tmux capture-pane -p -t $peer | grep -q 'localhost:4533'" || return 1
     for _ in $(seq 16); do keys -; done   # quiet on the Mac's speakers
-    # Settings, down to "Remote control" (the row drawn on the selection's background), on; it stays on in
-    # this data directory.
-    keys 7
-    on_row() { tmux capture-pane -p -e -t "$peer" | grep "Remote control" | grep -q $'\e\[[0-9;]*48;2'; }
-    for _ in $(seq 80); do on_row && break; keys j; sleep 0.05; done
-    if ! screen | grep "Remote control" | grep -q "━━●"; then keys Enter; fi
-    keys 2; sleep 1.5; keys Enter; sleep 1.5; keys x
-    name=$(hostname -s)
-    wait_until 15 bash -c "tmux capture-pane -p -t $peer | grep -q '⏸'"
     # Its door as mDNS has it; the emulator hears no multicast from here, so the app is handed it.
-    door=""
-    for inst in $( (dns-sd -B _nori._tcp local. & p=$!; sleep 3; kill $p) 2>/dev/null | awk '$2 == "Add" {print $NF}' | sort -u); do
-      txt=$( (dns-sd -L "$inst" _nori._tcp local. & p=$!; sleep 2; kill $p) 2>/dev/null | tr -d '\r')
-      port=$(echo "$txt" | grep -oE 'local\.:[0-9]+' | head -1 | cut -d: -f2)
-      line=$(echo "$txt" | grep -E "kind=terminal" | grep -E "name=$name( |$)" | head -1)
-      [ -n "$line" ] && [ -n "$port" ] && door="10.0.2.2|$port|$(echo "$line" | xargs | tr ' ' ';')"
-    done
-    echo "     the Mac's door: ${door:-none}"
+    resolved=$(python3 "$here/mdns-door.py" "$data/nori.db") || { check "the CLI peer announces its door" false; return 1; }
+    name=$(printf '%s' "$resolved" | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')
+    door=$(printf '%s' "$resolved" | python3 -c 'import json,sys; print(json.load(sys.stdin)["door"])')
+    echo "     the Mac's door: $door"
     "$app" set remoteControl true >/dev/null
     "$app" play "$PLAIN" >/dev/null; sounds 20
-    "$app" open player >/dev/null; "$app" remote watch on >/dev/null; sleep 3
+    "$app" open player >/dev/null; "$app" remote watch on >/dev/null
     "$app" remote found "$door" >/dev/null
-    check "the Mac is listed" wait_until 15 bash -c "'$app' remote devices | grep -q '$name'"
+    check "the Mac is listed" wait_until 15 bash -c "'$app' remote devices | grep -Fq '$name'" || return 1
     "$app" remote watch off >/dev/null
     "$app" remote pick "$name" >/dev/null
-    check "the player shows the Mac playing" wait_for playingOn "$name" 15
+    check "the player shows the Mac playing" wait_for playingOn "$name" 15 || return 1
     remote_session() { adb shell dumpsys media_session | grep -q "volumeType=REMOTE"; }
     check "the media session is the Mac's (a remote volume)" wait_until 10 remote_session
     check "this phone's output is let go" silent 10
     peer_volume() { screen | grep -oE '[0-9]+%' | tail -1 | tr -d '%'; }
     before=$(peer_volume)
-    adb shell input keyevent KEYCODE_VOLUME_UP; sleep 0.5; adb shell input keyevent KEYCODE_VOLUME_UP
+    adb shell input keyevent KEYCODE_VOLUME_UP; adb shell input keyevent KEYCODE_VOLUME_UP
     louder() { [ "$(peer_volume)" -gt "$before" ]; }
     check "the volume keys turn the Mac up ($before%)" wait_until 10 louder
     "$app" remote pick here >/dev/null
@@ -407,9 +445,17 @@ if want remote; then section "playing on another device: the terminal client on 
     "$app" set remoteControl false >/dev/null
     tmux kill-session -t "$peer"
   fi
+}
+if want remote; then
+  failures_before=$fail
+  remote_checks || { [ "$fail" -gt "$failures_before" ] || check "remote setup succeeds" false; }
+  "$app" remote pick here >/dev/null
+  "$app" set remoteControl false >/dev/null
+  [ -z "${peer:-}" ] || tmux kill-session -t "$peer" 2>/dev/null
 fi
 
-if want jam; then section "a jam hosted here: started from the devices sheet, guests ask, the host decides by tapping"
+jam_checks() {
+  section "a jam hosted here: started from the devices sheet, guests ask, the host decides by tapping"
   # The jam's roles, requests, who added what, and that a provider's song is not looked up before it is
   # accepted are the core's (crates/core tests/remote.rs). Here: the jam in the player, its queue and the
   # devices sheet, the invite's link, requests arriving live and decided by tapping, and the accepted song
@@ -417,42 +463,55 @@ if want jam; then section "a jam hosted here: started from the devices sheet, gu
   # Mac (tools/jam-guest.py).
   jam_server=${NORI_E2E_JAM:-http://localhost:5274}
   if [ "$NORI_E2E_SERVER" != local ] || ! curl -sf "$jam_server/rest/noriRemote.poll?u=admin&p=admin&v=1.16.1&c=e2e&f=json&dev=e2e-probe" | grep -q seq; then
+    if [ "$NORI_E2E_SERVER" = local ]; then
+      check "octo-fiesta relay is available at $jam_server" false
+      return 1
+    fi
     echo "  NOTE  needs the local server, and octo-fiesta with the relay in front of it at $jam_server"
   else
+    check "the relay serves its invite page" bash -c "curl -fsS '$jam_server/nori/jam' | grep -q 'Open in nori'" || return 1
     app_jam=$(echo "$jam_server" | sed 's#localhost#10.0.2.2#')
+    start_jam() {
+      tapnode text "Start a Jam" || return 1
+      wait_until 10 off_screen 'content-desc="Close sheet"'
+    }
     lib_song=$(song_id "Far Song Two"); first=$(song_id "Long Track 04")
     # A provider's song for Dee to ask for: only its id and words travel, nothing streams it.
-    provider=$(curl -s "$jam_server/rest/search3?u=admin&p=admin&v=1.16.1&c=e2e&f=json&songCount=20&albumCount=0&artistCount=0&query=love" | python3 -c "
-import sys,json
-print(next(json.dumps({'id':s['id'],'title':s['title'],'artist':s['artist'],'coverArt':s.get('coverArt'),'duration':s['duration'],'isExternal':True}) for s in json.load(sys.stdin)['subsonic-response']['searchResult3']['song'] if s['id'].startswith('ext-')))")
+    provider='{"id":"ext-e2e-refused","title":"Refused provider request","artist":"Nori E2E","duration":170,"isExternal":true}'
     "$app" login "$app_jam|admin|admin" >/dev/null; wait_for server "$app_jam" 30 >/dev/null
     "$app" set jam true >/dev/null
     "$app" play "song:$first" >/dev/null; sounds 20
     "$app" open devices >/dev/null
-    check "the devices sheet offers to start a jam" wait_until 10 on_screen 'text="Start a Jam"'
-    tapnode text "Start a Jam"
-    check "the player opens on the queue, the jam over it" wait_until 15 on_screen 'text="End Jam"'
-    check "nobody listens yet" on_screen 'text="no one yet"'
-    tapnode text People
-    check "People offers the invite" wait_until 10 on_screen 'text="Invite"'
+    check "the devices sheet offers to start a jam" wait_until 10 on_screen 'text="Start a Jam"' || return 1
+    check "starting the jam closes the devices sheet" start_jam || return 1
+    check "the player opens on the queue" wait_until 10 on_screen 'text="Long Track 04"' || return 1
+    "$app" open devices >/dev/null
+    check "the devices sheet shows the hosted jam" wait_until 10 on_screen 'text="Your Jam"' || return 1
+    check "nobody listens yet" on_screen 'text="Jam · no one yet"'
+    check "the devices sheet offers the invite" wait_until 10 on_screen 'text="Invite"'
     tapnode text Invite
     check "Invite shows the code and the link" wait_until 10 on_screen 'text="Copy link"'
     link=$(ui | grep -oE 'text="https?://[^"]*/nori/jam#[^"]*"' | head -1 | cut -d'"' -f2 | sed 's/&amp;/\&/g')
     echo "     the invite: $link"
     adb shell input keyevent KEYCODE_BACK
+    adb shell input keyevent KEYCODE_BACK
+    if on_screen 'content-desc="Close sheet"'; then tapnode content-desc "Close sheet"; fi
     # Its own invite opened here is refused: this phone stays the host, on its own profile.
-    adb shell am start -a android.intent.action.VIEW -d "'$link'" >/dev/null 2>&1
-    check "its own invite is refused" wait_until 10 on_screen 'text="That’s your own Jam"'
+    check "the invite reaches nori" open_invite "$link" app || return 1
+    check "its own invite is refused" wait_until 10 on_screen 'text="That’s your own Jam"' || return 1
     check "and it still hosts" bash -c "'$app' remote view | grep -q 'hosting=true'"
     check "on its own profile" wait_for server "$app_jam" 5
-    guests="$here/../build/e2e-jam"; mkdir -p "$guests"
+    "$app" open queue >/dev/null
+    guests="$here/../build/e2e/$ANDROID_SERIAL/jam"; mkdir -p "$guests"
     python3 "$here/jam-guest.py" "$link" Gus "{\"id\":\"$lib_song\",\"title\":\"Far Song Two\",\"artist\":\"Nori E2E Two\",\"duration\":170}" > "$guests/gus.log" 2>&1 & gus=$!
-    check "Gus's request comes in by itself" wait_until 20 on_screen 'text="Asked by Gus"'
+    check "Gus's request comes in by itself" wait_until 20 on_screen 'text="Asked by Gus"' || return 1
     python3 "$here/jam-guest.py" "$link" Dee "$provider" > "$guests/dee.log" 2>&1 & dee=$!
-    check "and Dee's under it" wait_until 20 on_screen 'text="Asked by Dee"'
+    check "and Dee's under it" wait_until 20 on_screen 'text="Asked by Dee"' || return 1
     check "the provider's song says accepting downloads it" on_screen 'text="Downloaded to your server if accepted"'
-    check "the header counts both" on_screen 'text="2 listening"'
-    tapnode content-desc Refuse 2
+    "$app" open devices >/dev/null
+    check "the devices sheet counts both" on_screen 'text="Jam · 2 listening"'
+    adb shell input keyevent KEYCODE_BACK
+    check "Dee's Refuse button can be tapped" tapnode content-desc Refuse 2 || return 1
     check "Refuse takes Dee's request away" wait_until 10 off_screen 'text="Asked by Dee"'
     tapnode content-desc Accept
     queued() { [[ "$(field upNext)" == *"$lib_song"* ]]; }
@@ -462,20 +521,24 @@ print(next(json.dumps({'id':s['id'],'title':s['title'],'artist':s['artist'],'cov
     check "Gus sees it in the host's queue, by him" wait_until 15 grep -q "Far Song Two by Gus" "$guests/gus.log"
     tapnode text "Far Song Two"
     check "and it plays" wait_for title "Far Song Two" 15
-    tapnode text "End Jam"
+    "$app" open devices >/dev/null
+    tapnode text End
+    adb shell input keyevent KEYCODE_BACK
     check "End Jam ends it for the guests" wait_until 15 grep -q "the jam is over" "$guests/gus.log"
     check "and here" wait_until 10 bash -c "'$app' remote view | grep -q 'no jam'"
     kill $gus $dee 2>/dev/null
     # Its own invite to the jam it ended changes nothing, and a new one starts at once.
-    adb shell am start -a android.intent.action.VIEW -d "'$link'" >/dev/null 2>&1
+    check "the ended invite reaches nori" open_invite "$link" app || return 1
     check "its ended jam's invite says so" wait_until 10 on_screen 'text="This Jam has ended"'
     check "on its own profile, in no jam" bash -c "'$app' remote view | grep -q 'no jam'"
     check "no jam under the song" off_screen 'text="Jam · '
     "$app" open devices >/dev/null
     check "the devices sheet offers a jam again" wait_until 10 on_screen 'text="Start a Jam"'
-    tapnode text "Start a Jam"
-    check "and it starts at once" wait_until 5 on_screen 'text="End Jam"'
-    tapnode text "End Jam"
+    check "restarting the jam closes the devices sheet" start_jam || return 1
+    "$app" open devices >/dev/null
+    check "and it starts at once" wait_until 5 on_screen 'text="Your Jam"'
+    tapnode text End
+    adb shell input keyevent KEYCODE_BACK
     check "and ends" wait_until 10 bash -c "'$app' remote view | grep -q 'no jam'"
     "$app" set jam false >/dev/null
     "$app" login "$APP_URL|$USER|$PASS" >/dev/null; wait_for server "$APP_URL" 30 >/dev/null
@@ -492,8 +555,8 @@ print(json.dumps({k:s.get(k) for k in ['id','title','artist','album','albumId','
     wait_until 15 grep -qs invite: "$guests/host.log"
     link=$(grep invite: "$guests/host.log" | cut -d' ' -f2)
     # The invite is the relay's page: the browser opens it, and the page hands the invite to the app.
-    adb shell am start -a android.intent.action.VIEW -d "'$link'" >/dev/null 2>&1
-    check "the invite opens the player on the host's jam" wait_until 20 on_screen 'text="Mac Host’s Jam"'
+    check "the guest invite reaches nori" open_invite "$link" || return 1
+    check "the invite opens the player on the host's jam" wait_until 20 on_screen 'text="Mac Host’s Jam"' || return 1
     check "playing what the host plays" wait_for title "Long Track 04" 15
     check "said under the song" on_screen 'text="Jam · Mac Host · 1 listening"'
     no_controls() { off_screen 'content-desc="Next"' && off_screen 'content-desc="Shuffle"' && off_screen 'content-desc="Remove"'; }
@@ -545,7 +608,7 @@ print(json.dumps({k:s.get(k) for k in ['id','title','artist','album','albumId','
     NORI_JAM_ADMINS=1 python3 "$here/jam-host.py" "$jam_server" admin admin "$(relay_song 'Long%20Track%2004')" "$(relay_song 'Long%20Track%2005')" > "$guests/admin-host.log" 2>&1 & host=$!
     wait_until 15 grep -qs invite: "$guests/admin-host.log"
     link=$(grep invite: "$guests/admin-host.log" | cut -d' ' -f2)
-    adb shell am start -a android.intent.action.VIEW -d "'$link'" >/dev/null 2>&1
+    check "the admin invite reaches nori" open_invite "$link" || return 1
     check "the invite opens the player on the host's jam" wait_until 20 on_screen 'text="Listen here"'
     tapnode text "Listen here"
     check "Listen here plays the host's music" sounds 30
@@ -575,21 +638,33 @@ print(json.dumps({k:s.get(k) for k in ['id','title','artist','album','albumId','
       rm -f "$1"
       python3 "$here/jam-host.py" "$jam_server" admin admin "$(relay_song 'Long%20Track%2004')" > "$1" 2>&1 & host=$!
       wait_until 15 grep -qs invite: "$1"
-      adb shell am start -a android.intent.action.VIEW -d "'$(grep invite: "$1" | cut -d' ' -f2)'" >/dev/null 2>&1
+      check "the invite reaches nori" open_invite "$(grep invite: "$1" | cut -d' ' -f2)" || return 1
       check "a guest again" wait_until 20 bash -c "'$app' remote view | grep -q 'Mac Host:HOST'"
     }
-    host_jam "$guests/host-ends.log"
+    host_jam "$guests/host-ends.log" || return 1
     kill $host
     check "the host ending the jam takes the guest home" wait_for server "$APP_URL" 15
     check "and says who ended it" wait_until 5 on_screen 'text="Mac Host ended the Jam"'
-    host_jam "$guests/host-gone.log"
+    host_jam "$guests/host-gone.log" || return 1
     kill -9 $host; wait $host 2>/dev/null
     adb shell am force-stop "$pkg"
     curl -sf "$jam_server/rest/noriRemote.close?u=admin&p=admin&v=1.16.1&c=e2e&f=json&room=$(grep room: "$guests/host-gone.log" | cut -d' ' -f2)" >/dev/null
-    app_up >/dev/null
+    "$app" wake >/dev/null
+    "$app" launch >/dev/null
+    wait_until 20 bash -c "'$app' state 2>/dev/null | grep -q '\"route\"'" || return 1
     check "a guest profile whose jam the relay dropped opens the user's own" wait_for server "$APP_URL" 20
   fi
+}
+if want jam; then
+  failures_before=$fail
+  jam_checks || { [ "$fail" -gt "$failures_before" ] || check "Jam setup succeeds" false; }
+  for guest_pid in "${gus:-}" "${dee:-}" "${host:-}"; do
+    [ -z "$guest_pid" ] || kill "$guest_pid" 2>/dev/null
+  done
+  "$app" set jam false >/dev/null
+  "$app" login "$APP_URL|$USER|$PASS" >/dev/null
 fi
 
 restore_settings
+feature_finished=1
 finish

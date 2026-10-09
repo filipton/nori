@@ -1103,7 +1103,8 @@ Check for these before believing a screen is fine — each has bitten more than 
 ## Standing instructions from the owner
 
 - Commit messages: one line, no attribution lines, no `Co-Authored-By`.
-- One emulator only: `battery-perf`. No extra AVDs, not even for subagents; they take turns on it.
+- Multiple emulators are allowed (owner, 2026-10-10). Each device suite holds an exclusive
+  lease; use `ANDROID_SERIAL` to select it and isolate its host fixtures.
 - Do not run the long performance suite for small or UI-only changes — build, install, screenshot.
   Measure only when something can plausibly move CPU or battery.
 - Build artefacts stay in `build/`. Never copy them to `~`.

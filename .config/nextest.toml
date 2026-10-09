@@ -1,0 +1,6 @@
+[profile.default]
+test-threads = 4
+
+[[profile.default.overrides]]
+filter = 'test(/no_alloc|neural_memory/)'
+threads-required = 2

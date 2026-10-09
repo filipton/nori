@@ -104,7 +104,7 @@ if want notification; then section "the notification's play and pause"
   [ "$(field playing)" = True ] || { "$app" play "$SONG" >/dev/null; sounds 20; }
   check "the playback notification is posted" bash -c "adb shell dumpsys notification --noredact 2>/dev/null | grep -q '$pkg|1001'"
   tap_media() { # the media controls' button by its description, in the pulled-down shade
-    local c; c=$(adb shell uiautomator dump /sdcard/nori-shade.xml >/dev/null 2>&1; adb shell cat /sdcard/nori-shade.xml | python3 -c "
+    local c; c=$("$here/ui-dump.sh" | python3 -c "
 import sys,re
 for m in re.finditer(r'<node[^>]*>', sys.stdin.read()):
     n=m.group(0)

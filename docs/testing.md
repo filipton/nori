@@ -7,12 +7,14 @@ notification, audio focus, routing, JNI, the service and a force stop.
 
 | Tier | What | Time | Who runs it |
 | --- | --- | --- | --- |
-| `cargo test -j4 --workspace` | every Rust test | about 30 s (build warm) | every agent, every change |
-| `tools/smoke.sh` | launch, login, play, pause, seek, next, a queue edit, one AutoMix transition, the equalizer tuned in place, offload on and off, the notification's pause and play, a download played offline, no crash or ANR | aimed at 2-3 min (fixed sleeps: 0; not yet timed on a device) | every agent that touched Android, on its emulator turn |
+| `cargo test -j4 --workspace` | every Rust test | 56 s (build warm, M4 Pro; [measurements](build-times.md)) | every agent, every change |
+| `tools/smoke.sh` | launch, login, play, pause, seek, next, a queue edit, one AutoMix transition, the equalizer tuned in place, offload on and off, the notification's pause and play, a download played offline, no crash or ANR | 56 s on the hardware-rendered arm64 emulator against the local server; 34 checks passed | every agent that touched Android, on its emulator turn |
 | `tools/audio-e2e.sh --only …`, `tools/feature-e2e.sh --only …` | the sections of the area a change touched | a section is 10-90 s | the agent that touched it |
-| `tools/audio-e2e.sh`, `tools/feature-e2e.sh` in full | every device check | not yet timed; the old suites were 11+ and 10+ min with ~590 s of fixed sleeps | the coordinator, once per batch, before a perf APK build |
+| `tools/audio-e2e.sh` in full | every audio device check | 95 s on the arm64 emulator against the local server; 33 checks passed | the coordinator, once per batch, before a perf APK build |
+| `tools/feature-e2e.sh` in full | every feature device check | 216 s, 123 passing checks, hardware graphics and isolated local fixtures ([details](build-times.md)) | the coordinator, once per batch, before a perf APK build |
 
-Never `-j` above 4: the machine runs out of memory.
+Never `-j` above 4: the machine runs out of memory. For queued host checks, nextest,
+Bazel player targets and a pool of hardware-rendered emulators, see [development.md](development.md).
 
 ## Running the device checks
 
@@ -46,8 +48,9 @@ Podman; one already answering on 4533 is used as it is), its music and database 
   opening and scrolling a long page: `tools/open-bench.sh <package> "Nori Bench 1000" 10 3` from Library >
   Playlists, on a perf or release build, prints the frames and janky frames of each open and of the flings.
 
-The app talks to it through `tools/lying-proxy.py` on port 4534 (`http://10.0.2.2:4534` from the
-emulator): a transcoded stream is stated a quarter longer than its bytes, the connection closes short, and
+Each emulator logs in with its own `nori-e2e-SERIAL` fixture account. The app talks to
+the server through `tools/lying-proxy.py` on port 4534 (`http://10.0.2.2:4534` from the
+emulator; port 5556 uses proxy 4536): a transcoded stream is stated a quarter longer than its bytes, the connection closes short, and
 a range past the real end is answered 416, as a server answering `estimateContentLength=true` does when
 the transcode comes out smaller than estimated. audio-e2e's `transcode` section plays such a song past its
 real end. The generated songs have no lyrics anywhere, so the `lyrics` section only runs against the real
@@ -201,9 +204,11 @@ is Android glue and stays on the device. 50 moved, 60 stay.
 
 ## cargo test
 
-`cargo test -j4 --workspace` runs about 1,120 tests in about 30 s once built (the test binaries 28.5 s
-of it). It was 163 s before the sound code was built optimised for tests, 57-89 s after that, and 30 s
-since the tests stopped waiting on real time (2026-09-26). `[profile.test.package.…]` in Cargo.toml
+`cargo test -j4 --workspace` passed 1,129 tests in 72–79 s once built on 2026-10-10;
+the first warm measurement reported 54.87 s in test binaries. The older 2026-09-26
+baseline was about 1,120 tests in 30 s; its per-binary figures below are historical,
+not the current baseline. See [build-times.md](build-times.md) for current timings.
+`[profile.test.package.…]` in Cargo.toml
 builds nori-player, nori-engine and every dependency at opt-level 2 for `cargo test` only; debug
 assertions and overflow checks stay on. The workspace's own crates that are not listed there (nori-core,
 the android crate) are unoptimised, so their tests keep their data small.
@@ -329,3 +334,21 @@ called back in real time: a phone's core finds its door, starts a song on it, mi
 announcing and finding, the render timestamps' host time, the volume view moving the system volume, and
 the lock screen while another device plays.
 Battery and CPU are `tools/ipod-bench.sh` (unplugged, SSH over Wi-Fi), never on the host.
+
+
+## Issue 36 validation
+
+On the M4 Pro arm64 emulator, the updated full feature suite passed 123 checks in
+216 s; the full audio suite passed 33 in 95 s. These are local-fixture runs, so
+lyrics and physical offload remain unavailable here. Remote uses a freshly built
+CLI peer; Jam covers browser links and direct app links, requests, guest/admin
+playback and recovery when the host disappears. Missing prerequisites fail rather
+than passing through skipped dependent checks. The prior 785 s feature run had
+47 failures and is not a healthy performance baseline.
+
+Parallel smoke and feature checks exercised both emulators with separate
+accounts and ports. The resource harness tests exclusion, nested calls,
+cancellation/release and selecting an available pool device. It does not replace
+the device checks. Clippy completed with existing warnings in unchanged Rust
+code. The complete Cargo workspace check, Android APK build and actual Bazel
+player unit/pipeline execution also passed.

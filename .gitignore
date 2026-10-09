@@ -13,4 +13,5 @@
 /keystore.properties
 logcat*.log
 __pycache__/
+/bazel-*
 /tools/bgtest/.phone-state.json

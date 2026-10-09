@@ -3,6 +3,7 @@
 # again. Install it once with `cargo install --locked sccache`.
 [build]
 rustc-wrapper = "sccache"
+jobs = 4
 
 # Signalsmith Stretch (AutoMix time-stretch) is C++. Link its runtime statically on Android so the APK does not
 # have to ship libc++_shared.so; crates/core/build.rs adds the matching libc++abi.

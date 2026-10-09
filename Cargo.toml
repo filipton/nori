@@ -29,6 +29,12 @@ opt-level = 2
 [profile.test.package.nori-engine]
 opt-level = 2
 
+[profile.test.package.nori-android]
+opt-level = 2
+
+[profile.test.package.nori-ios]
+opt-level = 2
+
 [profile.test.package."*"]
 opt-level = 2
 
@@ -41,3 +47,10 @@ opt-level = 3
 # unwind tables in the library, nothing per call.
 panic = "unwind"
 strip = true
+
+# Fast native rebuilds for debug APKs; keep the sound chain optimized.
+[profile.android-dev]
+inherits = "release"
+lto = "off"
+codegen-units = 16
+incremental = true

@@ -1,0 +1,35 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "nori_player",
+    crate_name = "nori_player",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2021",
+    crate_features = ["synth"],
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True),
+    visibility = ["//visibility:public"],
+)
+
+rust_test(
+    name = "unit_tests",
+    rustc_env = {"CARGO_MANIFEST_DIR": "crates/player"},
+    crate = ":nori_player",
+    compile_data = glob(["testdata/**", "models/**"]),
+    data = glob(["testdata/**"]),
+    aliases = aliases(normal_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+)
+
+rust_test(
+    name = "pipeline",
+    rustc_env = {"CARGO_MANIFEST_DIR": "crates/player"},
+    crate_name = "pipeline",
+    crate_root = "tests/pipeline/main.rs",
+    srcs = glob(["tests/pipeline/**/*.rs"]),
+    data = glob(["testdata/**"]),
+    edition = "2021",
+    deps = [":nori_player"],
+)

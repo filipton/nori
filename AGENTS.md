@@ -8,6 +8,10 @@ performance come first; the UI should look and move like Apple Music, cheaply.
 ```sh
 cargo test -j4 --workspace                          # all Rust tests; never -j above 4 (the machine runs out of memory)
 cargo test -j4 -p <crate>                           # one crate while iterating
+tools/check.sh rust --workspace                     # nextest, queued across worktrees; doctests separately
+tools/check.sh android                              # queued debug APK with incremental optimized Rust
+tools/device-check.sh smoke                         # lease one device from NORI_E2E_DEVICES
+tools/check.sh bazel test //crates/player:all        # cached player unit/pipeline pilot
 cargo test -p nori-player --test pipeline    # player end to end on a virtual clock
 cargo clippy -j4 --workspace --all-targets          # no new warnings
 ./gradlew :app:compileDebugKotlin -PrustTargets=arm64-v8a    # Kotlin compiles (this Mac's emulator is arm64)
@@ -25,6 +29,9 @@ tools/ipod-bench.sh nori|music                      # iPod battery/CPU for 30 mi
 
 Before committing: `cargo test -j4 --workspace` and a build. If the change reaches Android, also
 `tools/smoke.sh` plus the `--only` sections it touches. The full e2e suites run once per batch.
+Use `tools/check.sh` or `tools/with-resource.py build <command>` for heavy commands across agents.
+Device scripts lease their emulator; `tools/device-check.sh` allocates from `NORI_E2E_DEVICES`.
+Multiple emulators are supported, with isolated fixture accounts and ports. See `docs/development.md`.
 
 ## Layout
 
@@ -88,7 +95,7 @@ owner's decisions), `docs/perf-build.md`.
   array/buffer ones `@FastNative`; the Kotlin `external fun` and the Rust function must agree. Doors
   only convert; logic belongs in the core.
 - A new core crate goes into `crates/android/build.rs`'s list, nori-android's dependencies and
-  nori-core's `ffi` feature.
+  nori-core's `ffi` feature, and `core/build.gradle.kts`'s binding inputs if it exports an interface.
 - A new setting: one `StoredPrefs` field with its `#[setting(...)]` line (crates/settings), then its row
   in `app/.../vm/SettingsPages.kt` + `strings.xml` (+ `INDEX` entry if searchable) and, if it makes
   sense, `crates/cli/src/settings_view.rs`. `tests/stored_format.rs` guards the stored format

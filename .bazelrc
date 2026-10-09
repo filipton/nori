@@ -1,0 +1,7 @@
+build --jobs=4
+build --local_resources=cpu=4
+test --local_test_jobs=2
+test --test_env=RUST_TEST_THREADS=2
+build --compilation_mode=opt
+build --disk_cache=~/.cache/nori/bazel
+build --remote_cache_compression
