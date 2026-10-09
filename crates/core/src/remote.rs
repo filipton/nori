@@ -655,6 +655,8 @@ struct Inner {
     relay_polling: bool,
     /// The last relay poll failed: the devices it listed may have gone since, and are not shown.
     relay_down: bool,
+    /// What the relay's last answer said of it, as logged.
+    relay_said: Option<String>,
     /// This guest's pass was refused: its jam is over.
     jam_over: bool,
     /// Bumped to end the nearby doors' pollers.
@@ -1679,6 +1681,7 @@ impl Remote {
         let me = self.clone();
         self.spawn("nori-remote-probe", move || {
             let Some(got) = me.get(me.poll_url(None, false, false), 0, |_| true) else { return };
+            me.note_relay(support(&got), &got);
             let serving = {
                 let mut i = me.inner.lock();
                 match support(&got) {
@@ -1757,7 +1760,9 @@ impl Remote {
             if self.inner.lock().generation != generation {
                 return;
             }
-            match (support(&got), got) {
+            let found = support(&got);
+            self.note_relay(found, &got);
+            match (found, got) {
                 (Some(RelaySupport::Supported), Ok(body)) => {
                     self.inner.lock().relay = RelaySupport::Supported;
                     self.took(answer(&body).unwrap_or_default(), received);
@@ -1774,6 +1779,21 @@ impl Remote {
                     }
                 }
             }
+        }
+    }
+
+    /// Logs what the relay's answer says of it when that differs from the last one: the relay answering,
+    /// the server answering something else, the network failing.
+    fn note_relay(&self, found: Option<RelaySupport>, got: &Result<Vec<u8>, NetError>) {
+        let said = match (found, got) {
+            (Some(RelaySupport::Supported), _) => "answers".to_string(),
+            (Some(_), Ok(body)) => format!("is not there, the server said {}", String::from_utf8_lossy(&body[..body.len().min(120)])),
+            (Some(_), Err(e)) => format!("is not there: {e}"),
+            (None, Ok(_)) => return,
+            (None, Err(e)) => format!("cannot be reached: {e}"),
+        };
+        if self.inner.lock().relay_said.replace(said.clone()).as_deref() != Some(&said) {
+            crate::alog::info(&format!("remote: the relay {said}"));
         }
     }
 
