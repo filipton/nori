@@ -124,7 +124,6 @@ final class MiniPlayer: UIView {
         play.setImage(Glyph.play, for: .normal)
         play.tintColor = Theme.label
         play.addTarget(self, action: #selector(toggle), for: .touchUpInside)
-        speaker.tintColor = Theme.label
         speaker.addTarget(self, action: #selector(speakerTapped), for: .touchUpInside)
         outputs.attach(to: speaker)
         heart.tintColor = Theme.label
@@ -212,10 +211,13 @@ final class MiniPlayer: UIView {
         // The sound goes elsewhere: the speaker is filled, and says only that. A jam stands in its place: it
         // plays on this iPod only.
         if now.jam {
-            speaker.setImage(Glyph.groupsSmall, for: .normal)
+            let listened = (Core.shared.jam?.listeners.count ?? 0) > 0
+            speaker.setImage(listened ? Glyph.groupsSmall : Glyph.groupsSmallOutline, for: .normal)
+            speaker.tintColor = listened ? Theme.label : Theme.secondary
             speaker.accessibilityLabel = Core.shared.jam?.strip ?? Say.jamGuest
         } else {
             speaker.setImage(now.device != nil ? Glyph.speakerSmall : Glyph.speakerSmallOutline, for: .normal)
+            speaker.tintColor = now.device != nil ? Theme.label : Theme.secondary
             speaker.accessibilityLabel = now.device.map(Say.playingOn) ?? Say.output
         }
         paintHeart()

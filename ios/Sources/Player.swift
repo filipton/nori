@@ -226,7 +226,9 @@ final class PlayerCard: UIViewController {
 
     @objc private func changed() {
         let now = Core.shared.now
-        devices.tintColor = now.device == nil && !now.jam ? Theme.Card.secondary : Theme.Card.label
+        // The output's button is lit while the sound is elsewhere, and a jam's while someone listens.
+        let listened = now.jam && (Core.shared.jam?.listeners.count ?? 0) > 0
+        devices.tintColor = (now.jam ? listened : now.device != nil) ? Theme.Card.label : Theme.Card.secondary
         let elsewhere = now.device != nil
         if volume.isHidden != elsewhere {
             let swap = {
@@ -248,7 +250,7 @@ final class PlayerCard: UIViewController {
         play.isHidden = now.jam && (jam?.play ?? 0) == 0
         transport.isHidden = previous.isHidden && play.isHidden
         // A jam stands where the output's speaker does: a jam plays on this device only.
-        devices.setImage(now.jam ? Glyph.groups : Glyph.speaker, for: .normal)
+        devices.setImage(now.jam ? (listened ? Glyph.groups : Glyph.groupsOutline) : Glyph.speaker, for: .normal)
         devices.accessibilityLabel = now.jam ? (Core.shared.jam?.strip ?? Say.jamGuest) : Say.output
         seek.isUserInteractionEnabled = !now.jam || (jam?.seek ?? 0) != 0
         guard let song = now.song else {
