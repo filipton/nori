@@ -197,7 +197,7 @@ class PlaybackService : MediaLibraryService() {
         analyser = AutoMixPrefetch(nori.sources, nori.analyses) { player.replan() }
         // Nothing is watched until a bridge starts (see OfflineBridge). The player says itself when the
         // core handed a failure to the bridge.
-        offlineBridge = OfflineBridge(this, player, { nori.core }, nori.session, main, ::applyEdit, ::skipAfterError)
+        offlineBridge = OfflineBridge(this, player, { nori.core }, { nori.client }, nori.session, scope, ::applyEdit, ::skipAfterError)
         player.onBridge = ::bridge
         player.addListener(listener)
         nori.widgets.onPlaced = ::announce

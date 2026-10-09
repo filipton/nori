@@ -793,10 +793,9 @@ impl Session {
         }
         if steps.bridge == BridgeStep::Parked {
             // Back to the parked song if the server answers, else bridged further.
-            let (client, core, me) = (self.client.clone(), self.core.clone(), self.handle());
+            let (client, me) = (self.client.clone(), self.handle());
             spawn("nori-bridge", move || {
-                let up = block_on(client.read_now(Read::Ping)).is_ok();
-                if let Some(edit) = core.bridge_parked(up) {
+                if let Some(edit) = block_on(client.bridge_parked()) {
                     me.apply(&edit);
                 }
             });
