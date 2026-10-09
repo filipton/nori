@@ -901,7 +901,7 @@ fn jam() -> nori_core::remote::JamView {
     let ask = |request, from: &str, title: &str, provider| Pending { request, from: from.to_lowercase(), from_name: from.into(), song: Entry { title: title.into(), ..Default::default() }, provider };
     nori_core::remote::JamView {
         hosting: true,
-        link: Some("nori://jam?s=http%3A%2F%2Focto%3A5274&k=c1a952e53165572a6349ca04fa2e3b8a".into()),
+        link: Some("http://octo:5274/nori/jam#s=http%3A%2F%2Focto%3A5274&k=c1a952e53165572a6349ca04fa2e3b8a".into()),
         you: "me".into(),
         members: vec![member("me", "Mac", Role::Host), member("gus", "gus", Role::Guest), member("dee", "Dee", Role::Admin)],
         pending: vec![ask(7, "Gus", "Wish", true), ask(12, "Dee", "Blue", false)],
@@ -1037,7 +1037,7 @@ fn jam_header_and_requests_in_the_queue() {
     assert_eq!(a.cmds.last(), Some(&Cmd::JamEnd));
     at(&mut a, crate::app::QueueRow::Jam);
     key(&mut a, KeyCode::Enter);
-    assert!(matches!(&a.overlay, Some(Overlay::Invite { link }) if link.starts_with("nori://jam")));
+    assert!(matches!(&a.overlay, Some(Overlay::Invite { link }) if link.starts_with("http://octo:5274/nori/jam#")));
 
     // The player bar says the jam is on.
     a.overlay = None;

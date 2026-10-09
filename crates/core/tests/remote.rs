@@ -594,7 +594,7 @@ fn a_jam_takes_requests_through_its_host() {
     let host = Device::account(&relay, DeviceKind::Phone, "Host");
     host.playing(&["s1", "s2"], 0);
     let link = block_on(host.remote.clone().jam_open()).unwrap();
-    assert!(link.starts_with("nori://jam?s=http%3A%2F%2Focto%3A5274&k="), "{link}");
+    assert!(link.starts_with("http://octo:5274/nori/jam#s=http%3A%2F%2Focto%3A5274&k="), "{link}");
 
     let guest_of = |name: &str| {
         let pass = block_on(jam_join(relay.clone(), link.clone(), name.into())).unwrap();

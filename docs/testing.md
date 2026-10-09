@@ -167,9 +167,9 @@ is Android glue and stays on the device. 50 moved, 60 stay.
   following it with the picker closed and stopping when it goes, its whole queue in pages, a command shown at
   once and corrected by the next state, a transfer's play order, shuffle and repeat, the volume both ways and
   the star. The desktop's and terminal's volume over remote control is nori-host's (remote.rs). What stays on a
-  device is Android's: NsdManager announcing and finding doors, the system volume a command sets, a `nori://jam`
-  link opening the app as a guest, and the media session handed to another device (RemoteDevicePlayer: the
-  notification, the volume keys as a remote volume, the phone's own engine let go), which only media3 and the
+  device is Android's: NsdManager announcing and finding doors, the system volume a command sets, an invite (the
+  relay's `/nori/jam` page in the browser, or a `nori://jam` link) opening the app as a guest, and the media
+  session handed to another device (RemoteDevicePlayer: the notification, the volume keys as a remote volume, the phone's own engine let go), which only media3 and the
   system can show. `tools/feature-e2e.sh --only remote` checks that with the terminal client on this Mac as the
   other device (local server only): the emulator cannot hear the Mac's mDNS, so the door is handed to the app
   (`app.sh remote "found" "<host>|<port>|<txt>"`, read with `dns-sd`), then `remote pick`, `remote mirror`.

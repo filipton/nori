@@ -24,8 +24,11 @@ pub fn is_guest_key(api_key: &str) -> bool {
     api_key.starts_with(GUEST_KEY)
 }
 
-/// The scheme and host of an invite link; the app opens such links.
-const INVITE: &str = "nori://jam";
+/// The app's own invite link, which Android opens nori with; the invite page hands the invite over as one.
+const APP_INVITE: &str = "nori://jam";
+
+/// The path, under the server's address, of octo-fiesta's invite page, which hands the invite to the app.
+const INVITE_PAGE: &str = "/nori/jam";
 
 fn encode(v: &str) -> String {
     v.bytes()
@@ -52,14 +55,23 @@ fn decode(v: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// The link (and QR code) a guest joins with: the relay's address and the jam's invite key.
+/// The link (and QR code) a guest joins with: the relay's invite page, with the relay's address and the
+/// jam's invite key in the fragment, which a browser keeps out of requests and so out of access logs.
 pub fn invite_link(server: &str, invite: &str) -> String {
-    format!("{INVITE}?s={}&k={}", encode(server), encode(invite))
+    format!("{}{INVITE_PAGE}#s={}&k={}", server.trim_end_matches('/'), encode(server), encode(invite))
 }
 
-/// The relay's address and the invite key of an invite link; None for anything else.
+/// The relay's address and the invite key of an invite link, the page's or the app's; None for anything else.
 pub fn parse_invite(link: &str) -> Option<(String, String)> {
-    let query = link.trim().strip_prefix(INVITE)?.strip_prefix('?')?;
+    let link = link.trim();
+    let query = match link.strip_prefix(APP_INVITE) {
+        Some(rest) => rest.strip_prefix('?')?,
+        None => {
+            let (page, fragment) = link.split_once('#')?;
+            let web = ["https://", "http://"].iter().any(|s| page.get(..s.len()).is_some_and(|p| p.eq_ignore_ascii_case(s)));
+            (web && page.trim_end_matches('/').ends_with(INVITE_PAGE)).then_some(fragment)?
+        }
+    };
     let get = |key: &str| query.split('&').filter_map(|kv| kv.split_once('=')).find(|(k, _)| *k == key).and_then(|(_, v)| decode(v));
     let (server, invite) = (get("s")?, get("k")?);
     (!server.is_empty() && !invite.is_empty()).then_some((server, invite))
@@ -145,14 +157,39 @@ mod tests {
 
     #[test]
     fn invites_read_back() {
-        let link = invite_link("https://music.example.com:8443/octo", "k3y/+");
-        assert!(is_invite(&link));
-        assert_eq!(parse_invite(&link), Some(("https://music.example.com:8443/octo".into(), "k3y/+".into())));
-        for other in ["https://example.com", "nori://jam?s=x", "nori://jam?s=&k=k", "nori://jam?s=%zz&k=k"] {
-            assert_eq!(parse_invite(other), None, "{other}");
+        for server in ["https://music.example.com:8443/octo", "https://music.example.com/octo/", "http://10.0.2.2:5274"] {
+            let link = invite_link(server, "k3y/+");
+            assert!(link.starts_with(&format!("{}/nori/jam#s=", server.trim_end_matches('/'))), "{link}");
+            assert_eq!(parse_invite(&link), Some((server.into(), "k3y/+".into())), "{link}");
         }
         assert!(is_guest_key(&guest_key("abc")) && !is_guest_key("abc"));
         assert_ne!(new_id(), new_id());
+    }
+
+    #[test]
+    fn invite_links_parse() {
+        let octo = Some(("https://music.example.com/octo".to_string(), "k3y".to_string()));
+        let cases = [
+            ("https://music.example.com/octo/nori/jam#s=https%3A%2F%2Fmusic.example.com%2Focto&k=k3y", octo.clone()),
+            (" HTTPS://music.example.com/octo/nori/jam/#k=k3y&s=https%3A%2F%2Fmusic.example.com%2Focto\n", octo.clone()),
+            ("http://192.168.1.5:5274/nori/jam#s=http%3A%2F%2F192.168.1.5%3A5274&k=abc", Some(("http://192.168.1.5:5274".into(), "abc".into()))),
+            ("nori://jam?s=https%3A%2F%2Fmusic.example.com%2Focto&k=k3y", octo),
+            ("https://music.example.com/nori/jam#s=https%3A%2F%2Fmusic.example.com", None),
+            ("https://music.example.com/nori/jam#s=https%3A%2F%2Fmusic.example.com&k=", None),
+            ("https://music.example.com/nori/jam?s=https%3A%2F%2Fmusic.example.com&k=k3y", None),
+            ("https://music.example.com/other#s=x&k=k3y", None),
+            ("ftp://music.example.com/nori/jam#s=x&k=k3y", None),
+            ("nori://jam?s=x", None),
+            ("nori://jam?s=&k=k", None),
+            ("nori://jam?s=%zz&k=k", None),
+            ("https://example.com", None),
+            ("hello", None),
+            ("", None),
+        ];
+        for (link, parsed) in cases {
+            assert_eq!(parse_invite(link), parsed, "{link}");
+            assert_eq!(is_invite(link), parsed.is_some(), "{link}");
+        }
     }
 
     #[test]
@@ -186,8 +223,7 @@ mod tests {
 
     #[test]
     fn invite_fits_a_qr_code() {
-        let link = "nori://jam?s=https%3A%2F%2Fmusic.example.com&k=0123456789abcdef0123456789abcdef";
-        let q = qr_code(link.into()).unwrap();
+        let q = qr_code(invite_link("https://music.example.com/octo", "0123456789abcdef0123456789abcdef")).unwrap();
         assert_eq!(q.dark.len(), (q.size * q.size) as usize);
         // The three finder patterns' corners are dark.
         let at = |x: u32, y: u32| q.dark[(y * q.size + x) as usize];

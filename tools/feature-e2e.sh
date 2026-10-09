@@ -435,7 +435,7 @@ print(next(json.dumps({'id':s['id'],'title':s['title'],'artist':s['artist'],'cov
     check "nobody listens yet" on_screen 'text="no one yet"'
     tapnode text Invite
     check "Invite shows the code and the link" wait_until 10 on_screen 'text="Copy link"'
-    link=$(ui | grep -oE 'text="nori://jam[^"]*"' | head -1 | cut -d'"' -f2 | sed 's/&amp;/\&/g')
+    link=$(ui | grep -oE 'text="https?://[^"]*/nori/jam#[^"]*"' | head -1 | cut -d'"' -f2 | sed 's/&amp;/\&/g')
     echo "     the invite: $link"
     adb shell input keyevent KEYCODE_BACK
     guests="$here/../build/e2e-jam"; mkdir -p "$guests"
@@ -473,7 +473,8 @@ print(json.dumps({k:s.get(k) for k in ['id','title','artist','album','albumId','
     python3 "$here/jam-host.py" "$jam_server" admin admin "$(relay_song 'Long%20Track%2004')" "$(relay_song 'Long%20Track%2005')" > "$guests/host.log" 2>&1 & host=$!
     wait_until 15 grep -qs invite: "$guests/host.log"
     link=$(grep invite: "$guests/host.log" | cut -d' ' -f2)
-    adb shell am start -a android.intent.action.VIEW -d "'$link'" "$pkg" >/dev/null 2>&1
+    # The invite is the relay's page: the browser opens it, and the page hands the invite to the app.
+    adb shell am start -a android.intent.action.VIEW -d "'$link'" >/dev/null 2>&1
     check "the invite opens the player on the host's jam" wait_until 20 on_screen 'text="Mac Host’s Jam"'
     check "playing what the host plays" wait_for title "Long Track 04" 15
     check "said under the song" on_screen 'text="Jam · Mac Host · 1 listening"'

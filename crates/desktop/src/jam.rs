@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn the_invite_code_is_drawn_module_for_module() {
-        let link = "nori://jam?s=http%3A%2F%2Focto%3A5274&k=c1a952e53165572a6349ca04fa2e3b8a";
+        let link = "http://octo:5274/nori/jam#s=http%3A%2F%2Focto%3A5274&k=c1a952e53165572a6349ca04fa2e3b8a";
         let code = nori_core::remote::qr_code(link.into()).unwrap();
         let image = qr(link);
         assert_eq!((image.size().width, image.size().height), (code.size, code.size));

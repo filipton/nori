@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""A jam guest for the device checks: joins the jam a nori:// invite names and asks its host for songs, as
+"""A jam guest for the device checks: joins the jam an invite link names and asks its host for songs, as
 the core's guest does (nori-core remote.rs; the relay's frames are nori-remote wire.rs). The emulator's
 address in the link (10.0.2.2) is read as this Mac's. Prints one line per change it sees until killed.
 
   tools/jam-guest.py <link> <name> [<song json>...]
-  tools/jam-guest.py 'nori://jam?s=...&k=...' Gus '{"id":"6OQa...","title":"Far Song Two","duration":170}'
+  tools/jam-guest.py 'http://10.0.2.2:5274/nori/jam#s=...&k=...' Gus '{"id":"6OQa...","title":"Far Song Two","duration":170}'
 """
 import json
 import secrets
@@ -13,7 +13,9 @@ import urllib.parse
 import urllib.request
 
 link, name, songs = sys.argv[1], sys.argv[2], [json.loads(s) for s in sys.argv[3:]]
-query = urllib.parse.parse_qs(urllib.parse.urlsplit(link).query)
+parts = urllib.parse.urlsplit(link)
+# The invite page's link carries the invite in its fragment, the app's (nori://jam) in its query.
+query = urllib.parse.parse_qs(parts.query if parts.scheme == "nori" else parts.fragment)
 server = query["s"][0].replace("10.0.2.2", "localhost").rstrip("/")
 dev = secrets.token_hex(8)
 
