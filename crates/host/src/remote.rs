@@ -205,7 +205,7 @@ impl Elsewhere {
 
     /// Stars song `id` there when its queue has it ([`Remote::star_where_playing`]); false otherwise.
     pub(crate) fn star(&self, id: &str, on: bool) -> bool {
-        self.remote.star_where_playing(id.to_string(), on)
+        self.remote.clone().star_where_playing(id.to_string(), on)
     }
 
     fn row(&self) -> Option<&MirrorRow> {
@@ -291,11 +291,11 @@ impl Elsewhere {
 
     /// Puts song `id`, removed here, back where it was in the device's queue; false when it was not.
     pub(crate) fn put_back(&self, id: &str) -> bool {
-        self.remote.put_back(self.mirror.id.clone(), id.to_string())
+        self.remote.clone().put_back(self.mirror.id.clone(), id.to_string())
     }
 
     pub(crate) fn send(&self, op: Op) {
-        self.remote.send(self.mirror.id.clone(), op);
+        self.remote.clone().send(self.mirror.id.clone(), op);
     }
 }
 

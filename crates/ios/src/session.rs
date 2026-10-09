@@ -1180,7 +1180,7 @@ mod tests {
         until("the iPod listed", &|r| r.devices().iter().any(|d| d.id == ipod && d.name == "iPod touch"));
         phone.clone().pick(Some(ipod.clone()));
         until("the iPod mirrored", &|r| r.active().is_some());
-        phone.send(ipod.clone(), Op::Replace { songs, index: 0, position_ms: 0, play: true, order: None, shuffle: false, repeat: 0 });
+        phone.clone().send(ipod.clone(), Op::Replace { songs, index: 0, position_ms: 0, play: true, order: None, shuffle: false, repeat: 0 });
 
         let heard_ms = || sim.heard(&render, HostClock.now_us()) as i64 * 1_000 / 44_100;
         until("three seconds heard", &|r| r.active().is_some_and(|m| m.playing) && heard_ms() > 3_000);
@@ -1195,7 +1195,7 @@ mod tests {
         // buttons, the phone sees it.
         let volume = |r: &Remote| r.devices().into_iter().find(|d| d.id == ipod).and_then(|d| d.state?.volume);
         let at = mark();
-        phone.send(ipod.clone(), Op::Volume { percent: 30 });
+        phone.clone().send(ipod.clone(), Op::Volume { percent: 30 });
         expect(at, REPORT_VOLUME, |r| r.ms == 300);
         super::nori_ios_volume(0.55);
         until("the iPod's own volume", &|r| volume(r) == Some(55));

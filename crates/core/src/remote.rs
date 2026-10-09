@@ -26,7 +26,7 @@ use nori_remote::lan::{self, Door};
 use nori_player::engine::Plan;
 use nori_player::transitions::engine_plan;
 use nori_player::types::TransitionPlan;
-use nori_remote::wire::{Along, Answer, Body, DeviceKind, DeviceState, Entry, JamMember, JamState, Member, Mix, Op, Outgoing, Pending, Refusal, Role, Room, HOLD_MS};
+use nori_remote::wire::{Along, Answer, Body, DeviceKind, DeviceState, Entry, JamMember, JamState, Member, Mix, Obeyed, Op, Outgoing, Pending, Refusal, Role, Room, HOLD_MS};
 use parking_lot::{Condvar, Mutex};
 use serde::Deserialize;
 
@@ -66,6 +66,10 @@ const POSITION_SLACK_MS: i64 = 5;
 /// Time exchanges of a burst go out this far apart: more than most round trips through a relay, so an
 /// answer does not wait behind the one before.
 const BURST_GAP_MS: u64 = 250;
+
+/// How long a command sent to the mirrored device shows as foreseen while the device does not say it
+/// carried it out: an older device never says, and one that could not hear it falls back to its state.
+const FORESEEN_US: i64 = 3_000_000;
 
 /// What the platform's player does for the remote control.
 #[cfg_attr(feature = "ffi", uniffi::export(with_foreign))]
@@ -391,6 +395,8 @@ struct Mirrored {
     id: String,
     /// Its state as it last arrived.
     heard: Option<DeviceState>,
+    /// When `heard` arrived, on this device's clock.
+    arrived: i64,
     /// That state with this device's own commands since then foreseen in it.
     shown: Option<DeviceState>,
     /// When `shown`'s position was right, on this device's clock: as it arrived, or was foreseen here.
@@ -405,18 +411,46 @@ struct Mirrored {
     asking: Option<u32>,
     /// Songs this device removed there, and the list index each had, for [`Remote::put_back`].
     taken: Vec<(Song, u32)>,
+    /// This device's commands the device has not said it carried out yet, oldest first.
+    foreseen: Vec<Foreseen>,
+}
+
+/// A command sent to the mirrored device, as it is expected to come out.
+struct Foreseen {
+    /// The command's id.
+    id: u64,
+    /// Until when (this device's clock) it shows without the device's word.
+    until: i64,
+    change: Change,
+}
+
+/// What a command changes in the mirrored device's state.
+#[derive(Clone)]
+enum Change {
+    /// Plays or pauses at `ms`, as of `at` (this device's clock).
+    Playing { playing: bool, ms: i64, at: i64 },
+    /// Goes to list index `index` at `ms`, as of `at`.
+    Place { index: Option<u32>, ms: i64, at: i64 },
+    Shuffle(bool),
+    Repeat(u8),
+    Volume(u8),
+    Star { id: String, on: bool },
 }
 
 impl Mirrored {
     fn new(id: String) -> Mirrored {
-        Mirrored { id, heard: None, shown: None, at: clock::now_us(), device_at: None, clock: ClockSync::default(), pages: Vec::new(), asking: None, taken: Vec::new() }
+        Mirrored { id, heard: None, arrived: 0, shown: None, at: clock::now_us(), device_at: None, clock: ClockSync::default(), pages: Vec::new(), asking: None, taken: Vec::new(), foreseen: Vec::new() }
     }
 
-    /// A state arrived from the device (`at`: when, on this device's clock). False when it is the one
-    /// already heard.
-    fn heard(&mut self, state: &DeviceState, at: i64) -> bool {
+    /// A state arrived from the device (`at`: when, on this device's clock). It ends the foresight of
+    /// every command of this device's (`me`) it says it carried out; the rest still shows over it. False
+    /// when it is the one already heard.
+    fn heard(&mut self, state: &DeviceState, at: i64, me: &str) -> bool {
         if self.heard.as_ref() == Some(state) {
             return false;
+        }
+        if let Some(done) = state.obeyed.iter().find(|o| o.from == me) {
+            self.foreseen.retain(|f| f.id > done.id);
         }
         let rev = self.shown.as_ref().map(|s| (s.rev, s.len));
         if rev != Some((state.rev, state.len)) {
@@ -429,10 +463,61 @@ impl Mirrored {
             }
         }
         self.heard = Some(state.clone());
-        self.shown = Some(state.clone());
-        self.at = at;
-        self.device_at = state.at_us;
+        self.arrived = at;
+        self.show();
         true
+    }
+
+    /// `shown`: the state heard, with the commands foreseen over it.
+    fn show(&mut self) {
+        self.shown = self.heard.clone();
+        self.at = self.arrived;
+        self.device_at = self.heard.as_ref().and_then(|s| s.at_us);
+        for change in self.foreseen.iter().map(|f| f.change.clone()).collect::<Vec<_>>() {
+            self.put(&change);
+        }
+    }
+
+    /// Drops the foresight of command `id` (refused), and of every command shown for long enough by
+    /// `now`; whether anything shown changed.
+    fn forget(&mut self, id: Option<u64>, now: i64) -> bool {
+        let before = self.foreseen.len();
+        self.foreseen.retain(|f| Some(f.id) != id && f.until > now);
+        let changed = self.foreseen.len() != before;
+        if changed {
+            self.show();
+        }
+        changed
+    }
+
+    /// When the oldest foresight left ends without the device's word.
+    fn foreseen_until(&self) -> Option<i64> {
+        self.foreseen.iter().map(|f| f.until).min()
+    }
+
+    fn put(&mut self, change: &Change) {
+        let Some(st) = &mut self.shown else { return };
+        let (index, ms, at) = match *change {
+            Change::Playing { playing, ms, at } => {
+                st.playing = playing;
+                st.buffering &= playing;
+                (st.index, ms, at)
+            }
+            Change::Place { index, ms, at } => (index, ms, at),
+            Change::Shuffle(on) => return st.shuffle = on,
+            Change::Repeat(mode) => return st.repeat = mode,
+            Change::Volume(percent) => return st.volume = Some(percent),
+            Change::Star { ref id, on } => {
+                for e in st.entries.iter_mut().chain(self.pages.iter_mut().flatten()).filter(|e| e.id == *id) {
+                    e.starred = on;
+                }
+                return;
+            }
+        };
+        st.index = index;
+        st.position_ms = ms;
+        self.at = at;
+        self.device_at = None;
     }
 
     /// Whether the device plays as shown here: its playhead runs on, so its clock matters.
@@ -485,58 +570,36 @@ impl Mirrored {
         all
     }
 
-    /// `op`, sent to the device, as this device expects it to come out; the device's next state says
-    /// what it really did.
-    fn foresee(&mut self, op: &Op) {
+    /// Command `id`, `op`, sent to the device, as this device expects it to come out: shown until the
+    /// device says it carried it out, refuses it, or [`FORESEEN_US`] passes.
+    fn foresee(&mut self, id: u64, op: &Op) {
         let rows = self.rows();
         let at = self.shown_at();
-        let Some(st) = &mut self.shown else { return };
+        let Some(st) = &self.shown else { return };
         let here = clock::now_us();
         let now = nori_remote::position_now(st, (here - at) / 1000);
         let at = rows.iter().position(|e| Some(e.index) == st.index);
         let to = |k: Option<usize>| k.and_then(|k| rows.get(k)).map(|e| e.index);
-        let (index, position) = match *op {
-            Op::Play => {
-                st.playing = true;
-                (st.index, now)
-            }
-            Op::Pause => {
-                st.playing = false;
-                st.buffering = false;
-                (st.index, now)
-            }
-            Op::Seek { ms } => (st.index, ms),
+        let place = |index: Option<u32>, ms: i64| Change::Place { index, ms, at: here };
+        let change = match *op {
+            Op::Play => Change::Playing { playing: true, ms: now, at: here },
+            Op::Pause => Change::Playing { playing: false, ms: now, at: here },
+            Op::Seek { ms } => place(st.index, ms),
             Op::Next => match to(at.map(|a| a + 1)).or_else(|| (st.repeat != 0).then(|| to(Some(0))).flatten()) {
-                Some(i) => (Some(i), 0),
+                Some(i) => place(Some(i), 0),
                 None => return,
             },
-            Op::Previous if now > PREVIOUS_RESTARTS_MS => (st.index, 0),
-            Op::Previous => (to(at.and_then(|a| a.checked_sub(1))).or(st.index), 0),
-            Op::Jump { index, .. } => (Some(index), 0),
-            Op::Shuffle { on } => {
-                st.shuffle = on;
-                return;
-            }
-            Op::Repeat { mode } => {
-                st.repeat = mode;
-                return;
-            }
-            Op::Volume { percent } => {
-                st.volume = Some(percent);
-                return;
-            }
-            Op::Star { ref id, on } => {
-                for e in st.entries.iter_mut().chain(self.pages.iter_mut().flatten()).filter(|e| e.id == *id) {
-                    e.starred = on;
-                }
-                return;
-            }
+            Op::Previous if now > PREVIOUS_RESTARTS_MS => place(st.index, 0),
+            Op::Previous => place(to(at.and_then(|a| a.checked_sub(1))).or(st.index), 0),
+            Op::Jump { index, .. } => place(Some(index), 0),
+            Op::Shuffle { on } => Change::Shuffle(on),
+            Op::Repeat { mode } => Change::Repeat(mode),
+            Op::Volume { percent } => Change::Volume(percent),
+            Op::Star { ref id, on } => Change::Star { id: id.clone(), on },
             _ => return,
         };
-        st.index = index;
-        st.position_ms = position;
-        self.at = here;
-        self.device_at = None;
+        self.put(&change);
+        self.foreseen.push(Foreseen { id, until: here + FORESEEN_US, change });
     }
 
     fn view(&self, name: String, kind: DeviceKind, refused: Option<Refusal>) -> Option<Mirror> {
@@ -591,8 +654,12 @@ struct Inner {
     playing_at: Option<i64>,
     /// The device this one last handed its playback to, until it plays again.
     handed_to: Option<String>,
+    /// The last command carried out from each controller, as published states say it.
+    obeyed: Vec<Obeyed>,
     /// The account's active device, while it is another one.
     mirror: Option<Mirrored>,
+    /// A thread lets the mirrored device's foresights go as they end ([`Remote::end_foresight`]).
+    ending_foresight: bool,
     /// Bumped to end the running time keeper (each runs while its generation is current).
     timing: u64,
     published: Option<(DeviceState, Instant)>,
@@ -948,13 +1015,16 @@ impl Remote {
             (None, None) => {}
             (Some(_), None) if idle => self.set_active(None),
             // Followed until the queue arrives (its transfer replaces the queue here).
-            (Some(a), None) => self.send(a, Op::Transfer { to: self.id.clone() }),
+            (Some(a), None) => {
+                let to = self.id.clone();
+                self.send(a, Op::Transfer { to })
+            }
             (None, Some(d)) if here && !leads => self.hand_over(d),
             (None, Some(d)) => self.set_active(Some(d)),
             (Some(a), Some(d)) if a == d => {}
             (Some(_), Some(d)) if plays => self.set_active(Some(d)),
             (Some(a), Some(d)) => {
-                self.send(a, Op::Transfer { to: d.clone() });
+                self.clone().send(a, Op::Transfer { to: d.clone() });
                 self.set_active(Some(d));
             }
         }
@@ -977,7 +1047,9 @@ impl Remote {
 
     /// Sends `op` to device `device`; its answer shows in [`Remote::devices`]. Sent to the mirrored
     /// device, it shows in [`Remote::active`] at once, as it is expected to come out.
-    pub fn send(&self, device: String, op: Op) {
+    pub fn send(self: Arc<Self>, device: String, op: Op) {
+        let id = self.next_id();
+        let mut foreseen = false;
         let link = {
             let mut i = self.inner.lock();
             if let Some(m) = i.mirror.as_mut().filter(|m| m.id == device) {
@@ -986,9 +1058,10 @@ impl Remote {
                         m.taken.push((e.song(), index));
                     }
                 }
-                m.foresee(&op);
-                // A play foreseen starts the time keeper.
+                m.foresee(id, &op);
+                // A play foreseen starts the time keeper, and a foresight ends on time.
                 self.timing.notify_all();
+                foreseen = true;
             }
             i.refused.remove(&device);
             let lan = i.peers.iter().find(|p| p.member.id == device).map(|p| Link::Lan(p.base()));
@@ -998,14 +1071,16 @@ impl Remote {
                 None => Link::Relay,
             }
         };
-        let id = self.next_id();
+        if foreseen {
+            self.end_foresight();
+        }
         self.out(Out::send(link, Outgoing { to: Some(device), body: Some(Body::Command { id, op: Box::new(op) }), ..Default::default() }));
         self.shown.changed();
     }
 
     /// Undoes the removal of song `id` from the mirrored device `device`'s queue: it goes back where it
     /// was there ([`Op::Restore`]). False when this device did not take it out.
-    pub fn put_back(&self, device: String, id: String) -> bool {
+    pub fn put_back(self: Arc<Self>, device: String, id: String) -> bool {
         let taken = {
             let mut i = self.inner.lock();
             let Some(m) = i.mirror.as_mut().filter(|m| m.id == device) else { return false };
@@ -1020,7 +1095,7 @@ impl Remote {
     /// A heart pressed for song `id` while another device plays: sent there when its queue has the song
     /// (that device stars it on the server and shows it), so the server hears it once. False when this
     /// device stars it itself: nothing is mirrored, or the song is not in that queue.
-    pub fn star_where_playing(&self, id: String, on: bool) -> bool {
+    pub fn star_where_playing(self: Arc<Self>, id: String, on: bool) -> bool {
         let device = self.inner.lock().mirror.as_ref().filter(|m| m.rows().iter().any(|e| e.id == id)).map(|m| m.id.clone());
         let Some(device) = device else { return false };
         self.send(device, Op::Star { id, on });
@@ -1160,7 +1235,7 @@ impl Remote {
         };
         match host {
             None => {
-                let _ = self.carry_out(&Via::Relay(None), &self.id.clone(), op);
+                let _ = self.carry_out(&Via::Relay(None), &self.id.clone(), self.next_id(), op);
                 self.shown.changed();
             }
             Some((room, host)) => {
@@ -1385,6 +1460,35 @@ impl Remote {
         if let Some(f) = follower {
             f.lead(None);
         }
+    }
+
+    /// Lets each foresight of the mirrored device go once it has shown for long enough, on a thread
+    /// that runs while there are any.
+    fn end_foresight(self: &Arc<Self>) {
+        {
+            let mut i = self.inner.lock();
+            if i.ending_foresight {
+                return;
+            }
+            i.ending_foresight = true;
+        }
+        let me = self.clone();
+        self.spawn("nori-remote-foreseen", move || loop {
+            let mut i = me.inner.lock();
+            let Some(until) = i.mirror.as_ref().and_then(Mirrored::foreseen_until) else {
+                i.ending_foresight = false;
+                return;
+            };
+            let wait = Duration::from_micros((until - clock::now_us()).max(0) as u64);
+            if !me.timing.wait_for(&mut i, wait).timed_out() {
+                continue;
+            }
+            let changed = i.mirror.as_mut().is_some_and(|m| m.forget(None, clock::now_us()));
+            drop(i);
+            if changed {
+                me.shown.changed();
+            }
+        });
     }
 
     /// Hands the host's playback to the follower when it changed.
@@ -1684,7 +1788,7 @@ impl Remote {
                 for e in a.events {
                     match e.body {
                         Body::Command { id, op } => commands.push((id, *op)),
-                        Body::Ack { refusal, .. } => note(&mut i.refused, &from, refusal),
+                        Body::Ack { id, refusal } => note(&mut i, &from, id, refusal),
                         Body::Page { rev, from: turn, entries, .. } => paged(&mut i, &from, rev, turn, entries),
                         Body::Clock { t1, t2, t3 } => timed(&mut i, &from, clock::Exchange { t1, t2, t3, t4: received }),
                     }
@@ -1739,7 +1843,7 @@ impl Remote {
                 let jam = a.rooms.iter().any(|r| r.jam && r.room == e.room);
                 match e.body {
                     Body::Command { id, op } => commands.push((Via::Relay(jam.then_some(e.room)), e.from, id, *op)),
-                    Body::Ack { refusal, .. } => note(&mut i.refused, &e.from, refusal),
+                    Body::Ack { id, refusal } => note(&mut i, &e.from, id, refusal),
                     Body::Page { rev, from, entries, .. } => paged(&mut i, &e.from, rev, from, entries),
                     Body::Clock { t1, t2, t3 } => timed(&mut i, &e.from, clock::Exchange { t1, t2, t3, t4: received }),
                 }
@@ -1857,7 +1961,7 @@ impl Remote {
             let me = self.id.clone();
             let m = i.mirror.as_mut().expect("mirrored");
             let moved = match heard {
-                Some((st, at)) if m.heard(&st, at) => {
+                Some((st, at)) if m.heard(&st, at, &me) => {
                     // It may have started or stopped playing: the time keeper looks again.
                     self.timing.notify_all();
                     st.handed_to.filter(|to| *to != me && *to != id)
@@ -1876,7 +1980,7 @@ impl Remote {
             return self.set_active(Some(to));
         }
         if let Some((id, from)) = page {
-            self.send(id, Op::Page { from, count: PAGE });
+            self.clone().send(id, Op::Page { from, count: PAGE });
         }
     }
 
@@ -1888,7 +1992,7 @@ impl Remote {
                 let q = self.read_queue(|_, len| turn as usize..(turn.saturating_add(count.min(PAGE_MAX)) as usize).min(len));
                 Body::Page { id, rev: q.rev, from: turn, entries: q.entries }
             }
-            op => Body::Ack { id, refusal: self.carry_out(&via, &from, op).err() },
+            op => Body::Ack { id, refusal: self.carry_out(&via, &from, id, op).err() },
         };
         self.answer_to(via, from, body);
     }
@@ -1905,7 +2009,7 @@ impl Remote {
         }
     }
 
-    fn carry_out(self: &Arc<Self>, via: &Via, from: &str, op: Op) -> Result<(), Refusal> {
+    fn carry_out(self: &Arc<Self>, via: &Via, from: &str, id: u64, op: Op) -> Result<(), Refusal> {
         let in_jam = matches!(via, Via::Relay(Some(_)));
         if is_jam(&op) {
             let kick = match &op {
@@ -1930,6 +2034,12 @@ impl Remote {
         let sender = if in_jam { Sender::Member(Role::Guest) } else { Sender::Owner };
         let (rev, len) = self.client.core.session.playlist(|p| (p.rev(), p.len() as u32));
         admit(&op, sender, rev, len)?;
+        // Said with the next state published, which shows what the player made of it.
+        if !in_jam {
+            let mut i = self.inner.lock();
+            i.obeyed.retain(|o| o.from != from);
+            i.obeyed.push(Obeyed { from: from.to_string(), id });
+        }
         match op {
             Op::Transfer { to } => self.transfer(via, from, to),
             Op::Clear => {
@@ -2027,6 +2137,7 @@ impl Remote {
             repeat: q.repeat,
             jam,
             handed_to: i.handed_to.clone(),
+            obeyed: i.obeyed.clone(),
             at_us: None,
             rate: Some(p.rate),
         };
@@ -2104,11 +2215,19 @@ fn timed(i: &mut Inner, from: &str, exchange: clock::Exchange) {
     }
 }
 
-fn note(refused: &mut HashMap<String, Refusal>, from: &str, refusal: Option<Refusal>) {
+/// Device `from` answered command `id`; a refusal ends its foresight.
+fn note(i: &mut Inner, from: &str, id: u64, refusal: Option<Refusal>) {
     match refusal {
-        Some(r) => refused.insert(from.to_string(), r),
-        None => refused.remove(from),
-    };
+        Some(r) => {
+            i.refused.insert(from.to_string(), r);
+            if let Some(m) = i.mirror.as_mut().filter(|m| m.id == from) {
+                m.forget(Some(id), clock::now_us());
+            }
+        }
+        None => {
+            i.refused.remove(from);
+        }
+    }
 }
 
 /// Whether `now` is `last` with only its position run on as time passed.
@@ -2144,10 +2263,10 @@ mod tests {
         let mut m = Mirrored::new("desk".into());
         let view = |m: &Mirrored| m.view("Desk".into(), DeviceKind::Desktop, None).unwrap();
         // Its clock not known yet: as of when the state arrived.
-        assert!(m.heard(&st, 2_000_000));
+        assert!(m.heard(&st, 2_000_000, "me"));
         assert_eq!((view(&m).position_ms, view(&m).at_us), (10_000, 2_000_000));
         // The same state read again (every poll answer carries it) does not start the clock again.
-        assert!(!m.heard(&st, 3_000_000));
+        assert!(!m.heard(&st, 3_000_000, "me"));
         assert_eq!(view(&m).at_us, 2_000_000);
         // Its clock 49.2 s ahead of this one's: heard there at 0.8 s here, though it arrived at 2 s.
         m.clock.add(clock::Exchange { t1: 1_000_000, t2: 50_201_000, t3: 50_201_500, t4: 1_002_500 });
@@ -2156,10 +2275,10 @@ mod tests {
         assert_eq!(v.position_at(1_800_000), 11_000);
         assert_eq!(v.position_at(400_000_000), 300_000, "held at the song's end");
         // Playing at 1.25 times: a second there is a second and a quarter of the song.
-        assert!(m.heard(&DeviceState { seq: 5, rate: Some(1.25), ..st.clone() }, 3_500_000));
+        assert!(m.heard(&DeviceState { seq: 5, rate: Some(1.25), ..st.clone() }, 3_500_000, "me"));
         assert_eq!(view(&m).position_at(1_800_000), 11_250);
         // A command foreseen here runs on from when it was sent.
-        m.foresee(&Op::Pause);
+        m.foresee(1, &Op::Pause);
         assert!(!view(&m).playing && view(&m).position_at(900_000_000) == view(&m).position_ms);
     }
 

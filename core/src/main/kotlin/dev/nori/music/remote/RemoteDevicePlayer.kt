@@ -31,17 +31,15 @@ import dev.nori.music.playback.queuedAs
 @UnstableApi
 class RemoteDevicePlayer(private val context: Context, private val nori: Nori) : SimpleBasePlayer(Looper.getMainLooper()) {
     private val remotes = nori.remotes
-    private var mirror: Mirror? = null
+    /** Read as it is when media3 asks: a command's future completes once its outcome is in it. */
+    private val mirror: Mirror? get() = remotes.mirror.value
     private var items: List<MediaItemData> = emptyList()
     private var itemsOf: List<dev.nori.music.ffi.MirrorRow>? = null
     /** The device's routing session (RemoteRoute): the system names the output after it. */
     private val routeId = RemoteRoute.controllerId(context)
 
-    /** The device's newest state. */
-    fun show(m: Mirror) {
-        mirror = m
-        invalidateState()
-    }
+    /** The device's state changed. */
+    fun show() = invalidateState()
 
     private fun rows(m: Mirror): List<MediaItemData> {
         if (itemsOf === m.rows) return items

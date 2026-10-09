@@ -545,7 +545,7 @@ fn two_devices_control_each_other_through_the_relay() {
     assert_eq!(state.entries.iter().map(|e| e.title.as_str()).collect::<Vec<_>>(), ["S1", "S2", "S3"]);
     let phone_id = phone.remote.id();
 
-    desk.remote.send(phone_id.clone(), Op::Next);
+    desk.remote.clone().send(phone_id.clone(), Op::Next);
     assert_eq!(phone.told(), Op::Next);
     // The song the player says it arrived on is the one shown, before the queue's own current moves.
     phone.remote.clone().played(Playing { playing: true, position_ms: 0, index: Some(2), volume: Some(40), ..Default::default() });
@@ -556,16 +556,16 @@ fn two_devices_control_each_other_through_the_relay() {
     let stale = state.rev;
     phone.core.session.remove(2, 3);
     phone.remote.clone().played(Playing { playing: true, position_ms: 6_000, index: None, volume: Some(40), ..Default::default() });
-    desk.remote.send(phone_id.clone(), Op::Remove { index: 0, rev: stale });
+    desk.remote.clone().send(phone_id.clone(), Op::Remove { index: 0, rev: stale });
     let refused = desk.until("the refusal", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.refused));
     assert_eq!(refused, Refusal::Stale);
     assert!(phone.ops.try_recv().is_err(), "nothing done");
     let fresh = desk.until("the new queue", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state).filter(|s| s.rev != stale));
-    desk.remote.send(phone_id.clone(), Op::Remove { index: 0, rev: fresh.rev });
+    desk.remote.clone().send(phone_id.clone(), Op::Remove { index: 0, rev: fresh.rev });
     assert_eq!(phone.told(), Op::Remove { index: 0, rev: fresh.rev });
 
     // Playing here: the phone hands over its queue and position, then pauses.
-    desk.remote.send(phone_id.clone(), Op::Transfer { to: desk.remote.id() });
+    desk.remote.clone().send(phone_id.clone(), Op::Transfer { to: desk.remote.id() });
     match desk.told() {
         Op::Replace { songs, index, position_ms, play, .. } => {
             assert_eq!(songs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["s1", "s2"]);
@@ -709,7 +709,7 @@ fn nearby_devices_need_no_relay() {
     desk.remote.clone().lan_found(door.name.clone(), "127.0.0.1".into(), door.port, txt());
     let seen = desk.until("the phone nearby", |r| r.devices().into_iter().find(|d| d.state.is_some()));
     assert!(seen.nearby && seen.name == "Phone");
-    desk.remote.send(seen.id.clone(), Op::Pause);
+    desk.remote.clone().send(seen.id.clone(), Op::Pause);
     assert_eq!(phone.told(), Op::Pause);
     let through_relay = format!("noriRemote.send  {}", desk.remote.id());
     assert!(!relay.asked().contains(&through_relay), "the command went to the door, not the relay");
@@ -771,7 +771,7 @@ fn a_server_without_the_relay_is_asked_again_only_by_a_picker() {
     phone.remote.clone().serve(true);
     phone.remote.clone().watch(false);
     phone.remote.clone().serve(false);
-    phone.remote.send("elsewhere".into(), Op::Pause);
+    phone.remote.clone().send("elsewhere".into(), Op::Pause);
     assert!(block_on(phone.remote.clone().jam_open()).is_err());
     assert_eq!(asked(), 2, "nothing more asked of a server that has no relay");
     assert!(phone.remote.jam_view().is_none());
@@ -897,13 +897,13 @@ fn a_device_playing_elsewhere_is_mirrored_whole() {
     assert!(phone.ops.try_recv().is_err(), "pages are answered by the core, not the player");
 
     // A command shows at once, before the phone's own word.
-    desk.remote.send(phone_id.clone(), Op::Pause);
+    desk.remote.clone().send(phone_id.clone(), Op::Pause);
     let m = desk.remote.active().unwrap();
     assert!(!m.playing);
     assert_eq!(phone.told(), Op::Pause);
-    desk.remote.send(phone_id.clone(), Op::Volume { percent: 15 });
-    assert!(desk.remote.star_where_playing("s60".into(), true), "a song of its queue is starred there");
-    assert!(!desk.remote.star_where_playing("elsewhere".into(), true), "any other here");
+    desk.remote.clone().send(phone_id.clone(), Op::Volume { percent: 15 });
+    assert!(desk.remote.clone().star_where_playing("s60".into(), true), "a song of its queue is starred there");
+    assert!(!desk.remote.clone().star_where_playing("elsewhere".into(), true), "any other here");
     let m = desk.remote.active().unwrap();
     assert_eq!(m.volume, Some(15));
     assert!(m.rows[m.at.unwrap() as usize].song.starred);
@@ -946,11 +946,11 @@ fn a_mirrored_queue_is_cleared_and_a_removed_song_put_back_in_its_place() {
     let m = desk.until("the phone mirrored", |r| r.active().filter(|m| m.rows.len() == 5));
 
     // The third song taken out and put back: it goes back where it was, not after the song playing.
-    desk.remote.send(phone_id.clone(), Op::Remove { index: 2, rev: m.rev });
+    desk.remote.clone().send(phone_id.clone(), Op::Remove { index: 2, rev: m.rev });
     assert_eq!(phone.told(), Op::Remove { index: 2, rev: m.rev });
     phone.core.session.remove(2, 3);
-    assert!(!desk.remote.put_back(phone_id.clone(), "s4".into()), "only a song taken out from here");
-    assert!(desk.remote.put_back(phone_id.clone(), "s3".into()));
+    assert!(!desk.remote.clone().put_back(phone_id.clone(), "s4".into()), "only a song taken out from here");
+    assert!(desk.remote.clone().put_back(phone_id.clone(), "s3".into()));
     match phone.told() {
         Op::Restore { song, index } => {
             assert_eq!((song.id.as_str(), song.title.as_str(), index), ("s3", "S3", 2));
@@ -959,10 +959,10 @@ fn a_mirrored_queue_is_cleared_and_a_removed_song_put_back_in_its_place() {
         op => panic!("{op:?}"),
     }
     assert_eq!(phone.core.session.playlist(|p| p.ids().to_vec()), ["s1", "s2", "s3", "s4", "s5"]);
-    assert!(!desk.remote.put_back(phone_id.clone(), "s3".into()), "put back once");
+    assert!(!desk.remote.clone().put_back(phone_id.clone(), "s3".into()), "put back once");
 
     // Clear: the phone's player removes what plays after the current song, from the end.
-    desk.remote.send(phone_id.clone(), Op::Clear);
+    desk.remote.clone().send(phone_id.clone(), Op::Clear);
     let removed: Vec<u32> = (0..3).map(|_| match phone.told() {
         Op::Remove { index, .. } => index,
         op => panic!("{op:?}"),
@@ -1040,6 +1040,42 @@ fn controllers_follow_playback_to_where_it_was_handed() {
     desk.playing(&["s1", "s2"], 1);
     desk.remote.clone().hand_over(elsewhere_id.clone());
     assert_eq!(tablet.until("followed on", |r| r.active().filter(|m| m.id == elsewhere_id)).name, "Elsewhere");
+    relay.close();
+}
+
+/// A state the device published before it carried out a command, arriving after the command was sent,
+/// does not undo what the controller shows; the device's own word does, or time when it says nothing.
+#[test]
+fn a_command_shows_until_the_device_says_it_carried_it_out() {
+    let relay = Relay::new();
+    let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    phone.playing(&["s1", "s2"], 0);
+    phone.remote.clone().serve(true);
+    let phone_id = phone.remote.id();
+    desk.remote.clone().watch(true);
+    desk.until("the phone", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state));
+    desk.remote.clone().pick(Some(phone_id.clone()));
+    desk.until("the phone mirrored", |r| r.active().filter(|m| m.playing));
+    // The phone's states reach the relay late.
+    relay.lag(&phone_id, 0);
+
+    phone.remote.clone().played(Playing { playing: true, position_ms: 8_000, index: None, volume: Some(40), ..Default::default() });
+    desk.remote.clone().send(phone_id.clone(), Op::Pause);
+    desk.remote.clone().send(phone_id.clone(), Op::Volume { percent: 10 });
+    desk.until("the state from before", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state).filter(|s| s.position_ms >= 8_000));
+    let m = desk.remote.active().unwrap();
+    assert_eq!((m.playing, m.volume), (false, Some(10)), "still as commanded");
+
+    assert_eq!((phone.told(), phone.told()), (Op::Pause, Op::Volume { percent: 10 }));
+    phone.remote.clone().played(Playing { playing: false, position_ms: 8_400, index: None, volume: Some(12), ..Default::default() });
+    desk.until("the phone's word", |r| r.active().filter(|m| !m.playing && m.position_ms == 8_400 && m.volume == Some(12)));
+
+    // A command the phone never carries out shows only for a while.
+    desk.remote.clone().send(phone_id.clone(), Op::Play);
+    assert!(desk.remote.active().unwrap().playing);
+    assert_eq!(phone.told(), Op::Play);
+    desk.until("the phone as it is", |r| r.active().filter(|m| !m.playing));
     relay.close();
 }
 

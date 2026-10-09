@@ -284,6 +284,18 @@ pub struct DeviceState {
     pub jam: Option<JamState>,
     /// The device this one last handed its playback to, until it plays again: its controllers follow it there.
     pub handed_to: Option<String>,
+    /// The last command this device carried out from each controller: a controller's foresight of it
+    /// holds until a state says it was carried out.
+    pub obeyed: Vec<Obeyed>,
+}
+
+/// Command `id` of controller `from`, carried out.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+#[serde(rename_all = "camelCase")]
+pub struct Obeyed {
+    pub from: String,
+    pub id: u64,
 }
 
 /// A jam member's role.

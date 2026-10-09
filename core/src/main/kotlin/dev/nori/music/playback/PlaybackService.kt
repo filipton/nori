@@ -287,7 +287,7 @@ class PlaybackService : MediaLibraryService() {
      */
     private fun mirrored(m: dev.nori.music.ffi.Mirror?) {
         if (m != null) {
-            elsewhere.show(m)
+            elsewhere.show()
             if (session.player !== elsewhere) {
                 dev.nori.music.NoriLog.i("playing on ${m.name}: this phone's player stops")
                 player.letGo()
