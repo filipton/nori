@@ -53,7 +53,7 @@ via nori-core):
 | http, output-cpal, mpris | desktop: ureq transport, cpal output, Linux media controls |
 | cli, desktop | terminal (ratatui) and desktop (Slint) clients |
 | ios | the iPod touch client's static library over nori-host behind a C ABI; the Swift app is `ios/`, the plan and work packages `docs/ipod.md` |
-| host | what the terminal and desktop clients share: session, config, index sync, media controls |
+| host | the session every client shares (terminal, desktop and iPod today; Android is moving onto it): engine, queue saving, remote and jams, config, index sync, media controls |
 | uniffi-jni-runtime, uniffi-bindgen | upstream uniffi JNI runtime with changes marked `NORI`; Kotlin binding generator |
 | testdir | `TempDir` for tests; every test that writes files uses it |
 
@@ -66,8 +66,15 @@ owner's decisions), `docs/perf-build.md`.
 
 ## Boundaries
 
-- Anything that decides how music plays or sounds belongs in Rust (`crates/player`/`crates/engine`),
-  tested there. Kotlin only decodes, outputs and asks.
+- Every decision lives once, in Rust, tested there; the clients (Kotlin, Swift, Slint, ratatui) are
+  shells over it. How music plays or sounds goes in `crates/player`/`crates/engine`; what a session
+  does (queue saving, skip after an error, autofill, remote control and jam rules, what a guest may
+  do) goes in the core or `crates/host`. A client keeps only what its platform forces on it: drawing,
+  words, and the OS hooks (media3 service and `Player`, AudioTrack/MediaCodec, OkHttp, NSD, routes,
+  permissions, AURemoteIO, cpal). Kotlin only decodes, outputs and asks.
+- A feature is built in Rust first, then wired into every client that has the screen for it. Before
+  writing logic in a client, look for it in `crates/host`/the core; if it is there, call it; if another
+  client would need it too, it belongs in Rust. A rule written in two languages is a bug.
 - The core returns data and enums, never user-facing text. Words live in each client: Android string
   resources (`strings.xml`, `strings_ui.xml`, read via `app/ui/Say.kt`), `crates/cli/src/text.rs`,
   the desktop's `words.rs`. Logs, perf report and self test are English.
