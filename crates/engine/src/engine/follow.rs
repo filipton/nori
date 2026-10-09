@@ -31,7 +31,7 @@ const STEP_MS: f64 = 3.0;
 /// The gap now is the median of this many readings, each run on to now.
 const LEVEL_OF: usize = 3;
 /// Further than this from the leader, ms, the place is started again rather than slipped back.
-const STRAY_MS: f64 = 150.0;
+const STRAY_MS: f64 = 500.0;
 /// After a start the place heard is judged only once two readings this far apart agree (an output's
 /// first readings after it starts are estimates: Android's before its first timestamp), µs.
 const SETTLE_US: i64 = 250_000;
@@ -355,7 +355,8 @@ mod tests {
             (-1.5, &|s| matches!(s, Step::Slip { owed_ms, remake: false, .. } if owes(owed_ms, -1.5))),
             (20.0, &|s| matches!(s, Step::Slip { owed_ms, remake: true, .. } if owes(owed_ms, 20.0))),
             (0.3, &|s| s == Step::Stay),
-            (200.0, &|s| matches!(s, Step::Start { .. })),
+            (300.0, &|s| matches!(s, Step::Slip { owed_ms, remake: true, .. } if owes(owed_ms, 300.0))),
+            (600.0, &|s| matches!(s, Step::Start { .. })),
         ];
         for (ahead, done) in cases {
             let mut f = Following::new(led(10_000.0, 0));
