@@ -834,3 +834,20 @@ fn guests_with_drifting_cards_stay_in_step_for_minutes() {
         assert!(gaps.within(2_500, 1.5, 3.0), "guest {g}: {gaps}");
     }
 }
+
+/// A host's place run on past the end of its song (its word on the next one late): the guest plays on
+/// into the next song as the host does, and stays there.
+#[test]
+fn a_guest_follows_its_host_past_the_end_of_a_song() {
+    let (a, b) = (song(10.0, 1, None), song(30.0, 2, None));
+    let guest = Rig::new(&[("a", &a), ("b", &b)], None, Settings::default());
+    guest.engine.follow(Some(Lead { index: 0, ms: 6_000.0, ago_us: 0, rate: 1.0, playing: true, speed: 1.0, pitch: 1.0, mix: None }));
+    guest.run(10_000);
+    let starts = || guest.logs.lock().iter().filter(|l| l.starts_with("following: Start")).count();
+    let before = starts();
+    for _ in 0..40 {
+        guest.run(100);
+        assert_eq!(guest.engine.status().index, Some(1), "on b, past a's end");
+    }
+    assert_eq!(starts(), before, "not started again: {:?}", guest.logs.lock().iter().filter(|l| l.starts_with("following")).collect::<Vec<_>>());
+}

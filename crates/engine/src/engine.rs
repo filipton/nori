@@ -1404,6 +1404,16 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             }
         }
         let len = self.p.queue.read(|q| q.len());
+        // The leader's place run on past the end of its song (its word on the next one not here yet) is
+        // in the next one, as it is heard there.
+        loop {
+            let led = &self.following.as_ref().expect("following").led;
+            let length = (led.index + 1 < len).then(|| self.p.tracks.about(&self.p.id_at(led.index)).duration_ms).filter(|&l| l > 0);
+            let Some(length) = length.filter(|&l| led.playing && led.place_at(now_us) >= l as f64) else { break };
+            let led = &mut self.following.as_mut().expect("following").led;
+            led.index += 1;
+            led.ms -= length as f64;
+        }
         let f = self.following.as_mut().expect("following");
         f.look_at.take_if(|at| *at <= now_us + 500);
         if f.led.index >= len {
@@ -1420,7 +1430,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         let step = f.step(now_us, here);
         if step != follow::Step::Stay {
             let led = f.led.place_at(now_us);
-            self.p.app.log(&format!("following: {step:?}, here {:?}, there {led:.1} ms", here.at));
+            self.p.app.log(&format!("following: {step:?}, here {:?}, there {led:.1} ms, held {:.0} ms, ran dry {}", here.at, here.held_ms, self.p.sink.track.underruns()));
         }
         match step {
             follow::Step::Stay => {}
