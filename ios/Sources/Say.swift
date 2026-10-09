@@ -87,6 +87,7 @@ enum Say {
         case NORI_NOTE_INDEXING: return "Filling the offline index…"
         case NORI_NOTE_INDEXED: return "Offline index: \(songs(count))"
         case NORI_NOTE_INDEX_STOPPED: return "The offline index stopped"
+        case NORI_NOTE_CURVE_FAILED: return "Could not fetch the sound curve for these headphones"
         default: return nil
         }
     }
@@ -381,6 +382,12 @@ enum Say {
     static func jamJoinFailed(_ why: String) -> String { "Couldn't join the jam (\(why))" }
     static let leaveJam = "Leave"
     static let jamLeft = "You left the jam"
+    static let curveOffered = "Tune the sound for these headphones?"
+    static let curveApplied = "Sound tuned for these headphones"
+    static let curveApply = "Apply"
+    static let curveNotNow = "Not Now"
+    static let curveUndo = "Undo"
+    static let curveKeep = "Keep"
     static func jamEnded(_ host: String) -> String { host.isEmpty ? "The jam ended" : "\(host) ended the jam" }
     static let listenHere = "Listen Here"
     static let playingHere = "Playing Here"

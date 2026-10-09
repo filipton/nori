@@ -413,9 +413,23 @@ final class Core {
             }
         case 11:
             NotificationCenter.default.post(name: .noriLyrics, object: id)
+        case 22:
+            askCurve(text, offered: flag != 0)
         default:
             break
         }
+    }
+
+    /// An AutoEQ curve for the output just attached: offered (Apply answers it) or already applied (Undo
+    /// answers it). Either way `nori_ios_curve_answer` is the answer.
+    private func askCurve(_ curve: String, offered: Bool) {
+        var top = UIApplication.shared.keyWindow?.rootViewController
+        while let next = top?.presentedViewController { top = next }
+        guard let shown = top else { return }
+        let ask = UIAlertController(title: offered ? Say.curveOffered : Say.curveApplied, message: curve, preferredStyle: .alert)
+        ask.addAction(UIAlertAction(title: offered ? Say.curveApply : Say.curveUndo, style: .default) { _ in nori_ios_curve_answer() })
+        ask.addAction(UIAlertAction(title: offered ? Say.curveNotNow : Say.curveKeep, style: .cancel))
+        shown.present(ask, animated: true)
     }
 
     private func answered(_ token: UInt64, _ answer: PageAnswer) {
