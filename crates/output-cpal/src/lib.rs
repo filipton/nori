@@ -5,7 +5,7 @@
 //! The engine is told the current device on open and when the system moves the default stream
 //! (not reported on ALSA).
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -36,29 +36,54 @@ pub struct CpalOutput {
 }
 
 /// When the last frame the device pulled will have been heard: the device's own delay from its last
-/// callback, plus that callback's frames. Written by the callback, read by the engine.
+/// callback, plus that callback's frames, plus what the ring gave since. Written by the callback, read by
+/// the engine. What was pulled is the ring's own count: the engine reads the place heard as what the ring
+/// gave less what the device holds, and a pull wakes it before the callback has said when that is heard.
 struct Heard {
     base: Instant,
-    /// µs after `base`.
-    until_us: AtomicU64,
+    last: Mutex<Last>,
+    /// The ring's count of frames pulled.
+    ring: Mutex<Option<Pulled>>,
+}
+
+type Pulled = Box<dyn Fn() -> u64 + Send + Sync>;
+
+/// The last callback's music: heard until `until_us` after `base`, the ring's count `taken` after it.
+#[derive(Default, Clone, Copy)]
+struct Last {
+    until_us: u64,
+    taken: u64,
+    rate: u32,
 }
 
 impl Default for Heard {
     fn default() -> Self {
-        Heard { base: Instant::now(), until_us: AtomicU64::new(0) }
+        Heard { base: Instant::now(), last: Mutex::default(), ring: Mutex::default() }
     }
 }
 
 impl Heard {
+    fn follow(&self, ring: Pulled) {
+        *self.ring.lock().unwrap_or_else(|p| p.into_inner()) = Some(ring);
+    }
+
+    fn taken(&self) -> u64 {
+        self.ring.lock().unwrap_or_else(|p| p.into_inner()).as_ref().map_or(0, |r| r())
+    }
+
     /// A callback at `now` took `frames` at `rate`, heard `delay_us` after it starts.
     fn pulled(&self, now: Instant, delay_us: u64, frames: usize, rate: u32) {
         let at = now.saturating_duration_since(self.base).as_micros() as u64;
-        self.until_us.store(at + delay_us + frames as u64 * 1_000_000 / rate.max(1) as u64, Ordering::Relaxed);
+        let taken = self.taken();
+        *self.last.lock().unwrap_or_else(|p| p.into_inner()) = Last { until_us: at + delay_us + frames as u64 * 1_000_000 / rate.max(1) as u64, taken, rate };
     }
 
     /// How long until what was pulled has been heard.
     fn left_us(&self, now: Instant) -> u64 {
-        self.until_us.load(Ordering::Relaxed).saturating_sub(now.saturating_duration_since(self.base).as_micros() as u64)
+        // The callback's word first: a pull after it counts as held.
+        let last = *self.last.lock().unwrap_or_else(|p| p.into_inner());
+        let since = self.taken().saturating_sub(last.taken) * 1_000_000 / last.rate.max(1) as u64;
+        last.until_us.saturating_sub(now.saturating_duration_since(self.base).as_micros() as u64) + since
     }
 }
 
@@ -277,6 +302,7 @@ impl AudioOutput for CpalOutput {
     }
 
     fn start(&mut self, feed: Feed) -> Result<(), String> {
+        self.heard.follow(Box::new(feed.pulled()));
         self.feed = Some(Arc::new(Mutex::new(feed)));
         self.rebuild()
     }
@@ -346,6 +372,7 @@ impl AudioOutput for CpalOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicU64;
     use std::time::Duration;
 
     #[test]
@@ -356,6 +383,24 @@ mod tests {
         assert_eq!(heard.left_us(t), 120_000, "the device's delay and the period it took");
         assert_eq!(heard.left_us(t + Duration::from_millis(70)), 50_000);
         assert_eq!(heard.left_us(t + Duration::from_millis(130)), 0, "all heard");
+    }
+
+    /// The engine, woken by a pull, reads before the callback says when that pull is heard: the frames
+    /// the ring gave since count as held.
+    #[test]
+    fn a_pull_not_yet_said_counts_as_held() {
+        let heard = Heard::default();
+        let taken = Arc::new(AtomicU64::new(0));
+        let ring = taken.clone();
+        heard.follow(Box::new(move || ring.load(Ordering::Relaxed)));
+        let t = heard.base + Duration::from_secs(1);
+        taken.store(4_410, Ordering::Relaxed);
+        heard.pulled(t, 20_000, 4_410, 44_100);
+        let next = t + Duration::from_millis(100);
+        taken.store(8_820, Ordering::Relaxed);
+        assert_eq!(heard.left_us(next), 120_000, "the delay left and the period pulled");
+        heard.pulled(next, 20_000, 4_410, 44_100);
+        assert_eq!(heard.left_us(next), 120_000, "as the callback then says");
     }
 
     #[test]
