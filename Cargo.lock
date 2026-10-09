@@ -3866,6 +3866,7 @@ dependencies = [
  "nori-look",
  "nori-mpris",
  "nori-remote",
+ "nori-testdir",
  "parking_lot",
 ]
 

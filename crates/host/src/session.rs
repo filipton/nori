@@ -302,12 +302,13 @@ impl Session {
         spawn("nori-sync", move || sync(&client, &out));
     }
 
-    /// Restores the saved queue, paused at its position.
+    /// Restores the saved queue, paused at its position; with none saved the queue is empty (the one
+    /// left by the profile open before, a jam's host's songs, is no queue of this one's).
     fn restore(&self) {
-        let Ok(q) = self.core.load_queue() else { return };
-        if q.songs.is_empty() {
-            return;
-        }
+        let Some(q) = self.core.load_queue().ok().filter(|q| !q.songs.is_empty()) else {
+            self.core.session.set(Vec::new(), None, false, None);
+            return self.engine.queue_changed();
+        };
         let index = q.index as usize;
         self.core.session.set(q.songs.iter().map(|s| s.id.clone()).collect(), Some(index as u32), false, q.origin);
         self.engine.queue_changed();
@@ -1126,6 +1127,34 @@ mod tests {
         core.download_settle(vec!["done".into()], vec![true]).unwrap();
         let said = queue_downloads(&core, None, vec![song("done"), song("new"), song("ext-1")]);
         assert!(matches!(said, Note::Downloading(1)), "the finished and the provider's song are not downloaded");
+    }
+
+    /// A profile opens on its own saved queue or none, not on the one the profile open before left (a
+    /// jam's host's songs, once the guest left).
+    #[test]
+    fn a_profile_opens_without_the_last_ones_queue() {
+        let dir = nori_testdir::TempDir::new("host-queue");
+        let queue = Arc::new(nori_core::queue::Session::new(nori_core::settings_store::Settings::new()));
+        queue.register(vec![Song { id: "host-song".into(), duration: 100, ..Default::default() }]);
+        queue.set(vec!["host-song".into()], Some(0), false, None);
+        let s = Session::open(Open {
+            queue: queue.clone(),
+            data: dir.path(),
+            http: Http::new(),
+            profile: SavedServer { id: "own".into(), url: "http://own".into(), user: "ann".into(), password: "pw".into(), ..Default::default() },
+            output: Box::new(nori_engine::wav::WavOutput::new(dir.join("out.wav"), 1.0)),
+            volume: Level::new(1.0, None),
+            memory_mb: 16,
+            covers: false,
+            offline: true,
+            mpris: None,
+            device: nori_core::remote::RemoteMe { name: "Mac".into(), kind: nori_remote::wire::DeviceKind::Desktop },
+            discovery: None,
+            out: Arc::new(|_| {}),
+        })
+        .unwrap();
+        assert!(queue.playlist(|p| p.ids().is_empty()), "the host's songs are gone");
+        s.close();
     }
 
     /// A song's request the server never answers is dropped with its song: the connection closes.

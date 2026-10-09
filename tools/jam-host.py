@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """A jam host for the device checks: opens a jam on a relay as an account's device that plays a few songs, as
 the core's host does (nori-core remote.rs, nori-remote jam.rs; the frames are nori-remote wire.rs), prints the
-invite, and takes guests' requests: each waits a few seconds, then goes into the queue as the guest's. The
+invite, lets its guests listen along (answering their time exchanges on this Mac's monotonic clock), and takes
+guests' requests: each waits a few seconds, then goes into the queue as the guest's. The
 invite names the server as the emulator reaches it (10.0.2.2 for this Mac). Prints one line per change it sees
 until killed, and ends the jam then.
 
@@ -46,12 +47,20 @@ members, pending, seq, rev = [], [], 0, 1
 next_request = 1
 
 
+def now_us():
+    return time.monotonic_ns() // 1000
+
+
+started_us = now_us()
+
+
 def publish():
     global seq
     seq += 1
     jam = {"members": [{"id": dev, "name": name, "role": "host"}] + [{"id": m["id"], "name": m["name"], "role": "guest"} for m in members],
-           "pending": pending}
-    state = {"seq": seq, "playing": True, "positionMs": 30_000, "index": 0, "rev": rev, "len": len(queue), "entries": queue, "jam": jam}
+           "pending": pending, "along": {"speed": 1.0, "pitch": 1.0}}
+    state = {"seq": seq, "playing": True, "positionMs": 30_000 + (now_us() - started_us) // 1000, "atUs": now_us(), "rate": 1.0, "index": 0,
+             "rev": rev, "len": len(queue), "entries": queue, "jam": jam}
     call("noriRemote.send", {"room": room, "state": state}, dev=dev, name=name, kind="terminal")
 
 
@@ -79,7 +88,12 @@ try:
             body = e["body"]
             if e["room"] != room or body.get("t") != "command":
                 continue
+            received = now_us()
             op, who = body["op"], next((m["name"] for m in members if m["id"] == e["from"]), "?")
+            if op.get("op") == "clock":
+                answer_to = {"room": room, "to": e["from"], "body": {"t": "clock", "t1": op["t1"], "t2": received, "t3": now_us()}}
+                call("noriRemote.send", answer_to, dev=dev, name=name, kind="terminal")
+                continue
             if op.get("op") == "request":
                 song = op["song"]
                 pending.append({"request": next_request, "from": e["from"], "fromName": who, "song": entry(song, 0), "provider": song["id"].startswith("ext-"),

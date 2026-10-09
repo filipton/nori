@@ -489,9 +489,16 @@ print(json.dumps({k:s.get(k) for k in ['id','title','artist','album','albumId','
     check "and the row lets go" wait_until 10 off_screen 'text="Asked"'
     "$app" open queue >/dev/null
     check "the host's queue says it was asked for here" wait_until 10 on_screen 'content-desc="Added by '
+    tapnode text "Listen here"
+    check "Listen here plays the host's music on this phone" sounds 30
     tapnode text Leave
     check "leaving returns to the home server" wait_for server "$APP_URL" 20
+    check "and its music stops at once" silent 5
     check "the host saw it leave" wait_until 15 grep -q "left:" "$guests/host.log"
+    "$app" play "$LYRICS_SONG" >/dev/null
+    check "a song played after leaving plays here" sounds 20
+    check "it is the one picked" wait_for title "${LYRICS_SONG#search:}" 10
+    "$app" do pause >/dev/null
     kill $host 2>/dev/null
   fi
 fi

@@ -742,6 +742,34 @@ fn a_guests_own_controls_do_not_move_it() {
     in_step(&mut jam, 0, 4_000, 2.5, 5.0);
 }
 
+/// Leaving the jam (`nori_engine::core::follow` given no lead): silent at once, then the guest's own
+/// player again.
+#[test]
+fn a_guest_that_stops_following_plays_on_its_own_again() {
+    let a = song(60.0, 1, None);
+    let mut jam = Jam::new(&[("a", &a)], None, Settings::default(), &two_ways()[..1]);
+    jam.host.engine.play_at(0, 0);
+    jam.run(1_000);
+    jam.join(0);
+    jam.run(3_000);
+    jam.guests[0].listening = false;
+    jam.guests[0].inbox.clear();
+    let g = jam.guests[0].rig.engine.clone();
+    g.follow(None);
+    g.pause();
+    jam.run(1_000);
+    assert_eq!(g.status().state, nori_engine::State::Paused);
+    let heard = jam.guests[0].rig.card.0.lock().heard.len();
+    jam.run(1_000);
+    assert_eq!(jam.guests[0].rig.card.0.lock().heard.len(), heard, "silent");
+
+    g.play_at(0, 40_000);
+    jam.run(2_000);
+    assert_eq!(g.status().state, nori_engine::State::Playing);
+    let place = jam.guests[0].rig.card.place_at(jam.now_ns(), 41_800.0).expect("music heard");
+    assert!((41_000.0..=42_000.0).contains(&place), "plays its own pick, at {place:.0} ms");
+}
+
 /// An output that says it holds less than it does at first (an Android track before its first timestamp):
 /// what it says steps by its 80 ms delay a while after it starts. The guest waits for it to settle, then
 /// trims its way into step instead of starting again.

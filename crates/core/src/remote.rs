@@ -1196,6 +1196,7 @@ impl Remote {
             i.timing += 1;
             std::mem::take(&mut i.waiting)
         };
+        self.unfollow();
         self.retry.notify_all();
         self.timing.notify_all();
         waiting.into_values().for_each(Waker::wake);
@@ -1251,8 +1252,10 @@ impl Remote {
         })
     }
 
-    /// Leaves the jam this guest profile is in; the app then drops the profile.
+    /// Leaves the jam this guest profile is in, its music stopping here at once; the app then drops the
+    /// profile.
     pub async fn jam_leave(&self) -> Result<(), NetError> {
+        self.unfollow();
         transport::get(&*self.client.transport, self.relay_url("noriRemote.leave", &[]), 0).await.map(|_| ())
     }
 }
@@ -1355,6 +1358,15 @@ impl Remote {
         *self.follower.lock() = follower;
         self.inner.lock().listen.iter_mut().for_each(|l| l.given = None);
         self.follow_lead();
+    }
+
+    /// Plays along no more: the follower hears there is nothing to follow, and is let go.
+    fn unfollow(&self) {
+        self.inner.lock().listen = None;
+        let follower = self.follower.lock().take();
+        if let Some(f) = follower {
+            f.lead(None);
+        }
     }
 
     /// Hands the host's playback to the follower when it changed.

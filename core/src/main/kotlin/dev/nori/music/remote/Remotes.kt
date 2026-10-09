@@ -324,10 +324,16 @@ class Remotes(private val context: Context, private val nori: Nori) {
         dev.nori.music.net.lifted { r.jamOpen() }
     }
 
-    /** Leaves the jam this guest profile is in. */
+    /** Leaves the jam this guest profile is in; its music stops here at once (the core's `jam_leave`). */
     suspend fun leave() = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         runCatching { remote?.jamLeave() }
     }
+
+    /**
+     * The profile in use changed: the remote of the one before goes (a jam guest's with its jam, so the
+     * player is this phone's own again), and one is built for this one if it asks for it.
+     */
+    fun profileChanged() = work { current() }
 
     companion object {
         fun deviceName(context: Context): String =

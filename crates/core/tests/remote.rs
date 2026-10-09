@@ -1347,3 +1347,27 @@ fn jam_guests_listen_along_where_the_host_is_heard() {
     assert_eq!(gus.remote.jam_view().map(|v| v.listening), Some(Listening::Watching));
     relay.close();
 }
+
+#[test]
+fn a_guest_leaving_its_jam_stops_playing_along_at_once() {
+    let relay = Relay::new();
+    let host = Device::account(&relay, DeviceKind::Phone, "Host");
+    host.playing(&["s1", "s2"], 0);
+    let link = block_on(host.remote.clone().jam_open()).unwrap();
+    host.remote.clone().jam_along(true);
+    let pass = block_on(jam_join(relay.clone(), link, "Gus".into())).unwrap();
+    let gus = Device::new(&relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, "Gus");
+    let leads = Arc::new(Leads::default());
+    gus.remote.follow_with(Some(leads.clone()));
+    gus.remote.clone().listen(true);
+    host.remote.clone().played(Playing { playing: true, position_ms: 30_000, rate: 1.0, index: Some(0), volume: None, ..Default::default() });
+    gus.until("the host's place", |_| leads.last().flatten());
+
+    block_on(gus.remote.jam_leave()).unwrap();
+    assert_eq!(leads.last(), Some(None), "nothing to follow once left");
+    let given = leads.0.lock().len();
+    host.remote.clone().played(Playing { playing: true, position_ms: 60_000, rate: 1.0, index: Some(1), volume: None, ..Default::default() });
+    gus.remote.clone().stop();
+    assert_eq!(leads.0.lock().len(), given, "the host is followed no more");
+    relay.close();
+}
