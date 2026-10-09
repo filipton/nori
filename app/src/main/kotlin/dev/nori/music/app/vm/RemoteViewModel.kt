@@ -33,6 +33,18 @@ class RemoteViewModel(app: Application) : NoriViewModel(app) {
     /** The account's other devices with their states, nearby ones first. */
     val devices: StateFlow<List<RemoteDevice>> = _devices.asStateFlow()
 
+    private val _names = MutableStateFlow<List<String>>(emptyList())
+    /** [devices]' names as the picker lists them, told apart where two share one (the core's `device_names`). */
+    val names: StateFlow<List<String>> = _names.asStateFlow()
+
+    private val me = dev.nori.music.ffi.RemoteMe(dev.nori.music.remote.Remotes.deviceName(app), dev.nori.music.ffi.remote.DeviceKind.PHONE)
+    private val kinds = app.resources.let { r ->
+        dev.nori.music.ffi.KindWords(
+            r.getString(dev.nori.music.app.R.string.devices_kind_phone), r.getString(dev.nori.music.app.R.string.devices_kind_desktop),
+            r.getString(dev.nori.music.app.R.string.devices_kind_terminal), r.getString(dev.nori.music.app.R.string.devices_kind_guest),
+        )
+    }
+
     /** The jam this phone hosts or is a guest in. */
     val jam: StateFlow<JamView?> = remotes.jam
 
@@ -64,7 +76,10 @@ class RemoteViewModel(app: Application) : NoriViewModel(app) {
         viewModelScope.launch { remotes.changes.collect { if (watchers > 0) refresh() } }
     }
 
-    private fun refresh() = remotes.ask({ it.devices() }) { _devices.value = it }
+    private fun refresh() = remotes.ask({ r -> r.devices().let { d -> d to dev.nori.music.ffi.deviceNames(d, me, kinds) } }) { (d, n) ->
+        _devices.value = d
+        _names.value = n
+    }
 
     /** A sheet that shows devices is on screen (true) or gone (false): other devices are followed while it is. */
     fun watch(on: Boolean) {

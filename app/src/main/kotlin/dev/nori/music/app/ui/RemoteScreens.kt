@@ -84,6 +84,7 @@ fun DevicesSheet(open: Boolean, onDismiss: () -> Unit, onOutput: () -> Unit, jam
     NoriSheet(open, onDismiss) {
         LifecycleResumeEffect(Unit) { vm.watch(true); onPauseOrDispose { vm.watch(false) } }
         val devices by vm.devices.collectAsStateWithLifecycle()
+        val names by vm.names.collectAsStateWithLifecycle()
         val jam by vm.jam.collectAsStateWithLifecycle()
         val relay by vm.relay.collectAsStateWithLifecycle()
         val mirror by vm.mirror.collectAsStateWithLifecycle()
@@ -92,10 +93,10 @@ fun DevicesSheet(open: Boolean, onDismiss: () -> Unit, onOutput: () -> Unit, jam
         Column(Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding()) {
             SectionHeader(words(R.string.devices_title))
             DeviceRow(words(R.string.devices_this), Icons.Filled.PhoneAndroid, null, mirror == null) { pick(null) }
-            devices.forEach { d ->
+            devices.forEachIndexed { k, d ->
                 val now = d.state?.current()
                 DeviceRow(
-                    d.name, kindIcon(d.kind),
+                    names.getOrNull(k) ?: d.name, kindIcon(d.kind),
                     now?.let { "${it.title} · ${it.artist}" } ?: words(R.string.devices_idle),
                     mirror?.id == d.id, if (d.nearby) words(R.string.devices_nearby) else null,
                 ) { pick(d.id) }

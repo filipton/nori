@@ -587,6 +587,11 @@
     <!-- The devices sheet: where the music plays, and the account's other devices. -->
     <string name="devices_title">Play on</string>
     <string name="devices_this">This phone</string>
+    <!-- Told after a device's name when another has the same one: "Mac (terminal)". -->
+    <string name="devices_kind_phone">phone</string>
+    <string name="devices_kind_desktop">computer</string>
+    <string name="devices_kind_terminal">terminal</string>
+    <string name="devices_kind_guest">guest</string>
     <string name="devices_output">Audio output</string>
     <string name="devices_none">No other devices yet. Turn on “Control from other devices” in nori on them.</string>
     <string name="devices_nearby">On this network</string>
