@@ -19,6 +19,9 @@ const LONGEST_GAP_MS: i64 = 10_000;
 /// Wake bounds without the sweep; the max bounds how late a seek is noticed.
 const WAKE_MIN_MS: i64 = 8;
 const WAKE_MAX_MS: i64 = 500;
+/// A wake for a change lands this far past it: a platform's timer and playhead count whole ms, and a
+/// wake a fraction short would find nothing changed and sleep [`WAKE_MIN_MS`] more.
+const WAKE_PAST_MS: i64 = 1;
 /// With the sweep, redraw every this many display frames.
 pub(crate) const SWEEP_FRAMES: u32 = 2;
 /// Minimum fill movement (characters) that triggers a redraw.
@@ -372,7 +375,7 @@ impl LyricTiming {
                 next
             }
         };
-        Some(next.map_or(WAKE_MAX_MS, |n| (n - t).clamp(WAKE_MIN_MS, WAKE_MAX_MS)) as u32)
+        Some(next.map_or(WAKE_MAX_MS, |n| (n - t + WAKE_PAST_MS).clamp(WAKE_MIN_MS, WAKE_MAX_MS)) as u32)
     }
 
     /// [`Step::wait`] at `t`; every frame while `lively` words animate (half rate judders).
@@ -384,7 +387,7 @@ impl LyricTiming {
         } else if sweep {
             SWEEP_FRAMES
         } else {
-            self.next_switch_after(t).map_or(WAKE_MAX_MS, |next| (next - t).clamp(WAKE_MIN_MS, WAKE_MAX_MS)) as u32
+            self.next_switch_after(t).map_or(WAKE_MAX_MS, |next| (next - t + WAKE_PAST_MS).clamp(WAKE_MIN_MS, WAKE_MAX_MS)) as u32
         }
     }
 }
@@ -660,7 +663,7 @@ mod tests {
     fn wakes() {
         let t = LyricTiming::new(true, false, lines(&[1000, 1200, 5000]));
         // Glides 170, 620, 620; switch_at: 1000-85=915, 1200-310=890 -> 916, 5000-310=4690.
-        assert_eq!((t.wait(0, false, false), t.wait(700, false, false), t.wait(914, false, false), t.wait(921, false, false), t.wait(4700, false, false)), (500, 215, 8, 500, 500));
+        assert_eq!((t.wait(0, false, false), t.wait(700, false, false), t.wait(914, false, false), t.wait(921, false, false), t.wait(4700, false, false)), (500, 216, 8, 500, 500));
         assert_eq!(t.wait(0, true, false), SWEEP_FRAMES);
         assert_eq!(LyricTiming::new(false, false, lines(&[-1, -1])).wait(0, false, false), 0);
 
@@ -680,16 +683,16 @@ mod tests {
         let t = LyricTiming::new(true, true, vec![line, Line { start_ms: 2600, len: 3, ..Default::default() }]);
         // Before the first line: until its switch (310 ms before its start).
         assert_eq!(t.quiet_ms(0, false), Some(500));
-        assert_eq!(t.quiet_ms(600, false), Some(90));
+        assert_eq!(t.quiet_ms(600, false), Some(91));
         // Inside a word or backing word: None.
         assert_eq!((t.quiet_ms(1200, false), t.quiet_ms(2250, false)), (None, None));
         // Between words: until the next word, backing word, or line.
-        assert_eq!((t.quiet_ms(1450, false), t.quiet_ms(2000, false), t.quiet_ms(2300, false)), (Some(150), Some(200), Some(300)));
+        assert_eq!((t.quiet_ms(1450, false), t.quiet_ms(2000, false), t.quiet_ms(2300, false)), (Some(151), Some(201), Some(301)));
         // Animating words (lively): None.
         assert_eq!((t.quiet_ms(1450, true), t.quiet_ms(2300, true)), (None, None));
         let c = LyricClock::new(t, 0);
         let s = c.advance(1450, true, false, false);
-        assert_eq!((s.wait, s.still), (150, true));
+        assert_eq!((s.wait, s.still), (151, true));
         let s = c.advance(1450, false, false, false);
         assert!(!s.still, "no sweep: never still");
         assert_eq!((c.advance(1200, true, false, false).wait, c.advance(1200, true, false, false).still), (SWEEP_FRAMES, false));
@@ -723,7 +726,7 @@ mod tests {
         // Without word times the sweep is ignored; wake at the next line.
         let c = LyricClock::new(LyricTiming::new(true, false, lines(&[1000, 5000])), 0);
         assert_eq!(c.advance(0, true, false, false).wait, 500);
-        assert_eq!(c.advance(4400, true, false, false).wait, 290);
+        assert_eq!(c.advance(4400, true, false, false).wait, 291);
 
         // Offset applies to display and tap.
         // Lyric times run 1.5 s late: the line timed at 5000 is sung at 3500.
@@ -799,8 +802,8 @@ mod tests {
         assert_eq!(line_strength(true, 1, t.frame(8000).active), PAST_LINE);
         assert_eq!(t.frame(8000).sung, 0.0);
         assert_eq!(t.frame(6000).active, 1, "seek back relights it");
-        // Wakes exactly at the end.
-        assert_eq!((t.wait(7700, false, false), t.next_switch_after(7700), t.next_switch_after(8000)), (300, Some(8000), None));
+        // Wakes just past the end: a wake a whole ms short (a platform counting whole ms) finds it.
+        assert_eq!((t.wait(7700, false, false), t.next_switch_after(7700), t.next_switch_after(8000)), (301, Some(8000), None));
         let c = LyricClock::new(t, 7000);
         assert_eq!(c.advance(7000, false, false, true).frame.active, 1);
         assert_eq!(c.advance(8000, false, false, false).frame.active, 2);
@@ -811,7 +814,7 @@ mod tests {
         let words = vec![w(5000, 5500, 0, 2), w(5500, 6000, 3, 5)];
         let t = LyricTiming::new(true, true, vec![Line { start_ms: 1000, len: 5, words: vec![w(1000, 2000, 0, 5)], ..Default::default() }, Line { start_ms: 5000, end_ms: 6000, len: 5, words, ..Default::default() }]);
         assert_eq!((t.frame(6000 + MOTION_TAIL_MS - 1).active, t.frame(6000 + MOTION_TAIL_MS).active), (1, 2));
-        assert_eq!(t.quiet_ms(6100, false), Some((MOTION_TAIL_MS - 100) as u32));
+        assert_eq!(t.quiet_ms(6100, false), Some((MOTION_TAIL_MS - 100 + WAKE_PAST_MS) as u32));
         let c = LyricClock::new(t, 0);
         assert_eq!(c.advance(5800, true, false, true).frame.active, 1);
         let s = c.advance(6000 + MOTION_TAIL_MS, true, false, false);
