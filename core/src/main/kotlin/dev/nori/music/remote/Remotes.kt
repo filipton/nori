@@ -19,6 +19,7 @@ import dev.nori.music.ffi.Remote
 import dev.nori.music.ffi.RemoteMe
 import dev.nori.music.ffi.RemotePlayer
 import dev.nori.music.ffi.RemoteShown
+import dev.nori.music.ffi.Sight
 import dev.nori.music.ffi.remote.DeviceKind
 import dev.nori.music.ffi.remote.Op
 import dev.nori.music.ffi.remote.isGuestKey
@@ -82,6 +83,9 @@ class Remotes(private val context: Context, private val nori: Nori) {
     private var client: Client? = null
     private var serving = false
     private var watching = false
+    /** The app on screen, and the playback notification up: either shows the mirrored device. */
+    @Volatile private var appShown = false
+    @Volatile private var notified = false
 
     private val player = object : RemotePlayer {
         override fun apply(op: Op) {
@@ -143,6 +147,7 @@ class Remotes(private val context: Context, private val nori: Nori) {
             client = c
             if (serving) remote?.serve(p.remoteControl)
             if (watching) remote?.watch(true)
+            if (sight() != Sight.SCREEN) remote?.sight(sight())
         }
         remote
     }
@@ -181,6 +186,31 @@ class Remotes(private val context: Context, private val nori: Nori) {
         keysWatched = on
         if (on) context.contentResolver.registerContentObserver(android.provider.Settings.System.CONTENT_URI, true, volumeKeys)
         else context.contentResolver.unregisterContentObserver(volumeKeys)
+    }
+
+    /** Whether the app is on screen; see [sight]. Main thread. */
+    fun appShown(on: Boolean) {
+        appShown = on
+        tellSight()
+    }
+
+    /** Whether the playback notification is up; see [sight]. Main thread. */
+    fun notified(on: Boolean) {
+        notified = on
+        tellSight()
+    }
+
+    /** What shows the mirrored device (the core's `Remote::sight`): a paused one is not followed while nothing does. */
+    private fun sight() = when {
+        appShown -> Sight.SCREEN
+        notified -> Sight.NOTIFICATION
+        else -> Sight.NOTHING
+    }
+
+    private fun tellSight() {
+        val r = remote ?: return
+        val now = sight()
+        work { r.sight(now) }
     }
 
     /** A device picker or jam screen is open: other devices are followed while it is. */

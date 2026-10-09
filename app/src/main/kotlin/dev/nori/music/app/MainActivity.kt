@@ -87,6 +87,7 @@ class MainActivity : ComponentActivity() {
         // Back from Android's "install unknown apps" page: an update waiting for it goes on.
         Nori.get(this).updates.resumed()
         super.onStart()
+        Nori.get(this).remotes.appShown(true)
         // Binding starts the playback service, which builds a player on this thread. Let the first frame out first.
         window.decorView.post { Looper.myQueue().addIdleHandler { if (started && Nori.get(this).settings.value.loggedIn) { Nori.get(this).player.connect(); Nori.get(this).player.inSight(); pickAddress() }; false } }
         started = true
@@ -98,6 +99,7 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         started = false
+        Nori.get(this).remotes.appShown(false)
         // The service keeps playing on its own; holding a controller while hidden would only keep callbacks flowing.
         Nori.get(this).player.disconnect()
         // Leaving the app is going to the home screen: its "For you" widget shows the mixes as they are now.

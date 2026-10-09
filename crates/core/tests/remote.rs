@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use nori_core::client::{Client, NetProfile, Starrable};
 use nori_core::library::StarsShown;
-use nori_core::remote::{jam_join, Discovery, Playing, RelaySupport, Remote, RemoteMe, RemotePlayer, RemoteShown};
+use nori_core::remote::{jam_join, Discovery, Playing, RelaySupport, Remote, RemoteMe, RemotePlayer, RemoteShown, Sight};
 use nori_core::transport::{block_on, Exchange, FailureKind, Transport, TransportError, TransportResponse};
 use nori_player::playlist::Hand;
 use nori_core::{Core, ServerConfig, Song};
@@ -815,6 +815,36 @@ fn a_paused_device_mirrored_is_not_timed_until_it_plays() {
 
     phone.remote.clone().played(Playing { playing: true, position_ms: 5_000, ..Default::default() });
     desk.until("timed once it plays", |_| (relay.clocks() > 0).then_some(()));
+    relay.close();
+}
+
+#[test]
+fn a_paused_device_out_of_sight_is_not_followed() {
+    let relay = Relay::new();
+    let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    phone.playing(&["s1", "s2"], 0);
+    phone.remote.clone().played(Playing { playing: false, position_ms: 5_000, ..Default::default() });
+    phone.remote.clone().serve(true);
+    let phone_id = phone.remote.id();
+    desk.remote.clone().watch(true);
+    desk.until("the phone", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state));
+    desk.remote.clone().watch(false);
+    desk.remote.clone().pick(Some(phone_id.clone()));
+    desk.until("the phone mirrored, paused", |r| r.active().filter(|m| !m.playing));
+
+    // Nothing shows the phone on the desk any more: its held poll ends, and the phone playing is not heard.
+    desk.remote.clone().sight(Sight::Nothing);
+    let polls = desk.polls(&relay);
+    phone.remote.clone().played(Playing { playing: true, position_ms: 5_000, ..Default::default() });
+    let plays = || relay.hub.lock().rooms.values().flat_map(|r| &r.members).any(|m| m.id == phone_id && m.state.as_ref().is_some_and(|s| s.playing));
+    phone.until("the relay has the phone playing", |_| plays().then_some(()));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(desk.remote.active().is_some_and(|m| !m.playing), "the desk did not hear it");
+    assert_eq!(desk.polls(&relay), polls, "nor asked");
+
+    desk.remote.clone().sight(Sight::Screen);
+    desk.until("followed again, playing", |r| r.active().filter(|m| m.playing));
     relay.close();
 }
 

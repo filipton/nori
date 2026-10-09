@@ -311,11 +311,13 @@ class PlaybackService : MediaLibraryService() {
     override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
         super.onUpdateNotification(session, startInForegroundRequired)
         engaged = startInForegroundRequired
+        nori.remotes.notified(engaged)
         showRoute()
     }
 
     override fun onDestroy() {
         nori.remotes.serve(false)
+        nori.remotes.notified(false)
         nori.remotes.service = null
         dev.nori.music.remote.RemoteRoute.show(this, null)
         nori.widgets.onPlaced = null

@@ -244,6 +244,19 @@ impl Out {
     }
 }
 
+/// What shows the mirrored device on this one, and so how closely it is followed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum Sight {
+    /// The app on screen.
+    #[default]
+    Screen,
+    /// Only a notification: its song and whether it plays.
+    Notification,
+    /// Nothing: a paused device is not followed (its poll ends) until it is in sight again.
+    Nothing,
+}
+
 /// Whether the server relays remote control and jams (octo-fiesta's `noriRemote.*`), as asked when the
 /// remote is made for a profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -499,6 +512,8 @@ struct Inner {
     next_id: u64,
     refused: HashMap<String, Refusal>,
     door: Option<Door>,
+    /// What shows the mirrored device here ([`Remote::sight`]).
+    sight: Sight,
     /// [`Remote::stop`] ran: nothing starts again.
     stopped: bool,
     /// The threads waiting for a request's answer, woken to give it up when the remote stops.
@@ -513,13 +528,25 @@ impl Peer {
 
 impl Inner {
     fn wants_relay(&self) -> bool {
-        self.relay != RelaySupport::Unsupported && (self.serving || self.watching || self.mirror.is_some() || self.hosted.is_some())
+        self.relay != RelaySupport::Unsupported && (self.serving || self.watching || self.follows_mirror() || self.hosted.is_some())
+    }
+
+    /// Whether the mirrored device is followed: while something here shows it, or it plays.
+    fn follows_mirror(&self) -> bool {
+        self.mirror.as_ref().is_some_and(|m| self.sight != Sight::Nothing || m.playing())
     }
 
     /// Whether the door of nearby device `id` is followed: every one while a picker is open, else only
     /// the one mirrored.
     fn follows_peer(&self, id: &str) -> bool {
-        self.watching || self.mirror.as_ref().is_some_and(|m| m.id == id)
+        self.watching || (self.follows_mirror() && self.mirror.as_ref().is_some_and(|m| m.id == id))
+    }
+
+    /// Ends the relay poller, a held poll at once.
+    fn end_relay_poll(&mut self) {
+        self.generation += 1;
+        self.relay_polling = false;
+        self.waiting.values().for_each(Waker::wake_by_ref);
     }
 
     /// Device `id`'s last state and when it arrived; a nearby device's door says it first.
@@ -699,6 +726,18 @@ impl Remote {
         }
         if probe {
             self.probe();
+        }
+        self.keep_polling();
+    }
+
+    /// What shows the mirrored device here; [`Sight::Screen`] until said otherwise.
+    pub fn sight(self: Arc<Self>, sight: Sight) {
+        {
+            let mut i = self.inner.lock();
+            if i.sight == sight {
+                return;
+            }
+            i.sight = sight;
         }
         self.keep_polling();
     }
@@ -907,8 +946,7 @@ impl Remote {
             i.hosted = Some(Hosted { jam: Jam::new(opened.room, opened.invite, self.id.clone(), self.me.name.clone()), link: link.clone() });
             i.published = None;
             // A poll held from before listens to the account's room only: polled again, now with the jam's.
-            i.generation += 1;
-            i.relay_polling = false;
+            i.end_relay_poll();
         }
         self.publish();
         self.keep_polling();
@@ -1168,15 +1206,15 @@ impl Remote {
         }
     }
 
-    /// A GET through the client, on this thread; None when the remote stopped meanwhile (the request is
-    /// cancelled).
-    fn get(&self, url: String, timeout_ms: u32) -> Option<Result<Vec<u8>, NetError>> {
+    /// A GET through the client, on this thread; None when the remote stopped or the request is no longer
+    /// `current` meanwhile (it is cancelled).
+    fn get(&self, url: String, timeout_ms: u32, current: impl Fn(&Inner) -> bool) -> Option<Result<Vec<u8>, NetError>> {
         let me = std::thread::current().id();
         let mut got = std::pin::pin!(transport::get(&*self.client.transport, url, timeout_ms));
         let out = block_on(std::future::poll_fn(|cx| {
             {
                 let mut i = self.inner.lock();
-                if i.stopped {
+                if i.stopped || !current(&i) {
                     return Poll::Ready(None);
                 }
                 i.waiting.insert(me, cx.waker().clone());
@@ -1248,7 +1286,7 @@ impl Remote {
     fn probe(self: &Arc<Self>) {
         let me = self.clone();
         self.spawn("nori-remote-probe", move || {
-            let Some(got) = me.get(me.poll_url(None, false, false), 0) else { return };
+            let Some(got) = me.get(me.poll_url(None, false, false), 0, |_| true) else { return };
             let serving = {
                 let mut i = me.inner.lock();
                 if let Some(found) = support(&got) {
@@ -1280,8 +1318,7 @@ impl Remote {
                     start_relay = Some(i.generation);
                 }
             } else if i.relay_polling {
-                i.generation += 1;
-                i.relay_polling = false;
+                i.end_relay_poll();
             }
             let generation = i.lan_generation;
             let follow: Vec<bool> = i.peers.iter().map(|p| !p.polling && i.follows_peer(&p.member.id)).collect();
@@ -1305,13 +1342,18 @@ impl Remote {
     fn poll_relay(self: Arc<Self>, generation: u64) {
         loop {
             let url = {
-                let i = self.inner.lock();
-                if i.generation != generation || !i.wants_relay() {
+                let mut i = self.inner.lock();
+                if i.generation != generation {
+                    return;
+                }
+                // A mirrored device paused out of sight: nothing else wants the relay.
+                if !i.wants_relay() {
+                    i.relay_polling = false;
                     return;
                 }
                 self.poll_url(i.since, !i.relay_down, i.serving)
             };
-            let Some(got) = self.get(url, POLL_TIMEOUT_MS) else { return };
+            let Some(got) = self.get(url, POLL_TIMEOUT_MS, |i| i.generation == generation) else { return };
             let received = clock::now_us();
             // Asked for before the rooms changed: its seq may pass events of a room it did not cover.
             if self.inner.lock().generation != generation {
@@ -1366,7 +1408,7 @@ impl Remote {
                 None => format!("/rest/noriRemote.poll?dev={}", self.id),
             };
             let url = format!("{base}{}", lan::signed(&secret, "GET", &query, b"", db::now_ms()));
-            let Some(got) = self.get(url, POLL_TIMEOUT_MS) else { return };
+            let Some(got) = self.get(url, POLL_TIMEOUT_MS, |_| true) else { return };
             let got = got.ok().and_then(|b| serde_json::from_slice::<Answer>(&b).ok());
             let received = clock::now_us();
             let Some(a) = got else {
@@ -1523,7 +1565,7 @@ impl Remote {
                     let Some((_, secret)) = self.client.core.account.read().clone() else { return };
                     let t1 = clock::now_us();
                     let url = format!("{base}{}", lan::signed(&secret, "GET", &format!("/rest/noriRemote.time?dev={}&t1={t1}", self.id), b"", db::now_ms()));
-                    let Some(got) = self.get(url, 5_000) else { return };
+                    let Some(got) = self.get(url, 5_000, |_| true) else { return };
                     let t4 = clock::now_us();
                     if let Some(Body::Clock { t1, t2, t3 }) = got.ok().and_then(|b| serde_json::from_slice(&b).ok()) {
                         timed(&mut self.inner.lock(), &id, clock::Exchange { t1, t2, t3, t4 });
