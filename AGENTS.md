@@ -74,7 +74,9 @@ owner's decisions), `docs/perf-build.md`.
   permissions, AURemoteIO, cpal). Kotlin only decodes, outputs and asks.
 - A feature is built in Rust first, then wired into every client that has the screen for it. Before
   writing logic in a client, look for it in `crates/host`/the core; if it is there, call it; if another
-  client would need it too, it belongs in Rust. A rule written in two languages is a bug.
+  client would need it too, it belongs in Rust. A rule written in two languages is a bug. A feature
+  only one platform can have (Android Auto, widgets, launcher shortcuts, the iPod's lock screen) may
+  live wholly in that client; what it shows still comes from the core where the core already has it.
 - The core returns data and enums, never user-facing text. Words live in each client: Android string
   resources (`strings.xml`, `strings_ui.xml`, read via `app/ui/Say.kt`), `crates/cli/src/text.rs`,
   the desktop's `words.rs`. Logs, perf report and self test are English.
