@@ -180,6 +180,8 @@ pub(crate) trait Ring: Send {
     fn wake_engine(&self);
     /// Gives back `frames` pulled and not played.
     fn rewind(&mut self, frames: u64);
+    /// The ring's count of frames pulled, for the clock.
+    fn pulled(&self) -> Pulled;
 }
 
 impl Ring for Feed {
@@ -203,6 +205,9 @@ impl Ring for Feed {
     }
     fn rewind(&mut self, frames: u64) {
         Feed::rewind(self, frames)
+    }
+    fn pulled(&self) -> Pulled {
+        Box::new(Feed::pulled(self))
     }
 }
 
@@ -234,16 +239,21 @@ impl HeadCount {
     }
 }
 
+/// Frames the ring has given since it was made.
+pub(crate) type Pulled = Box<dyn Fn() -> u64 + Send + Sync>;
+
 /// The track's frame counts: written by the writer, read by the engine (`latency_us`) from any thread.
+/// What was pulled is the ring's own count: the engine reads the place heard as what the ring gave less
+/// what the track holds, and a count of the writer's own would be apart from the ring's while it pulls.
 #[derive(Default)]
-pub(crate) struct Clock(Mutex<Counts>);
+pub(crate) struct Clock(Mutex<Counts>, Mutex<Option<Pulled>>);
 
 /// Frame counts since the last flush.
 #[derive(Default, Clone, Copy)]
 struct Counts {
     rate: u32,
-    /// Pulled from the ring (written or staged).
-    ahead: u64,
+    /// The ring's count of frames pulled at the last flush.
+    origin: u64,
     /// Taken by the track.
     given: u64,
     /// Presented at `at_ns`; extrapolated from there while `running`.
@@ -267,10 +277,22 @@ impl Counts {
 }
 
 impl Clock {
-    /// Frames pulled but not yet presented.
+    /// Frames pulled (written or staged) but not yet presented.
     pub(crate) fn latency_frames(&self, now_ns: i64) -> u64 {
+        let pulled = self.pulled();
         let c = *self.0.lock();
-        c.ahead.saturating_sub(c.heard_at(now_ns))
+        pulled.saturating_sub(c.origin).saturating_sub(c.heard_at(now_ns))
+    }
+
+    fn pulled(&self) -> u64 {
+        self.1.lock().as_ref().map_or(0, |p| p())
+    }
+
+    /// Counts from zero, the ring's count of what was pulled being `pulled`.
+    fn start(&self, rate: u32, pulled: Pulled) {
+        let origin = pulled();
+        *self.1.lock() = Some(pulled);
+        self.update(|c| *c = Counts { rate, origin, ..Counts::default() });
     }
 
     pub(crate) fn latency_us(&self, now_ns: i64) -> u64 {
@@ -298,7 +320,8 @@ impl Clock {
 
     /// Resets all counts to zero at `now_ns`, stopped (after a flush or reopen).
     fn reset(&self, now_ns: i64) {
-        self.update(|c| *c = Counts { rate: c.rate, at_ns: now_ns, mixed: c.mixed, ..Counts::default() });
+        let origin = self.pulled();
+        self.update(|c| *c = Counts { rate: c.rate, origin, at_ns: now_ns, mixed: c.mixed, ..Counts::default() });
     }
 
     pub(crate) fn mixed_us(&self) -> u64 {
@@ -421,7 +444,7 @@ impl<R: Ring> Writer<R> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(ring: R, opened: Opened, reopen: Reopen, format: OutputFormat, float: bool, clock: Arc<Clock>, bytes: Arc<AtomicU64>) -> Writer<R> {
         let rate = format.rate;
-        clock.update(|c| *c = Counts { rate, ..Counts::default() });
+        clock.start(rate, ring.pulled());
         log_if_smaller(opened.frames, reopen.frames, rate);
         Writer {
             ring,
@@ -831,8 +854,6 @@ impl<R: Ring> Writer<R> {
 
     /// Pulls up to `n` frames into staging; returns the frames pulled.
     fn pull(&mut self, n: usize) -> usize {
-        // Counted before the pull so the engine never sees the position ahead of the truth.
-        self.clock.update(|c| c.ahead += n as u64);
         let ch = self.channels;
         let staging = self.sink.staging();
         let got = if self.float || self.packed {
@@ -846,9 +867,6 @@ impl<R: Ring> Writer<R> {
             let halves = unsafe { std::slice::from_raw_parts_mut(staging.as_mut_ptr() as *mut i16, staging.len() * 2) };
             self.ring.pull_i16(&mut halves[..n * ch])
         };
-        if got < n {
-            self.clock.update(|c| c.ahead -= (n - got) as u64);
-        }
         got
     }
 
@@ -1493,7 +1511,12 @@ mod tests {
         /// Each frame pulled carries its number (from 1, counted since the last flush) instead of `value`:
         /// for a float track that records what it plays.
         counting: bool,
-        pulled: u64,
+        /// Frames pulled since the last flush, less those given back: the clock reads it as a pull goes.
+        pulled: Arc<AtomicU64>,
+        /// The engine, reading the place heard while a pull is under way (taken from the ring less what
+        /// the track says it holds); the furthest it was from the frame presented, frames.
+        reader: Option<Arc<Clock>>,
+        misread: u64,
     }
 
     impl FakeRing {
@@ -1501,7 +1524,7 @@ mod tests {
             let low = (RATE as i64 * (RING_LOW_US - 250_000) / 1_000_000) as usize;
             // A burst is ten seconds counted from the ear, which moves on while it is decoded: a little more.
             let burst = (RATE as i64 * (BUFFER_US + 200_000) / 1_000_000) as usize;
-            let mut r = FakeRing { available: 0, left: music_s * RATE as u64, low, burst, refills: 0, flushed: false, value: 0.5, engine_woken: 0, engine: Engine::Bursts, due: None, now, counting: false, pulled: 0 };
+            let mut r = FakeRing { available: 0, left: music_s * RATE as u64, low, burst, refills: 0, flushed: false, value: 0.5, engine_woken: 0, engine: Engine::Bursts, due: None, now, counting: false, pulled: Arc::default(), reader: None, misread: 0 };
             r.refill();
             r
         }
@@ -1540,6 +1563,11 @@ mod tests {
         }
 
         fn take(&mut self, frames: usize) -> usize {
+            if let Some(clock) = &self.reader {
+                let now = self.now.load(Ordering::Relaxed) as i64;
+                let read = self.pulled.load(Ordering::Relaxed).saturating_sub(clock.latency_frames(now));
+                self.misread = self.misread.max(read.abs_diff(clock.heard_now(now)));
+            }
             let n = frames.min(self.available);
             self.available -= n;
             if self.available <= self.low && self.left > 0 {
@@ -1559,7 +1587,7 @@ mod tests {
         /// A seek: what the ring held goes, and a burst of other music comes.
         fn flush(&mut self, value: f32) {
             self.available = 0;
-            self.pulled = 0;
+            self.pulled.store(0, Ordering::Relaxed);
             self.flushed = true;
             self.value = value;
             self.refill();
@@ -1573,20 +1601,22 @@ mod tests {
         fn pull(&mut self, out: &mut [f32]) -> usize {
             let mut r = self.lock();
             let n = r.take(out.len() / 2);
+            let pulled = r.pulled.load(Ordering::Relaxed);
             if r.counting {
-                for f in out[..n * 2].as_chunks_mut::<2>().0 {
-                    r.pulled += 1;
-                    *f = [r.pulled as f32; 2];
+                for (k, f) in out[..n * 2].as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                    *f = [(pulled + k as u64 + 1) as f32; 2];
                 }
             } else {
                 out[..n * 2].fill(r.value);
             }
+            r.pulled.store(pulled + n as u64, Ordering::Relaxed);
             n
         }
         fn pull_i16(&mut self, out: &mut [i16]) -> usize {
             let mut r = self.lock();
             let n = r.take(out.len() / 2);
             out[..n * 2].fill((r.value * 32767.0) as i16);
+            r.pulled.fetch_add(n as u64, Ordering::Relaxed);
             n
         }
         fn flushed(&mut self) -> bool {
@@ -1601,9 +1631,13 @@ mod tests {
         }
         fn rewind(&mut self, frames: u64) {
             let mut r = self.lock();
-            let back = frames.min(r.pulled);
-            r.pulled -= back;
+            let back = frames.min(r.pulled.load(Ordering::Relaxed));
+            r.pulled.fetch_sub(back, Ordering::Relaxed);
             r.available += back as usize;
+        }
+        fn pulled(&self) -> Pulled {
+            let pulled = self.lock().pulled.clone();
+            Box::new(move || pulled.load(Ordering::Relaxed))
         }
     }
 
@@ -1874,6 +1908,19 @@ mod tests {
         assert!((10..=13).contains(&ticks), "{ticks} wakes for a 160 ms fade");
         let next = s.next.unwrap() - s.now();
         assert!(next > 5_000 * MS, "and none after it");
+    }
+
+    /// The engine wakes for its next burst during the writer's top-up and reads the place heard while
+    /// the writer pulls the next chunk: it reads the frame presented, not one a chunk behind.
+    #[test]
+    fn place_read_during_a_pull_is_the_place_heard() {
+        let mut s = Sim::new(600, false, false);
+        s.ring.lock().reader = Some(s.clock.clone());
+        s.play();
+        s.run(60_000);
+        let r = s.ring.lock();
+        assert!(r.refills > 5, "bursts came");
+        assert!(r.misread <= 1, "read {} frames from the frame heard", r.misread);
     }
 
     #[test]

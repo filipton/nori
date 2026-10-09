@@ -304,6 +304,13 @@ impl Ring for Arc<Mutex<Tape>> {
         let mut t = self.lock();
         t.read = t.read.saturating_sub(frames).max(t.discard);
     }
+    fn pulled(&self) -> Pulled {
+        let tape = self.clone();
+        Box::new(move || {
+            let t = tape.lock();
+            t.read.max(t.discard)
+        })
+    }
 }
 
 /// How the output behaves.
@@ -536,8 +543,9 @@ fn heard_in_ms(r: &Rig, at_ns: i64, old: f32, new: f32) -> i64 {
 
 /// The sound the ear hears now.
 fn heard_amp(r: &Rig) -> f32 {
+    let latency = r.clock.latency_frames(r.now());
     let t = r.tape.lock();
-    t.amp(t.read - r.clock.latency_frames(r.now()))
+    t.amp(t.read - latency)
 }
 
 #[test]

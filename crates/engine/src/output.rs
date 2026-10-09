@@ -354,6 +354,13 @@ impl Feed {
         self.ring.waiting.load(Ordering::Acquire)
     }
 
+    /// The frames pulled since the ring was made, readable from any thread (0 once the ring is gone): a
+    /// device's count of what it took that a reading never finds apart from the ring's own.
+    pub fn pulled(&self) -> impl Fn() -> u64 + Send + Sync + 'static {
+        let ring = Arc::downgrade(&self.ring);
+        move || ring.upgrade().map_or(0, |r| r.read_at())
+    }
+
     /// Frames of music waiting in the ring.
     pub fn available(&self) -> usize {
         self.ring.filled() as usize
@@ -667,8 +674,9 @@ impl RingTrack {
     /// The ring frame (since the flush) the device has played to, and the frames it holds past it.
     fn heard(&self) -> (u64, u64) {
         let (Some(r), Some(d)) = (self.ring.as_ref(), self.device) else { return (0, 0) };
-        let held = self.output.latency_us() * d.rate as u64 / 1_000_000;
+        // Taken read first: a pull ending between the two readings shows the place behind, never ahead.
         let taken = r.read_at().saturating_sub(self.base);
+        let held = self.output.latency_us() * d.rate as u64 / 1_000_000;
         (taken.saturating_sub(held), held.min(taken))
     }
 }
