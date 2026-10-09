@@ -1241,3 +1241,23 @@ fn picking_a_device_moves_the_active_ones_playback() {
         relay.close();
     }
 }
+
+/// The relay still lists a device from before it restarted, by its own id: it neither lists nor follows
+/// itself.
+#[test]
+fn a_device_never_follows_itself() {
+    let relay = Relay::new();
+    let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    let me = phone.remote.id();
+    let before = nori_remote::wire::DeviceState { playing: true, index: Some(0), ..Default::default() };
+    relay.hub.lock().rooms.entry("u:ann".into()).or_default().members.push(Member { id: me.clone(), name: "Phone".into(), kind: DeviceKind::Phone, state: Some(before) });
+    desk.remote.clone().serve(true);
+    phone.remote.clone().serve(true);
+    phone.remote.clone().watch(true);
+    phone.until("the desk", |r| r.devices().into_iter().find(|d| d.name == "Desk"));
+    assert!(phone.remote.devices().iter().all(|d| d.id != me), "not listed");
+    phone.remote.clone().pick(Some(me));
+    assert!(phone.remote.active().is_none(), "not followed");
+    relay.close();
+}

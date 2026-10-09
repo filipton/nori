@@ -825,7 +825,7 @@ impl Remote {
         let seen = |m: &Member, age_ms: i64, nearby: bool| RemoteDevice { id: m.id.clone(), name: m.name.clone(), kind: m.kind, state: m.state.clone(), age_ms, nearby, refused: i.refused.get(&m.id).copied() };
         let mut out: Vec<RemoteDevice> = i.peers.iter().filter(|p| p.member.state.is_some()).map(|p| seen(&p.member, (clock::now_us() - p.received) / 1000, true)).collect();
         for room in i.rooms.iter().filter(|r| !r.jam && !i.relay_down) {
-            for m in room.members.iter().filter(|m| m.id != self.id && m.state.is_some()) {
+            for m in room.members.iter().filter(|m| m.state.is_some()) {
                 if !out.iter().any(|d| d.id == m.id) {
                     out.push(seen(m, i.age(&m.id), false));
                 }
@@ -1464,7 +1464,11 @@ impl Remote {
     }
 
     /// A relay poll's answer, received at `received` (this device's clock).
-    fn took(self: &Arc<Self>, a: Answer, received: i64) {
+    fn took(self: &Arc<Self>, mut a: Answer, received: i64) {
+        // The relay may still list this device from before it restarted: it is never one of the others.
+        for r in &mut a.rooms {
+            r.members.retain(|m| m.id != self.id);
+        }
         let mut commands = Vec::new();
         let mut republish = false;
         {
@@ -1478,7 +1482,7 @@ impl Remote {
             i.since = Some(a.seq);
             i.relay_down = false;
             i.you = a.you;
-            for m in a.rooms.iter().flat_map(|r| &r.members).filter(|m| m.id != self.id) {
+            for m in a.rooms.iter().flat_map(|r| &r.members) {
                 let before = i.rooms.iter().flat_map(|r| &r.members).find(|o| o.id == m.id).map(|o| &o.state);
                 let played = before.into_iter().chain([&m.state]).flatten().any(|s| s.playing);
                 if before != Some(&m.state) {
