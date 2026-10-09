@@ -534,6 +534,8 @@ impl Default for AudioTrack {
 impl pipeline::Track for AudioTrack {
     fn open(&mut self, format: Format) {
         self.format = Some(format);
+        // The clock counts frames at the new rate from here.
+        self.clock_frames = (self.clock_us as i128 * format.rate as i128 / 1_000_000) as u64;
     }
 
     /// An AudioTrack has one format.

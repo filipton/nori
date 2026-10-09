@@ -1167,6 +1167,61 @@ fn wav_at(samples: &[i16], rate: u32) -> Vec<u8> {
     common::wav(rate, samples)
 }
 
+/// Regression: a 48 kHz song with a 44.1 kHz one read ahead (the device waiting to open again at its
+/// rate) went on at 44.1 kHz after previous restarted it, a seek or a jump to it: too slow; with a
+/// device holding music, nothing played at all. Through the dip or not; a jump to the next song too.
+#[test]
+fn moves_while_the_next_rate_waits() {
+    let (a, b) = (common::sine(48_000, 440.0, 30.0, 8_000.0), common::sine(RATE, 660.0, 30.0, 8_000.0));
+    let files = || vec![("a".to_string(), wav_at(&a, 48_000), 30_000), ("b".to_string(), wav(&b), 30_000)];
+    // What is done, and the rate and tone heard after it.
+    let moves = [
+        ("previous", (|e: &Engine| _ = e.previous()) as fn(&Engine), 48_000, 440.0),
+        ("a seek to 0", |e| e.seek(0), 48_000, 440.0),
+        ("a jump to a", |e| _ = e.go_to(0, 0), 48_000, 440.0),
+        ("a jump to b", |e| _ = e.go_to(1, 0), RATE, 660.0),
+    ];
+    let mut wrong = Vec::new();
+    for (what, mv, want_rate, want_hz) in moves {
+        for (fade_ms, hold_ms) in [(0, None), (150, None), (0, Some(1_500))] {
+            let case = format!("{what}, a {fade_ms} ms dip, the device holding {hold_ms:?} ms");
+            let rig = Rig::build(files(), sim::App::new(), Settings { fade_ms, ..Settings::default() }, Extra { hold_ms, ..Extra::default() });
+            rig.engine.play_at(0, 0);
+            // Read on into b well before a ends.
+            assert!(rig.wait_for(60, |r| r.engine.status().position_ms > 24_000), "{case}");
+            mv(&rig.engine);
+            // The device's rate, the tone of the last half second heard at it, and the frames heard.
+            let heard = |rig: &Rig| {
+                let rate = rig.card.lock().feed.as_ref().map_or(0, |f| f.format().rate);
+                let left: Vec<f64> = rig.heard.lock().iter().step_by(2).map(|&v| v as f64).collect();
+                let last = &left[left.len().saturating_sub(rate as usize / 2)..];
+                let ups = last.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+                (rate, ups as f64 * 2.0, left.len())
+            };
+            if !rig.wait_for(10, |r| (2_000..10_000).contains(&r.engine.status().position_ms)) {
+                let s = rig.engine.status();
+                wrong.push(format!("{case}: stuck on {:?} at {} ms", s.id, s.position_ms));
+                continue;
+            }
+            let before = heard(&rig);
+            rig.engine.pause();
+            rig.run(1_000);
+            rig.engine.play();
+            rig.run(3_000);
+            let after = heard(&rig);
+            for (when, (rate, hz, _)) in [("", before), (" after a pause", after)] {
+                if rate != want_rate || (hz - want_hz).abs() > 4.0 {
+                    wrong.push(format!("{case}{when}: {hz} Hz at {rate} Hz"));
+                }
+            }
+            if after.2 < before.2 + want_rate as usize * 2 {
+                wrong.push(format!("{case}: {} frames heard in the 3 s after the pause", after.2 - before.2));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
 #[test]
 fn device_format_choices() {
     // A gapless join into another rate reopens the device at that rate instead of resampling.
