@@ -600,6 +600,7 @@ fn library(b: &Build, f: &Facts) -> Vec<Section> {
     let online = vec![b.toggle("thirdPartyLookups", "Third-party lookups", "Lyrics services and the AutoEQ list; off, nothing leaves for anyone but your server")];
     let devices = vec![
         b.toggle("remoteControl", "Remote control", "Your other devices with nori control what plays here, and this computer controls them (C): on this network directly, elsewhere through octo-fiesta"),
+        b.toggle("jam", "Jams", "Start a jam from the devices (C) or on a song, album or playlist (i): others join with a link or QR code and ask for songs, and this computer plays them. Needs octo-fiesta"),
     ];
     vec![section("Index and search", index), section("History", history), section("Online", online), section("Other devices", devices)]
 }

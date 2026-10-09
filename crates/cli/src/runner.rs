@@ -5,6 +5,8 @@ use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::Instant;
 
+use nori_core::remote::wire::Op;
+use nori_core::remote::RelaySupport;
 use nori_core::settings::SavedServer;
 use nori_engine::{Event, State};
 use nori_host::remote::Elsewhere;
@@ -310,7 +312,7 @@ impl Runner {
                     self.repaint = true;
                 }
             }
-            Msg::Remote => self.remote_read(app),
+            Msg::Remote | Msg::Jam(_) => self.remote_read(app),
             Msg::LoggedIn(Ok(p)) => {
                 let mut prefs = crate::backend::app().settings.current().unwrap_or_default();
                 prefs.servers.retain(|s| !(s.url == p.url && s.user == p.user));
@@ -327,14 +329,20 @@ impl Runner {
         app.handle(m);
     }
 
-    /// Reads the other devices and the device playing into `app`. Playback moving to
+    /// Reads the other devices, the device playing and the hosted jam into `app`. Playback moving to
     /// another device or back starts the player over from what it then shows.
     fn remote_read(&mut self, app: &mut App) {
         let Some(s) = &self.session else { return };
         let remote = s.remote();
+        let jams = crate::backend::app().settings.prefs(|p| p.jam);
+        let unsupported = remote.as_ref().is_some_and(|r| r.relay() == RelaySupport::Unsupported);
         let d = &mut app.devices;
         d.on = remote.is_some();
+        d.jams = jams && d.on && !unsupported;
+        d.jams_unsupported = jams && unsupported;
         d.list = remote.as_ref().map(|r| r.devices()).unwrap_or_default();
+        let jam = remote.as_ref().filter(|_| jams).and_then(|r| r.jam_view().filter(|v| v.hosting).map(|v| (v, r.jam_added())));
+        (d.jam, d.added) = jam.map_or_else(Default::default, |(v, added)| (Some(v), added));
         let e = s.elsewhere();
         let moved = e.is_some() != self.elsewhere.is_some();
         d.active = e.as_ref().map(|e| (e.mirror.id.clone(), e.mirror.name.clone()));
@@ -504,7 +512,7 @@ impl Runner {
                     }
                 }
                 prefs_changed(app);
-                // Remote control may have come or gone.
+                // Remote control or jams may have come or gone.
                 self.remote_read(app);
                 return;
             }
@@ -556,6 +564,17 @@ impl Runner {
             Cmd::Pick(device) => {
                 if let Some(r) = s.remote() {
                     r.pick(device);
+                }
+            }
+            Cmd::JamStart => s.jam_open(),
+            Cmd::JamEnd => {
+                if let Some(r) = s.remote() {
+                    r.jam_close();
+                }
+            }
+            Cmd::JamDecide(request, accept) => {
+                if let Some(r) = s.remote() {
+                    r.jam_act(Op::Decide { request, accept });
                 }
             }
             Cmd::Level(level, v) => sound_edited(s, app, crate::backend::app().settings.edit_level(level, v).map(|(e, _)| e)),

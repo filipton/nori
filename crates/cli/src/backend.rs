@@ -52,8 +52,10 @@ pub enum Msg {
     Volume(f32),
     /// The core's star marks moved (a heart pressed here or on another device).
     Starred(nori_core::stars::StarMarks),
-    /// The other devices or the one playing changed: read them again.
+    /// The other devices, the one playing or the jam changed: read them again.
     Remote,
+    /// Whether the jam asked for opened, or why not.
+    Jam(Result<(), String>),
     /// A message from the session with this id; dropped once another session is open.
     From(u64, Box<Msg>),
 }
@@ -78,6 +80,7 @@ impl Msg {
             Msg::Volume(v) => format!("volume {v}"),
             Msg::Starred(_) => "star marks".into(),
             Msg::Remote => "remote".into(),
+            Msg::Jam(r) => format!("jam opened: {}", r.is_ok()),
             Msg::From(id, m) => format!("session {id}: {}", m.brief()),
         }
     }
@@ -318,6 +321,16 @@ impl Session {
 
     pub fn search_server(&self, query: String) {
         self.host.search_server(query, net_error);
+    }
+
+    /// Starts hosting a jam on the server's relay; [`Msg::Jam`] says whether it opened.
+    pub fn jam_open(&self) {
+        let Some(r) = self.remote() else { return };
+        let (tx, me) = (self.tx.clone(), self.id);
+        nori_host::spawn("nori-jam", move || {
+            let opened = block_on(r.jam_open()).map(drop).map_err(|e| net_error(&e));
+            let _ = tx.send(Msg::From(me, Box::new(Msg::Jam(opened))));
+        });
     }
 }
 

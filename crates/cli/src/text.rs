@@ -4,7 +4,7 @@ use nori_core::beat_model::BeatFailure;
 use nori_core::lyrics_sources::LyricsOrigin;
 use nori_core::settings::{BandMark, EqBypass};
 use nori_core::transport::{FailureKind, NetError};
-use nori_core::remote::wire::{DeviceKind, Refusal};
+use nori_core::remote::wire::{DeviceKind, Refusal, Role};
 use nori_core::remote::RemoteDevice;
 use nori_core::{AlbumDetail, PlaylistDetail, PresetKind, Song};
 
@@ -247,12 +247,12 @@ pub fn search_fallback(reason: Option<&str>) -> String {
     }
 }
 
-// ---- other devices ----
+// ---- other devices and jams ----
 
 pub const THIS_COMPUTER: &str = "This computer";
 pub const PLAY_ON: &str = "Play on";
 pub const NO_DEVICES: &str = "No other devices yet: open nori on your phone or computer, on this server, with remote control on.";
-pub const REMOTE_OFF: &str = "Remote control is off: switch it on in Settings, under Other devices";
+pub const REMOTE_OFF: &str = "Remote control and jams are off: switch them on in Settings, under Other devices";
 
 /// The player bar's line while another device plays: "Playing on Desk".
 pub fn playing_on(device: &str) -> String {
@@ -289,6 +289,45 @@ pub fn device_line(d: &RemoteDevice) -> String {
     }
 }
 
+pub const JAM_START: &str = "Start a jam";
+pub const JAM_END: &str = "End the jam";
+pub const JAM_INVITE: &str = "invite";
+pub const JAM_DECIDE: &str = "⏎ add · d no";
+/// Under a provider's song asked for: accepting it makes the server download it.
+pub const JAM_DOWNLOADS: &str = "Downloaded to your server if accepted";
+pub const JAMS_OFF: &str = "Jams are off: switch them on in Settings, under Other devices";
+pub const JAM_UNSUPPORTED: &str = "Your server doesn't support jams yet. They need octo-fiesta with nori support in front of it.";
+pub const JAM_FAILED: &str = "Couldn't start the jam. Jams need octo-fiesta in front of your server.";
+pub const INVITE_TITLE: &str = " Invite to the jam · any key closes ";
+pub const INVITE_HOW: &str = "Scan with a phone's camera, or send the link:";
+pub const INVITE_ROOM: &str = "Make the window bigger to show the QR code.";
+
+/// Who listens in the jam: "2 listening".
+pub fn jam_listening(n: usize) -> String {
+    match n {
+        0 => "no one yet".into(),
+        n => format!("{n} listening"),
+    }
+}
+
+/// The jam as the player bar and the devices say it: "Jam · 2 listening".
+pub fn jam_strip(n: usize) -> String {
+    format!("Jam · {}", jam_listening(n))
+}
+
+/// A listener by name, and role when it is more than a guest's.
+pub fn jam_member(name: &str, role: Role) -> String {
+    match role {
+        Role::Admin => format!("{name} (admin)"),
+        Role::Host | Role::Guest => name.into(),
+    }
+}
+
+/// Who asked for a song: " · asked by Gus".
+pub fn jam_asked(from: &str) -> String {
+    format!(" · asked by {from}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,6 +356,7 @@ mod tests {
         assert_eq!(net_error(&NetError::Api { code: 70, reason: "gone".into() }), "gone");
         assert!(net_error(&NetError::Parse { reason: "x".into() }).starts_with("That address answered"));
 
+        assert_eq!((jam_strip(0), jam_strip(2)), ("Jam · no one yet".into(), "Jam · 2 listening".into()));
         let state = |playing| nori_core::remote::wire::DeviceState {
             playing,
             index: Some(4),

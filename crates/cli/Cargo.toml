@@ -40,3 +40,5 @@ unicode-width = "0.2"
 nori-testdir = { path = "../testdir" }
 # tests/beat_model.rs loads the model it made.
 nori-player = { path = "../player" }
+# The jam invite's QR code, read back from the drawn screen. MIT or Apache-2.0, and ISC.
+rqrr = { version = "0.11", default-features = false }

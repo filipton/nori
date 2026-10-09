@@ -116,6 +116,7 @@ fn small_terminals() {
             draw(&mut a, w, h);
         }
         a.devices.on = true;
+        a.devices.jam = Some(jam());
         for p in [Panel::Playing, Panel::Queue, Panel::Lyrics, Panel::Devices] {
             a.set_panel(p);
             draw(&mut a, w, h);
@@ -893,16 +894,34 @@ fn device(id: &str, name: &str, kind: nori_core::remote::wire::DeviceKind, playi
     nori_core::remote::RemoteDevice { id: id.into(), name: name.into(), kind, state, age_ms: 0, nearby: true, refused: None }
 }
 
+/// A hosted jam with two listeners and two requests, the first a provider's song.
+fn jam() -> nori_core::remote::JamView {
+    use nori_core::remote::wire::{Entry, JamMember, Pending, Role};
+    let member = |id: &str, name: &str, role| JamMember { id: id.into(), name: name.into(), role };
+    let ask = |request, from: &str, title: &str, provider| Pending { request, from: from.to_lowercase(), from_name: from.into(), song: Entry { title: title.into(), ..Default::default() }, provider };
+    nori_core::remote::JamView {
+        hosting: true,
+        link: Some("nori://jam?s=http%3A%2F%2Focto%3A5274&k=c1a952e53165572a6349ca04fa2e3b8a".into()),
+        you: "me".into(),
+        members: vec![member("me", "Mac", Role::Host), member("gus", "gus", Role::Guest), member("dee", "Dee", Role::Admin)],
+        pending: vec![ask(7, "Gus", "Wish", true), ask(12, "Dee", "Blue", false)],
+        queue: None,
+        age_ms: 0,
+        refused: None,
+    }
+}
+
 #[test]
 fn devices_panel() {
     use nori_core::remote::wire::DeviceKind;
     let mut a = app();
     key(&mut a, KeyCode::Char('C'));
-    assert_eq!(a.panel, Some(Panel::Playing), "nothing to show while remote control is off");
+    assert_eq!(a.panel, Some(Panel::Playing), "nothing to show while remote control and jams are off");
     assert!(a.note.as_ref().is_some_and(|n| n.0 == crate::text::REMOTE_OFF));
     assert!(!draw(&mut a, 160, 30).contains("Devices"), "no tab either");
 
     a.devices.on = true;
+    a.devices.jams = true;
     a.devices.list = vec![device("desk", "Desk", DeviceKind::Desktop, Some("Wish")), device("pixel", "Pixel", DeviceKind::Phone, None)];
     key(&mut a, KeyCode::Char('C'));
     assert_eq!((a.panel, a.focus), (Some(Panel::Devices), Focus::Panel));
@@ -913,7 +932,7 @@ fn devices_panel() {
     let under = |name: &str| s.lines().skip_while(|l| !l.contains(name)).nth(1).unwrap_or_default().to_string();
     assert!(row("Desk").contains("computer") && under("Desk").contains("  Wish · Artist"), "what each plays, under it:\n{s}");
     assert!(row("Pixel").contains("phone") && under("Pixel").contains("  Not playing"), "{s}");
-    assert!(s.contains("Devices") && s.contains('⇄'), "{s}");
+    assert!(s.contains("Start a jam") && s.contains("Devices") && s.contains('⇄'), "{s}");
 
     // Enter moves the music there; the keys step device by device.
     key(&mut a, KeyCode::Down);
@@ -927,6 +946,9 @@ fn devices_panel() {
     key(&mut a, KeyCode::Char('g'));
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.cmds.last(), Some(&Cmd::Pick(None)), "back here");
+    key(&mut a, KeyCode::Char('G'));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.cmds.last(), Some(&Cmd::JamStart));
 
     // Reopened, it selects the device playing.
     key(&mut a, KeyCode::Char('C'));
@@ -967,4 +989,129 @@ fn another_device_playing_shows_in_the_player_bar() {
     let line = hit_rect(&a, Hit::Button(crate::app::Button::Panel(Panel::Devices)));
     click(&mut a, line.x + 3, line.y);
     assert_eq!(a.panel, Some(Panel::Devices));
+}
+
+#[test]
+fn jam_header_and_requests_in_the_queue() {
+    let mut a = app();
+    a.devices.on = true;
+    a.devices.jams = true;
+    a.devices.jam = Some(jam());
+    a.devices.added.insert("s2".into(), "Gus".into());
+    a.queue = Some(queue_of(5, 1));
+    key(&mut a, KeyCode::Char('Q'));
+    let s = draw(&mut a, 160, 30);
+    dump("jam-queue", &s);
+    let row = |text: &str| s.lines().find(|l| l.contains(text)).unwrap_or_else(|| panic!("{text} missing:\n{s}")).to_string();
+    assert!(row("Jam · 2 listening").contains("invite") && row("gus, Dee (admin)").contains("  gus"), "{s}");
+    assert!(row("Wish · asked by Gus").contains("? Wish") && row("Blue · asked by Dee").contains("? Blue"), "{s}");
+    assert!(!s.contains("⏎ add · d no"), "the keys only on the request chosen:\n{s}");
+    let panel: Vec<&str> = s.lines().map(|l| l.rsplit('│').next().unwrap_or("").trim()).collect();
+    let at = panel.iter().position(|l| l.starts_with('☁')).expect("the note");
+    assert_eq!(format!("{} {}", panel[at], panel[at + 1]), format!("☁ {}", crate::text::JAM_DOWNLOADS), "whole, wrapped:\n{s}");
+    assert!(panel[at - 1].contains("Wish") && s.matches('☁').count() == 1, "only under the provider's song:\n{s}");
+    assert!(row("Song 2").contains("Song 2 · Gus  Artist") && !row("Song 3").contains("· Gus"), "who asked for it:\n{s}");
+    assert!(s.contains("End the jam") && s.contains("◉ Jam · 2 listening"), "{s}");
+
+    // Opens on the song playing, below the jam's rows.
+    assert_eq!(a.queue_rows()[a.queue_sel.at], crate::app::QueueRow::Song(1));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.cmds.last(), Some(&Cmd::Jump(1)));
+    let at = |a: &mut App, row| a.queue_sel.at = a.queue_rows().iter().position(|r| *r == row).unwrap();
+    at(&mut a, crate::app::QueueRow::Ask(0));
+    let s = draw(&mut a, 160, 30);
+    assert!(s.lines().any(|l| l.contains("Wish · asked by Gus") && l.contains("⏎ add · d no")) && s.matches("⏎ add").count() == 1, "{s}");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.cmds.last(), Some(&Cmd::JamDecide(7, true)));
+    at(&mut a, crate::app::QueueRow::Downloads(0, 1));
+    key(&mut a, KeyCode::Char('d'));
+    assert_eq!(a.cmds.last(), Some(&Cmd::JamDecide(7, false)), "its note is the request's");
+    at(&mut a, crate::app::QueueRow::Ask(1));
+    key(&mut a, KeyCode::Char('d'));
+    assert_eq!(a.cmds.last(), Some(&Cmd::JamDecide(12, false)));
+    assert!(a.taken.is_none(), "a refusal is no song taken out");
+    at(&mut a, crate::app::QueueRow::End);
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.cmds.last(), Some(&Cmd::JamEnd));
+    at(&mut a, crate::app::QueueRow::Jam);
+    key(&mut a, KeyCode::Enter);
+    assert!(matches!(&a.overlay, Some(Overlay::Invite { link }) if link.starts_with("nori://jam")));
+
+    // The player bar says the jam is on.
+    a.overlay = None;
+    assert!(draw(&mut a, 160, 30).contains("◉ Jam · 2 listening ─"));
+}
+
+#[test]
+fn a_jam_starts_around_the_song_picked() {
+    let mut a = app();
+    a.go(View::Songs);
+    let songs = vec![song("1", "One", 200), song("2", "Two", 200)];
+    a.handle(Msg::Data(Req::Songs { offset: 0 }, Ok(Data::Songs(songs.clone(), false))));
+    key(&mut a, KeyCode::Down);
+    a.cmds.clear();
+    key(&mut a, KeyCode::Char('i'));
+    assert!(a.cmds.is_empty() && a.note.as_ref().is_some_and(|n| n.0 == crate::text::JAMS_OFF), "jams off");
+    a.devices = crate::app::Devices { on: true, jams_unsupported: true, ..Default::default() };
+    key(&mut a, KeyCode::Char('i'));
+    assert!(a.cmds.is_empty() && a.note.as_ref().is_some_and(|n| n.0 == crate::text::JAM_UNSUPPORTED), "no relay");
+
+    a.devices = crate::app::Devices { on: true, jams: true, ..Default::default() };
+    key(&mut a, KeyCode::Char('i'));
+    let origin = Some(nori_core::PageOrigin::new(nori_core::OriginKind::Songs, ""));
+    assert_eq!(a.cmds, [Cmd::Play { songs, start: 1, shuffle: false, from: origin }, Cmd::JamStart]);
+    // Opened, it shows its invite over the queue.
+    a.devices.jam = Some(jam());
+    a.handle(Msg::Jam(Ok(())));
+    assert!(matches!(a.overlay, Some(Overlay::Invite { .. })) && a.panel == Some(Panel::Queue));
+    // A jam on already: the invite again, nothing replayed.
+    a.overlay = None;
+    a.cmds.clear();
+    key(&mut a, KeyCode::Char('i'));
+    assert!(a.cmds.is_empty() && matches!(a.overlay, Some(Overlay::Invite { .. })));
+    a.handle(Msg::Jam(Err("HTTP 404".into())));
+    assert!(a.note.as_ref().is_some_and(|n| n.1 && n.0.ends_with("(HTTP 404)")));
+}
+
+/// The screen as a camera sees it on a dark terminal: a cell's upper and lower halves lit where the code
+/// is drawn white, every other cell dark; `px` pixels a module.
+fn photographed(buf: &ratatui::buffer::Buffer, px: usize) -> (usize, usize, Vec<u8>) {
+    use ratatui::style::Color;
+    let (w, h) = (buf.area.width as usize * px, buf.area.height as usize * 2 * px);
+    let lit = |c: Color| if c == Color::Rgb(255, 255, 255) { 255 } else { 0 };
+    let mut out = vec![0u8; w * h];
+    for (y, row) in out.chunks_mut(w).enumerate() {
+        for (x, p) in row.iter_mut().enumerate() {
+            let cell = &buf[((x / px) as u16, (y / (2 * px)) as u16)];
+            let upper = y % (2 * px) < px;
+            *p = match cell.symbol() {
+                "▀" if upper => lit(cell.fg),
+                "▀" => lit(cell.bg),
+                _ => 0,
+            };
+        }
+    }
+    (w, h, out)
+}
+
+#[test]
+fn the_invite_code_scans_from_the_screen() {
+    let link = jam().link.unwrap();
+    let mut a = app();
+    a.overlay = Some(Overlay::Invite { link: link.clone() });
+    let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    t.draw(|f| crate::ui::draw(f, &mut a, None)).unwrap();
+    let buf = t.backend().buffer().clone();
+    let s: String = (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n").collect();
+    dump("invite", &s);
+    assert!(s.contains(&link) && s.contains("Scan with a phone"), "{s}");
+    let (w, h, px) = photographed(&buf, 4);
+    let mut image = rqrr::PreparedImage::prepare_from_greyscale(w, h, |x, y| px[y * w + x]);
+    let grids = image.detect_grids();
+    assert_eq!(grids.len(), 1, "one code on the screen");
+    assert_eq!(grids[0].decode().map(|(_, text)| text).ok(), Some(link.clone()));
+
+    // Too small a window: the link alone, and why.
+    let s = draw(&mut a, 60, 20);
+    assert!(s.contains(crate::text::INVITE_ROOM) && !s.contains('▀'), "{s}");
 }

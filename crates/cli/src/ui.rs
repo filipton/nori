@@ -18,7 +18,7 @@ use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::{Resize, StatefulImage};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, Button, DeviceRow, Focus, Hit, ListRef, Load, Nav, Overlay, Page, Panel, SearchRow, Sel, View, LOGIN_FIELDS, NAV_BOTTOM, NAV_LIBRARY, NAV_TOP, PANELS};
+use crate::app::{App, Button, DeviceRow, Focus, Hit, ListRef, Load, Nav, Overlay, Page, Panel, QueueRow, SearchRow, Sel, View, LOGIN_FIELDS, NAV_BOTTOM, NAV_LIBRARY, NAV_TOP, PANELS};
 use crate::art::{Art, Theme};
 use crate::keys::{Scope, BINDINGS};
 use crate::settings_view::{self, EqRow, Line as SLine, SettingsView};
@@ -1175,6 +1175,7 @@ fn right_panel(f: &mut Frame, area: Rect, app: &mut App, art: Option<&mut Art>) 
         }
     }
     let area = Rect { x: area.x + 2, width: area.width.saturating_sub(3), y: area.y + 1, height: area.height.saturating_sub(1) };
+    app.shown.panel_w = area.width;
     let focused = app.focus == Focus::Panel;
     let mut x = area.x;
     let tabs: Vec<(Panel, &str)> = PANELS.into_iter().filter(|(p, _)| *p != Panel::Devices || app.devices.on).collect();
@@ -1209,7 +1210,7 @@ fn right_panel(f: &mut Frame, area: Rect, app: &mut App, art: Option<&mut Art>) 
 }
 
 /// Where the music plays: this computer first, then the account's other devices with what each plays,
-/// the one playing ticked.
+/// the one playing ticked; then the jam.
 fn devices(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     let t = app.theme;
     text(f, area, crate::text::PLAY_ON, bold().fg(t.text));
@@ -1220,6 +1221,7 @@ fn devices(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     let active = d.active.as_ref().map(|(id, _)| id.as_str());
     let tick = |on: bool| Span::styled(if on { "✓ " } else { "  " }, Style::default().fg(t.accent).add_modifier(Modifier::BOLD));
     let name = |s: &str, on: bool| Span::styled(s.to_string(), if on { Style::default().fg(t.accent).add_modifier(Modifier::BOLD) } else { bold().fg(t.text) });
+    let listeners = d.listeners().len();
     let mut sel = d.sel;
     list(f, body, &mut sel, rows.len(), ListRef::Devices, hits, &t, focused, &|i, w| match rows[i] {
         DeviceRow::Here => Line::from(vec![tick(active.is_none()), name(crate::text::THIS_COMPUTER, active.is_none())]),
@@ -1232,12 +1234,21 @@ fn devices(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
             let x = &d.list[k];
             Line::from(Span::styled(fit(&format!("  {}", crate::text::device_line(x)), w).into_owned(), if x.refused.is_some() { Style::default().fg(Color::LightRed) } else { dim(&t) }))
         }
+        DeviceRow::Jam if d.jam.is_some() => spread(vec![Span::styled("◉ ", Style::default().fg(t.accent)), name(&crate::text::jam_strip(listeners), true)], Span::styled(crate::text::JAM_INVITE, dim(&t)), w),
+        DeviceRow::Jam => Line::from(vec![Span::styled("◉ ", Style::default().fg(t.accent)), Span::styled(crate::text::JAM_START, Style::default().fg(t.text))]),
     });
     devices.sel = sel;
-    if devices.list.is_empty() {
-        let y = body.y + body.height + 1;
-        let lines: Vec<Line> = wrap(crate::text::NO_DEVICES, area.width as usize).into_iter().map(|l| Line::from(Span::styled(l, dim(&t)))).collect();
-        put(f, Paragraph::new(lines), Rect { y, height: (area.y + area.height).saturating_sub(y), ..area });
+    let mut y = body.y + body.height + 1;
+    let notes = [(devices.list.is_empty(), crate::text::NO_DEVICES), (devices.jams_unsupported, crate::text::JAM_UNSUPPORTED)];
+    for (_, note) in notes.into_iter().filter(|(on, _)| *on) {
+        for l in wrap(note, area.width as usize) {
+            if y >= area.y + area.height {
+                return;
+            }
+            text(f, Rect { y, height: 1, ..area }, &l, dim(&t));
+            y += 1;
+        }
+        y += 1;
     }
 }
 
@@ -1352,8 +1363,7 @@ fn words_kind(kind: nori_core::automix::planner::TransitionKind) -> &'static str
 
 fn queue(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     let t = app.theme;
-    let order = app.queue_order();
-    let Some(q) = app.queue.as_ref().filter(|q| q.len > 0) else {
+    let Some(q) = app.queue.as_ref().filter(|q| q.len > 0 || app.devices.jam.is_some()) else {
         let lines = vec![Line::from(Span::styled("The queue is empty", bold())), Line::from(Span::styled("enter plays, a adds to the queue", dim(&t)))];
         put(f, Paragraph::new(lines).alignment(Alignment::Center), centred(area, area.width, 2));
         return;
@@ -1370,26 +1380,46 @@ fn queue(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     }
     text(f, Rect { height: 1, ..area }, &format!("{}{modes}", crate::text::songs_caption(q.len, secs)), dim(&t));
     let body = Rect { y: area.y + 2, height: area.height.saturating_sub(2), ..area };
-    let App { queue, queue_sel, hits, .. } = app;
+    let rows = app.queue_rows();
+    let listeners: Vec<String> = app.devices.listeners().iter().map(|m| crate::text::jam_member(&m.name, m.role)).collect();
+    let note = app.downloads_note();
+    let chosen = app.queue_sel.at;
+    let App { queue, queue_sel, hits, devices, .. } = app;
     let q = queue.as_ref().expect("checked");
     let current = q.index;
     let by_hand: std::collections::HashSet<u32> = q.queued.iter().copied().collect();
-    list(f, body, queue_sel, order.len(), ListRef::Queue, hits, &t, focused, &|row, w| {
-        let i = order[row];
-        let Some(s) = q.songs.get(i) else { return Line::from("") };
-        let playing = i as i32 == current;
-        let mark = if playing { "▶ " } else if by_hand.contains(&(i as u32)) { "+ " } else { "  " };
-        let title_style = if playing { Style::default().fg(t.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(t.text) };
-        spread(
-            vec![Span::styled(mark, Style::default().fg(t.accent)), Span::styled(s.title.clone(), title_style), Span::styled(format!("  {}", s.artist), dim(&t))],
-            Span::styled(clock(s.duration as i64 * 1000), dim(&t)),
-            w,
-        )
+    let pending = devices.jam.as_ref().map_or(&[][..], |j| j.pending.as_slice());
+    let accent = Style::default().fg(t.accent);
+    list(f, body, queue_sel, rows.len(), ListRef::Queue, hits, &t, focused, &|row, w| match rows[row] {
+        QueueRow::Jam => spread(vec![Span::styled("◉ ", accent), Span::styled(crate::text::jam_strip(listeners.len()), accent.add_modifier(Modifier::BOLD))], Span::styled(crate::text::JAM_INVITE, dim(&t)), w),
+        QueueRow::Listeners => Line::from(Span::styled(fit(&format!("  {}", listeners.join(", ")), w).into_owned(), Style::default().fg(t.text))),
+        // The keys show on the request chosen.
+        QueueRow::Ask(k) => {
+            let p = &pending[k];
+            let keys = if rows.get(chosen).and_then(|r| r.ask()) == Some(k) { crate::text::JAM_DECIDE } else { "" };
+            let asked = vec![Span::styled("  ? ", accent), Span::styled(p.song.title.clone(), Style::default().fg(t.text)), Span::styled(crate::text::jam_asked(&p.from_name), dim(&t))];
+            spread(asked, Span::styled(keys, dim(&t)), w)
+        }
+        QueueRow::Downloads(_, n) => {
+            let mark = if n == 0 { "☁ " } else { "  " };
+            Line::from(Span::styled(format!("{:>w$}{}", mark, note[n], w = crate::app::QUEUE_NOTE_INDENT), dim(&t)))
+        }
+        QueueRow::End => Line::from(vec![Span::styled("  ✕ ", dim(&t)), Span::styled(crate::text::JAM_END, dim(&t))]),
+        QueueRow::Song(i) => {
+            let Some(s) = q.songs.get(i) else { return Line::from("") };
+            let playing = i as i32 == current;
+            let mark = if playing { "▶ " } else if by_hand.contains(&(i as u32)) { "+ " } else { "  " };
+            let title_style = if playing { Style::default().fg(t.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(t.text) };
+            // Who asked for it before the artist, which is cut first.
+            let by = devices.added.get(&s.id).map(|by| Span::styled(format!(" · {by}"), accent));
+            let spans = [Span::styled(mark, accent), Span::styled(s.title.clone(), title_style)].into_iter().chain(by).chain([Span::styled(format!("  {}", s.artist), dim(&t))]);
+            spread(spans.collect(), Span::styled(clock(s.duration as i64 * 1000), dim(&t)), w)
+        }
     });
 }
 
 /// `s` word-wrapped to `w` columns.
-fn wrap(s: &str, w: usize) -> Vec<String> {
+pub(crate) fn wrap(s: &str, w: usize) -> Vec<String> {
     let w = w.max(1);
     let mut out = Vec::new();
     let mut line = String::new();
@@ -1555,9 +1585,16 @@ fn full_player(f: &mut Frame, area: Rect, app: &mut App, art: Option<&mut Art>) 
 fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
     let t = *ui;
     put(f, Paragraph::new(Span::styled("─".repeat(area.width as usize), dim(&t))), Rect { height: 1, ..area });
-    // On the rule: where the music plays while it is another device.
+    // On the rule: where the music plays while it is another device, and the jam hosted.
+    let mut said: Vec<String> = Vec::new();
     if let Some((_, name)) = &app.devices.active {
-        let line = format!(" ⇄ {} ", crate::text::playing_on(name));
+        said.push(format!("⇄ {}", crate::text::playing_on(name)));
+    }
+    if app.devices.jam.is_some() {
+        said.push(format!("◉ {}", crate::text::jam_strip(app.devices.listeners().len())));
+    }
+    if !said.is_empty() {
+        let line = format!(" {} ", said.join(" · "));
         let r = Rect { x: area.x + 2, width: (line.width() as u16).min(area.width.saturating_sub(4)), height: 1, ..area };
         text(f, r, &line, Style::default().fg(t.accent).add_modifier(Modifier::BOLD));
         app.hits.push((r, Hit::Button(Button::Panel(Panel::Devices))));
@@ -1713,6 +1750,22 @@ fn login(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
     }
 }
 
+/// Light modules around the code, so a camera finds its edges on a dark terminal.
+const QR_QUIET: usize = 2;
+
+/// A QR code in half blocks: each cell two modules, one above the other, black on white whatever the
+/// terminal's colours, in a light quiet zone.
+fn qr_lines(code: &nori_core::remote::QrCode) -> Vec<Line<'static>> {
+    let size = code.size as usize;
+    let n = size + 2 * QR_QUIET;
+    let dark = |x: usize, y: usize| {
+        let (x, y) = (x.wrapping_sub(QR_QUIET), y.wrapping_sub(QR_QUIET));
+        x < size && y < size && code.dark[y * size + x]
+    };
+    let colour = |d: bool| if d { Color::Rgb(0, 0, 0) } else { Color::Rgb(255, 255, 255) };
+    (0..n.div_ceil(2)).map(|r| Line::from((0..n).map(|x| Span::styled("▀", Style::default().fg(colour(dark(x, 2 * r))).bg(colour(dark(x, 2 * r + 1))))).collect::<Vec<_>>())).collect()
+}
+
 fn overlay(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
     let App { overlay, hits, .. } = app;
     let Some(o) = overlay else { return };
@@ -1742,6 +1795,26 @@ fn overlay(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
             hits.push((r, Hit::List(ListRef::Picker)));
             let opts = options.clone();
             list(f, inner, sel, opts.len(), ListRef::Picker, hits, t, true, &|i, w| Line::from(fit(&format!(" {}", opts[i].0), w).into_owned()));
+        }
+        Overlay::Invite { link } => {
+            let code = nori_core::remote::qr_code(link.clone());
+            let qr = code.as_ref().map(qr_lines).unwrap_or_default();
+            let qr_w = qr.first().map_or(0, |l| l.width() as u16);
+            let fits = qr_w + 4 <= area.width && qr.len() as u16 + 8 <= area.height;
+            let w = (qr_w.max(link.width() as u16) + 6).min(area.width);
+            let link_lines = wrap(link, w.saturating_sub(4) as usize);
+            let mut lines: Vec<Line> = Vec::new();
+            if fits {
+                lines.extend(qr);
+                lines.push(Line::from(""));
+            } else {
+                lines.push(Line::from(Span::styled(crate::text::INVITE_ROOM, dim(t))));
+            }
+            lines.push(Line::from(Span::styled(crate::text::INVITE_HOW, dim(t))));
+            lines.extend(link_lines.into_iter().map(|l| Line::from(Span::styled(l, Style::default().fg(t.accent)))));
+            let r = centred(area, w, lines.len() as u16 + 4);
+            let inner = popup(f, r, Span::styled(crate::text::INVITE_TITLE, Style::default().fg(t.accent).add_modifier(Modifier::BOLD)), t);
+            put(f, Paragraph::new(lines).alignment(Alignment::Center), Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner });
         }
         Overlay::Input { title, text: typed, secret, .. } => {
             let r = centred(area, 60, 3);

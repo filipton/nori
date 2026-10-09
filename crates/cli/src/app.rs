@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use nori_core::client::Starrable;
 use nori_core::playlist::PlaylistView;
-use nori_core::remote::RemoteDevice;
+use nori_core::remote::{JamView, RemoteDevice};
 use nori_core::search::SearchView;
 use nori_core::settings::{EqLevel, SavedServer, SoundBand, StoredPrefs, TapAction};
 use nori_core::settings_store::SoundTool;
@@ -59,7 +59,7 @@ pub enum Panel {
     Playing,
     Queue,
     Lyrics,
-    /// Where the music plays: this computer or another device (remote control).
+    /// Where the music plays: this computer or another device (remote control), and the jam.
     Devices,
 }
 
@@ -165,6 +165,10 @@ pub enum Cmd {
     SwitchServer(String),
     /// Moves the music to this device, or here (None).
     Pick(Option<String>),
+    JamStart,
+    JamEnd,
+    /// Accepts (true) or refuses a jam request.
+    JamDecide(u64, bool),
     Quit,
 }
 
@@ -194,6 +198,9 @@ impl Cmd {
             Cmd::Images(on) => format!("images {on}"),
             Cmd::Device(d) => format!("device {d}"),
             Cmd::Pick(d) => format!("play on {d:?}"),
+            Cmd::JamStart => "start a jam".into(),
+            Cmd::JamEnd => "end the jam".into(),
+            Cmd::JamDecide(r, yes) => format!("jam request {r} accepted={yes}"),
             Cmd::Quit => "quit".into(),
             _ => "an edit".into(),
         }
@@ -482,11 +489,15 @@ impl Now {
     }
 }
 
-/// Remote control as the runner last read it from the session; empty while it is off.
+/// Remote control and jams as the runner last read them from the session; empty while both are off.
 #[derive(Default)]
 pub struct Devices {
-    /// Remote control is switched on.
+    /// Remote control or jams are switched on.
     pub on: bool,
+    /// A jam can be started: jams are on and the server has not said it cannot relay.
+    pub jams: bool,
+    /// Jams are on but the server cannot relay them.
+    pub jams_unsupported: bool,
     /// The account's other devices.
     pub list: Vec<RemoteDevice>,
     pub sel: Sel,
@@ -494,6 +505,10 @@ pub struct Devices {
     pub active: Option<(String, String)>,
     /// Hearts as the device playing shows them, by song id, while it is another one.
     pub hearts: HashMap<String, bool>,
+    /// The jam this computer hosts.
+    pub jam: Option<JamView>,
+    /// Who asked for each song that came in through the jam, by song id.
+    pub added: HashMap<String, String>,
 }
 
 /// A row of the devices panel.
@@ -503,12 +518,17 @@ pub enum DeviceRow {
     /// Index into [`Devices::list`]: its name, then what it plays.
     Device(usize),
     Playing(usize),
+    /// Starts a jam, or shows the one hosted.
+    Jam,
 }
 
 impl Devices {
     pub fn rows(&self) -> Vec<DeviceRow> {
         let mut rows = vec![DeviceRow::Here];
         rows.extend((0..self.list.len()).flat_map(|i| [DeviceRow::Device(i), DeviceRow::Playing(i)]));
+        if self.jams || self.jam.is_some() {
+            rows.push(DeviceRow::Jam);
+        }
         rows
     }
 
@@ -520,6 +540,36 @@ impl Devices {
             self.sel.at = if down && past < rows.len() { past } else { rows.iter().position(|r| *r == DeviceRow::Device(*i)).unwrap_or(0) };
         }
     }
+
+    /// The jam's guests, the host left out.
+    pub fn listeners(&self) -> Vec<&nori_core::remote::wire::JamMember> {
+        self.jam.as_ref().map_or_else(Vec::new, |j| j.members.iter().filter(|m| m.role != nori_core::remote::wire::Role::Host).collect())
+    }
+}
+
+/// A row of the queue panel: the hosted jam's header and requests, then the songs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueRow {
+    /// How many listen; opens the invite, as the line of their names under it does.
+    Jam,
+    Listeners,
+    /// A request, by index into the jam's pending list.
+    Ask(usize),
+    /// A line of the note under a provider's song asked for: request, line.
+    Downloads(usize, usize),
+    End,
+    /// A song by list index.
+    Song(usize),
+}
+
+impl QueueRow {
+    /// The request a row is about.
+    pub fn ask(self) -> Option<usize> {
+        match self {
+            QueueRow::Ask(k) | QueueRow::Downloads(k, _) => Some(k),
+            _ => None,
+        }
+    }
 }
 
 /// A popup over the screen.
@@ -529,6 +579,8 @@ pub enum Overlay {
     Picker { title: String, options: Vec<(String, String)>, sel: Sel, target: Target },
     /// A text field for setting `name`.
     Input { title: String, text: String, secret: bool, name: String },
+    /// The jam's invite: its link and QR code.
+    Invite { link: String },
 }
 
 /// What a picker sets.
@@ -634,13 +686,18 @@ pub struct Shown {
     pub side: bool,
     pub panel: bool,
     pub cols: usize,
+    /// The right panel's width inside its margins.
+    pub panel_w: u16,
 }
 
 impl Default for Shown {
     fn default() -> Self {
-        Shown { side: true, panel: true, cols: 4 }
+        Shown { side: true, panel: true, cols: 4, panel_w: 37 }
     }
 }
+
+/// Columns before the note under a provider's song asked for, in the queue panel.
+pub const QUEUE_NOTE_INDENT: usize = 4;
 
 /// A mouse drag in progress.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -937,7 +994,7 @@ impl App {
             // Select the playing song.
             Panel::Queue => {
                 let current = self.queue.as_ref().map_or(-1, |q| q.index);
-                if let Some(row) = self.queue_order().iter().position(|&i| i as i32 == current) {
+                if let Some(row) = self.queue_rows().iter().position(|r| *r == QueueRow::Song(current as usize)) {
                     self.queue_sel.at = row;
                 }
                 self.focus = Focus::Panel;
@@ -1041,6 +1098,11 @@ impl App {
             Msg::Starred(marks) => self.marks = marks,
             // The runner read the devices into `devices`.
             Msg::Remote => {}
+            Msg::Jam(Ok(())) => {
+                self.panel = Some(Panel::Queue);
+                self.invite();
+            }
+            Msg::Jam(Err(e)) => self.say(format!("{} ({e})", crate::text::JAM_FAILED), true),
             // The runner opens these.
             Msg::From(..) => {}
         }
@@ -1423,6 +1485,7 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') => self.overlay = None,
                 _ => {}
             },
+            Overlay::Invite { .. } => self.overlay = None,
             Overlay::Input { text, name, .. } => match k.code {
                 KeyCode::Enter => {
                     let (name, value) = (name.clone(), text.clone());
@@ -1531,13 +1594,20 @@ impl App {
                     self.cmds.push(Cmd::DownloadRemove(songs[i].id.clone()));
                 }
             }
-            Action::Remove => {
-                if let Some(i) = self.queue_selected_index() {
+            Action::Remove if self.queue_in_focus() => match self.queue_rows().get(self.queue_sel.at).copied() {
+                Some(QueueRow::Song(i)) => {
                     // Another device's queue has its own undo.
                     self.taken = self.queue.as_ref().filter(|_| self.devices.active.is_none()).and_then(|q| q.songs.get(i)).map(|s| s.id.clone());
                     self.cmds.push(Cmd::Remove(i));
                 }
-            }
+                Some(row) => match row.ask().and_then(|k| self.ask_request(k)) {
+                    Some(request) => self.cmds.push(Cmd::JamDecide(request, false)),
+                    None => self.dirty = false,
+                },
+                None => self.dirty = false,
+            },
+            Action::Remove => self.dirty = false,
+            Action::Jam => self.jam_with_selected(),
             Action::Undo if self.queue_in_focus() => match self.taken.take() {
                 Some(id) => self.cmds.push(Cmd::Restore(id)),
                 None => self.say("Nothing to put back", false),
@@ -1652,7 +1722,7 @@ impl App {
             Focus::Panel => {
                 return match self.panel? {
                     Panel::Queue => {
-                        let len = self.queue.as_ref().map_or(0, |q| q.len as usize);
+                        let len = self.queue_rows().len();
                         Some((&mut self.queue_sel, len))
                     }
                     Panel::Devices => {
@@ -1782,7 +1852,7 @@ impl App {
             Focus::Panel => {
                 let q = self.queue.as_ref()?;
                 let i = match self.panel? {
-                    Panel::Queue => *self.queue_order().get(self.queue_sel.at)?,
+                    Panel::Queue => self.queue_selected_index()?,
                     Panel::Playing => *self.up_next().get(self.up_next_sel.at)?,
                     Panel::Lyrics | Panel::Devices => return None,
                 };
@@ -1828,7 +1898,18 @@ impl App {
             }
             Focus::Panel if a == Action::Open => {
                 let i = match self.panel {
-                    Some(Panel::Queue) => self.queue_selected_index(),
+                    Some(Panel::Queue) => match self.queue_rows().get(self.queue_sel.at).copied() {
+                        Some(QueueRow::Song(i)) => Some(i),
+                        Some(QueueRow::Jam | QueueRow::Listeners) => return self.invite(),
+                        Some(QueueRow::End) => return self.cmds.push(Cmd::JamEnd),
+                        Some(row) => {
+                            if let Some(request) = row.ask().and_then(|k| self.ask_request(k)) {
+                                self.cmds.push(Cmd::JamDecide(request, true));
+                            }
+                            return;
+                        }
+                        None => None,
+                    },
                     Some(Panel::Playing) => self.up_next().get(self.up_next_sel.at).copied(),
                     Some(Panel::Devices) => return self.device_open(),
                     _ => None,
@@ -1995,7 +2076,40 @@ impl App {
         if !self.queue_in_focus() {
             return None;
         }
-        self.queue_order().get(self.queue_sel.at).copied()
+        match self.queue_rows().get(self.queue_sel.at)? {
+            QueueRow::Song(i) => Some(*i),
+            _ => None,
+        }
+    }
+
+    /// The queue panel's rows: the hosted jam's header, requests and end, then the songs in play order.
+    pub fn queue_rows(&self) -> Vec<QueueRow> {
+        let mut rows = Vec::new();
+        if let Some(j) = &self.devices.jam {
+            rows.push(QueueRow::Jam);
+            if !self.devices.listeners().is_empty() {
+                rows.push(QueueRow::Listeners);
+            }
+            for (k, p) in j.pending.iter().enumerate() {
+                rows.push(QueueRow::Ask(k));
+                if p.provider {
+                    rows.extend((0..self.downloads_note().len()).map(|n| QueueRow::Downloads(k, n)));
+                }
+            }
+            rows.push(QueueRow::End);
+        }
+        rows.extend(self.queue_order().into_iter().map(QueueRow::Song));
+        rows
+    }
+
+    /// The note under a provider's song asked for, in the lines the queue panel has room for.
+    pub fn downloads_note(&self) -> Vec<String> {
+        crate::ui::wrap(crate::text::JAM_DOWNLOADS, (self.shown.panel_w as usize).saturating_sub(QUEUE_NOTE_INDENT + 1).max(12))
+    }
+
+    /// The request id of the jam's pending request `k`.
+    fn ask_request(&self, k: usize) -> Option<u64> {
+        self.devices.jam.as_ref()?.pending.get(k).map(|p| p.request)
     }
 
     fn queue_move(&mut self, down: bool) {
@@ -2023,9 +2137,9 @@ impl App {
         }
     }
 
-    // ---- other devices ----
+    // ---- other devices and the jam ----
 
-    /// Enter on a devices panel row: the music moves there.
+    /// Enter on a devices panel row: the music moves there, or the jam starts or shows its invite.
     fn device_open(&mut self) {
         let d = &self.devices;
         match d.rows().get(d.sel.at).copied() {
@@ -2035,8 +2149,45 @@ impl App {
                     self.cmds.push(Cmd::Pick(Some(id)));
                 }
             }
+            Some(DeviceRow::Jam) if d.jam.is_some() => self.invite(),
+            Some(DeviceRow::Jam) => self.jam_start(),
             None => self.dirty = false,
         }
+    }
+
+    /// Shows the hosted jam's invite.
+    fn invite(&mut self) {
+        if let Some(link) = self.devices.jam.as_ref().and_then(|j| j.link.clone()) {
+            self.overlay = Some(Overlay::Invite { link });
+        }
+    }
+
+    /// Starts a jam; the one hosted shows its invite instead, and where jams cannot start, why.
+    fn jam_start(&mut self) {
+        if self.devices.jam.is_some() {
+            self.invite();
+        } else if self.devices.jams {
+            self.cmds.push(Cmd::JamStart);
+        } else {
+            self.say(if self.devices.jams_unsupported { crate::text::JAM_UNSUPPORTED } else { crate::text::JAMS_OFF }, false);
+        }
+    }
+
+    /// Starts a jam around the selected song, album, artist or playlist, which plays (a jam alone where
+    /// nothing on the page is selected).
+    fn jam_with_selected(&mut self) {
+        let item = if self.focus == Focus::Main { self.selected() } else { None };
+        let play = match item {
+            Some(Item::Song(songs, i)) => Some(Cmd::Play { songs, start: i, shuffle: false, from: self.origin_here() }),
+            Some(Item::Album(a)) => Some(Cmd::PlayFetch(Fetch::Album(a.id), false)),
+            Some(Item::Artist(a)) => Some(Cmd::PlayFetch(Fetch::Artist(a.id), false)),
+            Some(Item::Playlist(p)) => Some(Cmd::PlayFetch(Fetch::Playlist(p.id), false)),
+            None => None,
+        };
+        if self.devices.jam.is_none() && self.devices.jams {
+            self.cmds.extend(play);
+        }
+        self.jam_start();
     }
 
     // ---- downloads ----
