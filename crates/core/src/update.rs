@@ -8,9 +8,9 @@ use crate::client::{Client, NetResult};
 use crate::transport::{Exchange, NetError};
 
 /// Latest published release (excludes drafts and prereleases).
-pub(crate) const LATEST_URL: &str = "https://api.github.com/repos/filipton/nori/releases/latest";
+pub(crate) const LATEST_URL: &str = "https://api.github.com/repos/norifm/nori/releases/latest";
 /// The newest releases, prereleases among them, for the beta channel.
-pub(crate) const RECENT_URL: &str = "https://api.github.com/repos/filipton/nori/releases?per_page=20";
+pub(crate) const RECENT_URL: &str = "https://api.github.com/repos/norifm/nori/releases?per_page=20";
 /// Minimum interval between automatic checks.
 pub(crate) const CHECK_EVERY_MS: i64 = 24 * 60 * 60 * 1000;
 /// `app_kv` key: last check time (ms).
@@ -400,7 +400,7 @@ mod tests {
     }
 
     fn asset(name: &str) -> Asset {
-        Asset { name: name.into(), size: 1000, browser_download_url: format!("https://github.com/filipton/nori/releases/download/v1/{name}") }
+        Asset { name: name.into(), size: 1000, browser_download_url: format!("https://github.com/norifm/nori/releases/download/v1/{name}") }
     }
 
     fn abis(a: &[&str]) -> Vec<String> {
@@ -408,11 +408,11 @@ mod tests {
     }
 
     /// A trimmed GitHub answer, with extra fields.
-    const LATEST: &str = r#"{"url":"https://api.github.com/repos/filipton/nori/releases/1","html_url":"https://github.com/filipton/nori/releases/tag/v0.5.0",
-      "id":1,"author":{"login":"filipton"},"tag_name":"v0.5.0","name":"nori 0.5.0","draft":false,"prerelease":false,
+    const LATEST: &str = r#"{"url":"https://api.github.com/repos/norifm/nori/releases/1","html_url":"https://github.com/norifm/nori/releases/tag/v0.5.0",
+      "id":1,"author":{"login":"norifm"},"tag_name":"v0.5.0","name":"nori 0.5.0","draft":false,"prerelease":false,
       "assets":[{"name":"nori-music-0.5.0.apk","size":63901760,"content_type":"application/vnd.android.package-archive",
-                 "browser_download_url":"https://github.com/filipton/nori/releases/download/v0.5.0/nori-music-0.5.0.apk"},
-                {"name":"SHA256SUMS","size":87,"browser_download_url":"https://github.com/filipton/nori/releases/download/v0.5.0/SHA256SUMS"}],
+                 "browser_download_url":"https://github.com/norifm/nori/releases/download/v0.5.0/nori-music-0.5.0.apk"},
+                {"name":"SHA256SUMS","size":87,"browser_download_url":"https://github.com/norifm/nori/releases/download/v0.5.0/SHA256SUMS"}],
       "body":"The **player** is faster.\n\n### Fixed\n\n- A song\n  that was cut off\n- [Undo](https://x.y/1) works"}"#;
 
     fn latest() -> Release {
@@ -438,7 +438,7 @@ mod tests {
         assert_eq!(update.version, "0.5.0");
         assert_eq!(update.apk_name, "nori-music-0.5.0.apk");
         assert_eq!(update.apk_bytes, 63_901_760);
-        assert_eq!(update.page, "https://github.com/filipton/nori/releases/tag/v0.5.0");
+        assert_eq!(update.page, "https://github.com/norifm/nori/releases/tag/v0.5.0");
         assert_eq!(update.notes, "The player is faster.\n\nFixed\n\n• A song that was cut off\n• Undo works");
         // Postponed: still found, marked skipped.
         assert!(matches!(decide(&latest(), "0.4.0", &phone, Some("0.5.0"), false).unwrap(), UpdateCheck::Available { skipped: true, .. }));
@@ -450,7 +450,7 @@ mod tests {
         let only_x86 = Release { assets: vec![asset("nori-music-0.5.0-x86_64.apk")], ..latest() };
         assert_eq!(
             decide(&only_x86, "0.4.0", &phone, None, false).unwrap(),
-            UpdateCheck::NoApk { version: "0.5.0".into(), page: "https://github.com/filipton/nori/releases/tag/v0.5.0".into() }
+            UpdateCheck::NoApk { version: "0.5.0".into(), page: "https://github.com/norifm/nori/releases/tag/v0.5.0".into() }
         );
         assert!(decide(&Release { prerelease: true, ..latest() }, "0.4.0", &phone, None, false).is_err());
         assert!(decide(&Release { draft: true, ..latest() }, "0.4.0", &phone, None, true).is_err());

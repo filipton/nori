@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/filipton/nori/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/filipton/nori?style=flat-square&label=version&color=2b7fff"></a>
+  <a href="https://github.com/norifm/nori/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/norifm/nori?style=flat-square&label=version&color=2b7fff"></a>
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-3ddc84?style=flat-square&logo=android&logoColor=white">
   <img alt="Kotlin · Rust" src="https://img.shields.io/badge/Kotlin%20%C2%B7%20Rust-555?style=flat-square">
   <img alt="arm64 · x86_64" src="https://img.shields.io/badge/arm64%20%C2%B7%20x86__64-555?style=flat-square">

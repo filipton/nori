@@ -4,7 +4,7 @@
 use std::fmt;
 
 /// Sent with every request, as public APIs like LRCLIB ask.
-pub const USER_AGENT: &str = "nori-music/0.1 (+https://github.com/filipton/nori)";
+pub const USER_AGENT: &str = "nori-music/0.1 (+https://github.com/norifm/nori)";
 
 /// Why a request did not come back, as the platform classifies its exceptions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
