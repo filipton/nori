@@ -200,7 +200,10 @@ class Remotes(private val context: Context, private val nori: Nori) {
         tellSight()
     }
 
-    /** What shows the mirrored device (the core's `Remote::sight`): a paused one is not followed while nothing does. */
+    /**
+     * What shows the mirrored device (the core's `Remote::sight`): its clock is learned only while the app
+     * is on screen, and a paused one is not followed while nothing shows it.
+     */
     private fun sight() = when {
         appShown -> Sight.SCREEN
         notified -> Sight.NOTIFICATION

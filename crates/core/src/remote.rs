@@ -248,10 +248,10 @@ impl Out {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum Sight {
-    /// The app on screen.
+    /// The app on screen: its playhead to the millisecond (the seek bar, lyrics), so its clock is learned.
     #[default]
     Screen,
-    /// Only a notification: its song and whether it plays.
+    /// Only a notification: its song and whether it plays, not its clock.
     Notification,
     /// Nothing: a paused device is not followed (its poll ends) until it is in sight again.
     Nothing,
@@ -739,6 +739,7 @@ impl Remote {
             }
             i.sight = sight;
         }
+        self.timing.notify_all();
         self.keep_polling();
     }
 
@@ -1535,9 +1536,9 @@ impl Remote {
     }
 
     /// While the device mirrored stays the same (`generation`), learns how its clock stands to this one's:
-    /// a burst of time exchanges, then one every [`clock::EVERY_US`], only while it plays (paused, its
-    /// playhead stands still and nothing wakes for it). Through its door when it is near, else through the
-    /// relay, whose answer comes with a poll.
+    /// a burst of time exchanges, then one every [`clock::EVERY_US`], only while it plays on screen
+    /// (paused its playhead stands still, and off screen nothing shows it to the millisecond: nothing wakes
+    /// for it). Through its door when it is near, else through the relay, whose answer comes with a poll.
     fn keep_time(self: Arc<Self>, generation: u64) {
         for sent in 0.. {
             let (id, link) = {
@@ -1547,7 +1548,7 @@ impl Remote {
                     let until = Instant::now() + wait;
                     while i.timing == generation && !self.timing.wait_until(&mut i, until).timed_out() {}
                 }
-                while i.timing == generation && !i.mirror.as_ref().is_some_and(Mirrored::playing) {
+                while i.timing == generation && !(i.sight == Sight::Screen && i.mirror.as_ref().is_some_and(Mirrored::playing)) {
                     self.timing.wait(&mut i);
                 }
                 if i.timing != generation {

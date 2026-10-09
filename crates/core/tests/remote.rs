@@ -796,7 +796,7 @@ impl Relay {
 }
 
 #[test]
-fn a_paused_device_mirrored_is_not_timed_until_it_plays() {
+fn a_mirrored_device_is_timed_only_while_it_plays_on_screen() {
     let relay = Relay::new();
     let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
     let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
@@ -813,8 +813,15 @@ fn a_paused_device_mirrored_is_not_timed_until_it_plays() {
     std::thread::sleep(Duration::from_millis(2_500));
     assert_eq!(relay.clocks(), 0, "nothing wakes for a playhead standing still");
 
+    // Playing, with only the notification showing it (the screen off).
+    desk.remote.clone().sight(Sight::Notification);
     phone.remote.clone().played(Playing { playing: true, position_ms: 5_000, ..Default::default() });
-    desk.until("timed once it plays", |_| (relay.clocks() > 0).then_some(()));
+    desk.until("the phone playing", |r| r.active().filter(|m| m.playing));
+    std::thread::sleep(Duration::from_millis(2_500));
+    assert_eq!(relay.clocks(), 0, "nor for a playhead nothing shows");
+
+    desk.remote.clone().sight(Sight::Screen);
+    desk.until("timed once it plays on screen", |_| (relay.clocks() > 0).then_some(()));
     relay.close();
 }
 
