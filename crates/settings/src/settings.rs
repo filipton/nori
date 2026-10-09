@@ -552,6 +552,10 @@ pub struct StoredPrefs {
     /// Hosting jams: others join through a link and ask for songs (nori-remote jam.rs). Needs octo-fiesta.
     #[setting("jam", FLAG, default = false, show = K::Switch)]
     pub jam: bool,
+    /// A jam's guests may play its music on their own devices, in step with this one (each jam can
+    /// change it).
+    #[setting("jamAlong", FLAG, default = true, show = K::Switch)]
+    pub jam_along: bool,
     /// The home page's rows, in order; unlisted rows are hidden.
     #[setting("homeRows", Picks, default = HomeRow::ALL.to_vec(), hidden)]
     pub home_rows: Vec<HomeRow>,

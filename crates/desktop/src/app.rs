@@ -504,6 +504,16 @@ fn wire(ui: &AppWindow, h: &AppHandle) {
     on!(jam.on_copy_link, h, |a| a.jam_copy_link());
     on!(jam.on_leave, h, |a| a.leave_jam());
     on!(ui.on_join_jam, h, |a, link| a.join_jam(link.trim().to_string()));
+    on!(jam.on_listen, h, |a, on| {
+        if let Some(r) = a.session.as_ref().and_then(|s| s.remote()) {
+            r.listen(on);
+        }
+    });
+    on!(jam.on_set_along, h, |a, on| {
+        if let Some(r) = a.session.as_ref().and_then(|s| s.remote()) {
+            r.jam_along(on);
+        }
+    });
     on!(jam.on_decide, h, |a, request, accept| {
         if let Ok(request) = request.parse() {
             a.jam_act(Op::Decide { request, accept });
@@ -1611,6 +1621,10 @@ impl App {
         g.set_guest(guest);
         g.set_note(if unsupported && !guest { words::JAM_UNSUPPORTED.into() } else { "".into() });
         g.set_hosting(view.as_ref().is_some_and(|v| v.hosting));
+        g.set_along(view.as_ref().is_some_and(|v| v.along));
+        let listening = view.as_ref().filter(|_| guest).map_or(nori_core::remote::Listening::Watching, |v| v.listening);
+        g.set_here(listening != nori_core::remote::Listening::Watching);
+        g.set_along_note(words::jam_along(listening).into());
         // A guest follows the host's playback.
         self.jam_now = view.as_ref().filter(|_| guest).and_then(|v| v.queue.clone().map(|q| (q, Instant::now() - Duration::from_millis(v.age_ms.max(0) as u64))));
         let link = view.as_ref().and_then(|v| v.link.clone()).unwrap_or_default();

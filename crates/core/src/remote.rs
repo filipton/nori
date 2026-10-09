@@ -23,7 +23,10 @@ use nori_remote::clock::{self, ClockSync};
 use nori_remote::device::{admit, is_jam, Sender};
 use nori_remote::jam::{By, Jam};
 use nori_remote::lan::{self, Door};
-use nori_remote::wire::{Answer, Body, DeviceKind, DeviceState, Entry, JamMember, Member, Op, Outgoing, Pending, Refusal, Role, Room, HOLD_MS};
+use nori_player::engine::Plan;
+use nori_player::transitions::engine_plan;
+use nori_player::types::TransitionPlan;
+use nori_remote::wire::{Along, Answer, Body, DeviceKind, DeviceState, Entry, JamMember, JamState, Member, Mix, Op, Outgoing, Pending, Refusal, Role, Room, HOLD_MS};
 use parking_lot::{Condvar, Mutex};
 use serde::Deserialize;
 
@@ -214,6 +217,54 @@ pub struct JamView {
     pub age_ms: i64,
     /// The host's answer to this guest's last request, when it refused.
     pub refused: Option<Refusal>,
+    /// The host lets its guests listen along.
+    pub along: bool,
+    /// This guest's listening along.
+    pub listening: Listening,
+}
+
+/// Whether a jam guest plays the host's music along with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum Listening {
+    /// Only the jam is shown here.
+    Watching,
+    /// This device plays what the host plays, in step.
+    Playing,
+    /// Asked for, but the host does not let its guests now.
+    HostOff,
+    /// Asked for, but the server does not let jam guests stream.
+    ServerOff,
+}
+
+/// The host's playback as a guest listening along plays it: the host's queue around its song, the place
+/// heard there (`ms` at `at_us`, this device's clock) moving at `rate`, its speed and pitch, and the
+/// transition out of the song playing as the host planned it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lead {
+    pub songs: Vec<Song>,
+    pub index: usize,
+    pub ms: f64,
+    pub at_us: i64,
+    pub rate: f64,
+    pub playing: bool,
+    pub speed: f32,
+    pub pitch: f32,
+    /// (outgoing song id, its plan).
+    pub mix: Option<(String, Plan)>,
+}
+
+impl Lead {
+    /// How long before now (this device's clock) `ms` was heard there.
+    pub fn ago_us(&self) -> i64 {
+        clock::now_us() - self.at_us
+    }
+}
+
+/// What plays along with a jam's host on this device (the platform's player).
+pub trait Follower: Send + Sync {
+    /// The host's playback changed, or there is none to follow any more.
+    fn lead(&self, lead: Option<Lead>);
 }
 
 /// What a guest's profile signs in with.
@@ -306,6 +357,15 @@ struct Peer {
 struct Hosted {
     jam: Jam,
     link: String,
+    /// Guests may listen along.
+    along: bool,
+}
+
+/// A guest listening along: how the host's clock stands to this one's, and the lead last given.
+#[derive(Default)]
+struct Listen {
+    clock: ClockSync,
+    given: Option<Lead>,
 }
 
 /// What this device knows of the active device it mirrors.
@@ -529,6 +589,10 @@ struct Inner {
     stopped: bool,
     /// The threads waiting for a request's answer, woken to give it up when the remote stops.
     waiting: HashMap<ThreadId, Waker>,
+    /// The relay lets jam guests stream the host's queue ([`Answer::along`]).
+    relay_along: bool,
+    /// This guest listens along.
+    listen: Option<Listen>,
 }
 
 impl Peer {
@@ -539,7 +603,7 @@ impl Peer {
 
 impl Inner {
     fn wants_relay(&self) -> bool {
-        self.relay != RelaySupport::Unsupported && (self.serving || self.watching || self.follows_mirror() || self.hosted.is_some())
+        self.relay != RelaySupport::Unsupported && (self.serving || self.watching || self.follows_mirror() || self.hosted.is_some() || self.listen.is_some())
     }
 
     /// Whether the mirrored device is followed: while something here shows it, or it plays.
@@ -606,6 +670,52 @@ impl Inner {
         Some((room, room.members.iter().find(|m| m.state.as_ref().is_some_and(|s| s.jam.is_some()))))
     }
 
+    /// The device whose clock is learned, and the jam room to reach it through: the one mirrored, or the
+    /// host of the jam this guest listens along to.
+    fn timed_device(&self) -> Option<(String, Option<String>)> {
+        if let Some(m) = &self.mirror {
+            return Some((m.id.clone(), None));
+        }
+        self.listen.as_ref()?;
+        let (room, host) = self.joined()?;
+        Some((host?.id.clone(), Some(room.room.clone())))
+    }
+
+    /// Where this guest's listening along stands.
+    fn listening(&self) -> Listening {
+        let host_lets = self.joined().and_then(|(_, h)| h?.state.as_ref()?.jam.as_ref()?.along.as_ref()).is_some();
+        match &self.listen {
+            None => Listening::Watching,
+            Some(_) if !self.relay_along => Listening::ServerOff,
+            Some(_) if !host_lets => Listening::HostOff,
+            Some(_) => Listening::Playing,
+        }
+    }
+
+    /// The host's playback as this guest plays along with it; None while it should not, or the host's
+    /// clock is not known yet.
+    fn lead(&self) -> Option<Lead> {
+        let l = self.listen.as_ref().filter(|_| self.listening() == Listening::Playing)?;
+        let (_, host) = self.joined()?;
+        let st = host?.state.as_ref()?;
+        let along = st.jam.as_ref()?.along.as_ref()?;
+        let at = st.at_us?;
+        let offset = l.clock.offset_at(clock::now_us())?;
+        let index = st.entries.iter().position(|e| Some(e.index) == st.index)?;
+        let mix = along.mix.as_ref().and_then(|m| plan_of(m, &st.entries));
+        Some(Lead {
+            songs: st.entries.iter().map(Entry::song).collect(),
+            index,
+            ms: st.position_ms as f64,
+            at_us: at - offset,
+            rate: nori_remote::rate(st),
+            playing: st.playing && !st.buffering,
+            speed: along.speed,
+            pitch: along.pitch,
+            mix,
+        })
+    }
+
     fn age(&self, id: &str) -> i64 {
         self.received.get(id).map_or(0, |t| (clock::now_us() - t) / 1000)
     }
@@ -646,6 +756,8 @@ pub struct Remote {
     out_ended: Mutex<mpsc::Receiver<()>>,
     /// The pollers, the time keeper and the probe, joined when the remote stops.
     threads: Mutex<Vec<JoinHandle<()>>>,
+    /// What plays along with a jam's host here.
+    follower: Mutex<Option<Arc<dyn Follower>>>,
 }
 
 /// The app's key for this device's id.
@@ -663,7 +775,7 @@ impl Remote {
         });
         let (out, rx) = mpsc::channel();
         let (ending, out_ended) = mpsc::channel::<()>();
-        let remote = Arc::new(Remote { client, id, me, player, shown, discovery, inner: Mutex::default(), retry: Condvar::new(), timing: Condvar::new(), out: Mutex::new(Some(out)), out_ended: Mutex::new(out_ended), threads: Mutex::default() });
+        let remote = Arc::new(Remote { client, id, me, player, shown, discovery, inner: Mutex::default(), retry: Condvar::new(), timing: Condvar::new(), out: Mutex::new(Some(out)), out_ended: Mutex::new(out_ended), threads: Mutex::default(), follower: Mutex::default() });
         let (client, who) = (remote.client.clone(), remote.who());
         // Sends one at a time, in order; it ends once the remote stops or goes.
         let _ = std::thread::Builder::new().name("nori-remote-out".into()).spawn(move || {
@@ -955,14 +1067,47 @@ impl Remote {
         {
             let mut i = self.inner.lock();
             i.relay = RelaySupport::Supported;
-            i.hosted = Some(Hosted { jam: Jam::new(opened.room, opened.invite, self.id.clone(), self.me.name.clone()), link: link.clone() });
+            let along = self.client.core.session.settings.current().is_some_and(|p| p.jam_along);
+            i.hosted = Some(Hosted { jam: Jam::new(opened.room, opened.invite, self.id.clone(), self.me.name.clone()), link: link.clone(), along });
             i.published = None;
             // A poll held from before listens to the account's room only: polled again, now with the jam's.
             i.end_relay_poll();
         }
         self.publish();
         self.keep_polling();
+        self.hear_plans();
         Ok(link)
+    }
+
+    /// Lets the jam's guests listen along (play its music on their own devices, in step with this one), or not.
+    pub fn jam_along(self: Arc<Self>, on: bool) {
+        {
+            let mut i = self.inner.lock();
+            let Some(h) = i.hosted.as_mut() else { return };
+            h.along = on;
+        }
+        self.hear_plans();
+        self.publish();
+    }
+
+    /// Listens along with the jam this guest is in (plays its host's music here, in step), or only shows it.
+    pub fn listen(self: Arc<Self>, on: bool) {
+        let keeper = {
+            let mut i = self.inner.lock();
+            if i.listen.is_some() == on {
+                return;
+            }
+            i.listen = on.then(Listen::default);
+            i.timing += 1;
+            on.then_some(i.timing)
+        };
+        self.timing.notify_all();
+        if let Some(generation) = keeper {
+            let me = self.clone();
+            self.spawn("nori-remote-clock", move || me.keep_time(generation));
+        }
+        self.keep_polling();
+        self.follow_lead();
     }
 
     /// Ends the jam this device hosts.
@@ -974,6 +1119,7 @@ impl Remote {
             i.rooms.retain(|r| r.room != h.jam.room);
             h.jam.room
         };
+        self.hear_plans();
         self.out(Out::Get(self.relay_url("noriRemote.close", &[("room", room)])));
         self.keep_polling();
         self.shown.changed();
@@ -1013,12 +1159,14 @@ impl Remote {
             let st = h.jam.state();
             let queue = i.published.as_ref().map(|(s, _)| DeviceState { jam: None, ..s.clone() });
             let age_ms = i.published.as_ref().map_or(0, |(_, at)| at.elapsed().as_millis() as i64);
-            return Some(JamView { hosting: true, link: Some(h.link.clone()), you: self.id.clone(), members: st.members, pending: st.pending, queue, age_ms, refused: None });
+            return Some(JamView { hosting: true, link: Some(h.link.clone()), you: self.id.clone(), members: st.members, pending: st.pending, queue, age_ms, refused: None, along: h.along, listening: Listening::Watching });
         }
         let (_, host) = i.joined()?;
         let state = host.and_then(|h| h.state.clone());
         let jam = state.as_ref().and_then(|s| s.jam.clone()).unwrap_or_default();
         Some(JamView {
+            along: jam.along.is_some(),
+            listening: i.listening(),
             hosting: false,
             link: None,
             you: i.you.clone(),
@@ -1041,6 +1189,7 @@ impl Remote {
             let mut i = self.inner.lock();
             i.stopped = true;
             i.mirror = None;
+            i.listen = None;
             i.generation += 1;
             i.relay_polling = false;
             i.lan_generation += 1;
@@ -1201,6 +1350,51 @@ fn deliver(client: &Client, who: &[(String, String)], o: Out) {
 }
 
 impl Remote {
+    /// Plays along with a jam's host through `follower` while this guest listens along.
+    pub fn follow_with(self: &Arc<Self>, follower: Option<Arc<dyn Follower>>) {
+        *self.follower.lock() = follower;
+        self.inner.lock().listen.iter_mut().for_each(|l| l.given = None);
+        self.follow_lead();
+    }
+
+    /// Hands the host's playback to the follower when it changed.
+    fn follow_lead(self: &Arc<Self>) {
+        let lead = {
+            let mut i = self.inner.lock();
+            let lead = i.lead();
+            match i.listen.as_mut() {
+                Some(l) if l.given == lead => return,
+                Some(l) => l.given = lead.clone(),
+                None => {}
+            }
+            lead
+        };
+        if let Some(f) = self.follower.lock().clone() {
+            f.lead(lead);
+        }
+    }
+
+    /// While a jam lets its guests listen along, each transition planned here is published at once.
+    fn hear_plans(self: &Arc<Self>) {
+        let along = self.inner.lock().hosted.as_ref().is_some_and(|h| h.along);
+        let me = Arc::downgrade(self);
+        self.client.core.session.planner.on_plan(along.then(|| {
+            Box::new(move || {
+                if let Some(r) = me.upgrade() {
+                    r.publish();
+                }
+            }) as nori_automix::planner::Planned
+        }));
+    }
+
+    /// What guests play along by: this device's speed and pitch, and the plan out of the song heard.
+    fn along(&self, index: Option<u32>, entries: &[Entry]) -> Along {
+        let session = &self.client.core.session;
+        let (speed, pitch) = session.settings.current().map_or((1.0, 1.0), |p| (p.speed, p.pitch));
+        let mix = index.and_then(|at| mix_of(at, &session.planner.made(&entries.iter().find(|e| e.index == at)?.id)??));
+        Along { speed, pitch, mix }
+    }
+
     fn out(&self, o: Out) {
         if let Some(out) = &*self.out.lock() {
             let _ = out.send(o);
@@ -1494,6 +1688,7 @@ impl Remote {
             i.since = Some(a.seq);
             i.relay_down = false;
             i.you = a.you;
+            i.relay_along = a.along;
             for m in a.rooms.iter().flat_map(|r| &r.members) {
                 let before = i.rooms.iter().flat_map(|r| &r.members).find(|o| o.id == m.id).map(|o| &o.state);
                 let played = before.into_iter().chain([&m.state]).flatten().any(|s| s.playing);
@@ -1528,6 +1723,7 @@ impl Remote {
             self.publish();
         }
         self.follow_active();
+        self.follow_lead();
         self.shown.changed();
     }
 
@@ -1556,27 +1752,40 @@ impl Remote {
     /// (paused its playhead stands still, and off screen nothing shows it to the millisecond: nothing wakes
     /// for it). Through its door when it is near, else through the relay, whose answer comes with a poll.
     fn keep_time(self: Arc<Self>, generation: u64) {
-        for sent in 0.. {
-            let (id, link) = {
+        let mut sent = 0;
+        loop {
+            let (id, room, link) = {
                 let mut i = self.inner.lock();
-                if sent > 0 {
-                    let wait = if sent < clock::BURST { Duration::from_millis(BURST_GAP_MS) } else { Duration::from_micros(clock::EVERY_US as u64) };
-                    let until = Instant::now() + wait;
+                let mut wait = |gap: Duration| {
+                    let until = Instant::now() + gap;
                     while i.timing == generation && !self.timing.wait_until(&mut i, until).timed_out() {}
+                };
+                if sent > 0 {
+                    wait(if sent < clock::BURST { Duration::from_millis(BURST_GAP_MS) } else { Duration::from_micros(clock::EVERY_US as u64) });
                 }
-                while i.timing == generation && !(i.sight == Sight::Screen && i.mirror.as_ref().is_some_and(Mirrored::playing)) {
+                // A guest listening along plays by the host's clock, the screen on or off.
+                while i.timing == generation && i.listen.is_none() && !(i.sight == Sight::Screen && i.mirror.as_ref().is_some_and(Mirrored::playing)) {
                     self.timing.wait(&mut i);
                 }
                 if i.timing != generation {
                     return;
                 }
-                let Some(id) = i.mirror.as_ref().map(|m| m.id.clone()) else { return };
-                let link = match i.peers.iter().find(|p| p.member.id == id) {
+                // A jam's host is known once the relay has answered.
+                let Some((id, room)) = i.timed_device() else {
+                    if i.listen.is_none() {
+                        return;
+                    }
+                    let until = Instant::now() + Duration::from_millis(BURST_GAP_MS);
+                    while i.timing == generation && !self.timing.wait_until(&mut i, until).timed_out() {}
+                    continue;
+                };
+                let link = match i.peers.iter().find(|p| p.member.id == id).filter(|_| room.is_none()) {
                     Some(p) => Some(Link::Lan(p.base())),
                     None => (i.relay != RelaySupport::Unsupported).then_some(Link::Relay),
                 };
-                (id, link)
+                (id, room, link)
             };
+            sent += 1;
             match link {
                 Some(Link::Lan(base)) => {
                     let Some((_, secret)) = self.client.core.account.read().clone() else { return };
@@ -1586,12 +1795,13 @@ impl Remote {
                     let t4 = clock::now_us();
                     if let Some(Body::Clock { t1, t2, t3 }) = got.ok().and_then(|b| serde_json::from_slice(&b).ok()) {
                         timed(&mut self.inner.lock(), &id, clock::Exchange { t1, t2, t3, t4 });
+                        self.follow_lead();
                         self.shown.changed();
                     }
                 }
                 Some(Link::Relay) => {
                     let command = Body::Command { id: self.next_id(), op: Box::new(Op::Clock { t1: clock::now_us() }) };
-                    self.out(Out::send(Link::Relay, Outgoing { to: Some(id), body: Some(command), ..Default::default() }));
+                    self.out(Out::send(Link::Relay, Outgoing { room, to: Some(id), body: Some(command), ..Default::default() }));
                 }
                 None => {}
             }
@@ -1772,6 +1982,7 @@ impl Remote {
         });
         let i = self.inner.lock();
         let p = i.playing;
+        let jam = i.hosted.as_ref().map(|h| JamState { along: h.along.then(|| self.along(q.index, &q.entries)), ..h.jam.state() });
         let mut st = DeviceState {
             seq: i.seq,
             playing: p.playing,
@@ -1784,7 +1995,7 @@ impl Remote {
             volume: p.volume,
             shuffle: q.shuffle,
             repeat: q.repeat,
-            jam: i.hosted.as_ref().map(|h| h.jam.state()),
+            jam,
             handed_to: i.handed_to.clone(),
             at_us: None,
             rate: Some(p.rate),
@@ -1833,6 +2044,18 @@ struct QueueRead {
     repeat: u8,
 }
 
+/// The transition planned out of list index `from`, as a jam's guests get it.
+fn mix_of(from: u32, plan: &Plan) -> Option<Mix> {
+    Some(Mix { from, into: plan.incoming_id.clone(), plan: serde_json::to_string(&plan.mixer).ok()? })
+}
+
+/// A guest's transition out of the song `mix` names in the host's `entries`: (its id, the plan).
+fn plan_of(mix: &Mix, entries: &[Entry]) -> Option<(String, Plan)> {
+    let from = entries.iter().find(|e| e.index == mix.from)?;
+    let plan: TransitionPlan = serde_json::from_str(&mix.plan).ok()?;
+    Some((from.id.clone(), engine_plan(&plan, &mix.into)?))
+}
+
 /// A page of the queue of device `from` arrived.
 fn paged(i: &mut Inner, from: &str, rev: u64, turn: u32, entries: Vec<Entry>) {
     if let Some(m) = i.mirror.as_mut().filter(|m| m.id == from) {
@@ -1844,6 +2067,10 @@ fn paged(i: &mut Inner, from: &str, rev: u64, turn: u32, entries: Vec<Entry>) {
 fn timed(i: &mut Inner, from: &str, exchange: clock::Exchange) {
     if let Some(m) = i.mirror.as_mut().filter(|m| m.id == from) {
         m.clock.add(exchange);
+    }
+    let host = i.joined().and_then(|(_, h)| h).is_some_and(|h| h.id == from);
+    if let Some(l) = i.listen.as_mut().filter(|_| host) {
+        l.clock.add(exchange);
     }
 }
 
@@ -1924,6 +2151,20 @@ mod tests {
             let devices = devices.iter().map(|&(name, kind, id)| RemoteDevice { id: id.into(), name: name.into(), kind, state: None, age_ms: 0, nearby: false, refused: None }).collect();
             assert_eq!(device_names(devices, me.clone(), words.clone()), *want);
         }
+    }
+
+    #[test]
+    fn a_planned_mix_reaches_guests_whole() {
+        let settings = nori_player::types::AutoMixSettings { max_transition_s: 8.0, ..Default::default() };
+        let mut t = nori_player::automix::plan::plan(None, None, 200_000, 180_000, &settings);
+        t.tempo_ratio = 1.03;
+        t.tempo_ramp_ms = 2_500;
+        let plan = engine_plan(&t, "s2").expect("a mix");
+        let entries = [Entry { index: 4, id: "s1".into(), ..Default::default() }, Entry { index: 5, id: "s2".into(), ..Default::default() }];
+        let mix = mix_of(4, &plan).unwrap();
+        let wire: Mix = serde_json::from_str(&serde_json::to_string(&mix).unwrap()).unwrap();
+        assert_eq!(plan_of(&wire, &entries), Some(("s1".to_string(), plan)));
+        assert_eq!(plan_of(&Mix { from: 9, ..wire }, &entries), None, "not in the queue window");
     }
 
     #[test]

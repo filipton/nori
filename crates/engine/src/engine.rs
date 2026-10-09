@@ -33,6 +33,11 @@ use crate::output::{AudioOutput, Device, RingTrack, WAKE_LOW_US};
 use crate::panic_words;
 use crate::source::{Fetching, Held};
 
+mod follow;
+
+use follow::{Following, Here, Led};
+use nori_player::engine::{Plan, Plans};
+
 /// The sound and controls the settings ask for.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
@@ -120,6 +125,33 @@ pub enum Event {
     Placed { index: usize, ms: i64 },
     /// Whether the CPU must be kept awake while playing; said before the work it is for.
     Awake(bool),
+}
+
+/// Another device's playback this engine follows place for place (a jam guest listening along): its
+/// place, speed and transitions rule here; the sound, the gain and the output stay this device's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lead {
+    /// The queue index here of the song playing there.
+    pub index: usize,
+    /// Where it was heard there `ago_us` before the call, ms.
+    pub ms: f64,
+    pub ago_us: i64,
+    /// Song ms per real ms there: its speed times a mix's tempo.
+    pub rate: f64,
+    pub playing: bool,
+    /// The speed and pitch set there; a mix's tempo comes with its plan.
+    pub speed: f32,
+    pub pitch: f32,
+    /// The transition out of a song there (its id), once planned.
+    pub mix: Option<(String, Plan)>,
+}
+
+/// A [`Lead`] timed on the engine's clock.
+struct Leading {
+    led: Led,
+    speed: f32,
+    pitch: f32,
+    mix: Option<(String, Plan)>,
 }
 
 /// The engine's last reading, for a screen to read without waking it.
@@ -237,6 +269,7 @@ enum Command {
     Look,
     Device(Device),
     Release,
+    Follow(Option<Box<Leading>>),
     Stop,
 }
 
@@ -283,6 +316,8 @@ pub struct Engine {
     wake: Option<Box<dyn Fn() + Send + Sync>>,
     /// Its songs' fetches.
     fetching: Arc<Fetching>,
+    /// The engine's clock, µs, read on the caller's thread.
+    now_us: Box<dyn Fn() -> i64 + Send + Sync>,
 }
 
 impl Engine {
@@ -325,7 +360,7 @@ impl Engine {
         let status = Arc::new(Mutex::new(Status::default()));
         let fetching = Arc::new(Fetching::default());
         let loading = fetching.clone();
-        let (shared, devices, hook, own) = (status.clone(), tx.clone(), clock.clone(), clock.clone());
+        let (shared, devices, hook, own, timer) = (status.clone(), tx.clone(), clock.clone(), clock.clone(), clock.clone());
         let join = std::thread::Builder::new()
             .name("nori-engine".into())
             .spawn(move || {
@@ -347,7 +382,7 @@ impl Engine {
             let t = thread.clone();
             Box::new(move || hook.wake(&t)) as Box<dyn Fn() + Send + Sync>
         });
-        Engine { tx, thread, join: Mutex::new(Some(join)), status, jumps: AtomicU64::new(0), plays: AtomicU64::new(0), wake, fetching }
+        Engine { tx, thread, join: Mutex::new(Some(join)), status, jumps: AtomicU64::new(0), plays: AtomicU64::new(0), wake, fetching, now_us: Box::new(move || timer.now_us()) }
     }
 
     fn send(&self, c: Command) {
@@ -493,6 +528,16 @@ impl Engine {
         }
     }
 
+    /// Follows another device's playback (None: plays on its own again). Its transitions, speed and pitch
+    /// replace the settings', skipped silence comes as its jumps, and nothing is offloaded meanwhile.
+    pub fn follow(&self, lead: Option<Lead>) {
+        let leading = lead.map(|l| {
+            let led = Led { index: l.index, ms: l.ms, at_us: (self.now_us)() - l.ago_us, rate: l.rate, playing: l.playing };
+            Box::new(Leading { led, speed: l.speed, pitch: l.pitch, mix: l.mix })
+        });
+        self.send(Command::Follow(leading));
+    }
+
     /// What its songs' loaders hold now, for the memory report.
     pub fn held(&self) -> Held {
         self.fetching.held()
@@ -600,6 +645,16 @@ const PLACE_LEAP_MS: i64 = 50;
 /// The music written moving the place this far from the one said (speed, a mix's tempo, a skipped
 /// silence) is said where that happens.
 const PLACE_DUE_MS: i64 = 4;
+/// Music ready for a start: it plays only with this much made.
+const READY_US: i64 = 100_000;
+/// After a start, how far its place is from the leader's is looked at this much later, µs.
+const LOOK_AFTER_START_US: i64 = 500_000;
+/// While a start waits for its song's bytes, it looks this often, ms.
+const WAIT_FOR_START_MS: i64 = 250;
+/// A start this late (the thread woke late) still plays, its gap trimmed away; later, it starts again, µs.
+const START_LATE_US: i64 = 15_000;
+/// A start's fades, ms.
+const START_FADE_MS: i64 = 10;
 /// Less than this to play while a song's bytes are on their way is [`Event::Buffering`].
 const STALL_US: i64 = 200_000;
 const TEAR_DOWNS: u32 = 2;
@@ -652,6 +707,9 @@ struct Worker<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> {
     jumping: Option<(usize, i64)>,
     /// Why the song plays on the CPU, in words: kept to compare with the status's without allocating.
     why: String,
+    /// Another device's playback followed, and its speed and pitch.
+    following: Option<Following>,
+    led_speed: (f32, f32),
 }
 
 impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E, C> {
@@ -691,6 +749,8 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             restarted: None,
             jumping: None,
             why: String::new(),
+            following: None,
+            led_speed: (1.0, 1.0),
         };
         w.apply(config.settings);
         w
@@ -772,6 +832,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         self.check();
         self.announce(now);
         self.report(now);
+        self.follow_lead(now);
         self.follow_why();
         self.restart_if_stalled(now);
         self.watch(now);
@@ -1200,6 +1261,15 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
 
     fn command(&mut self, c: Command) {
         let now = self.now();
+        // Following another device, its place rules: this one's own controls do nothing (counted still).
+        if self.following.is_some() {
+            match c {
+                Command::PlayAt(..) | Command::GoTo(..) | Command::Next | Command::Previous => return self.jumps += 1,
+                Command::Play => return self.plays += 1,
+                Command::Pause(_) | Command::Toggle | Command::Seek(_) => return,
+                _ => {}
+            }
+        }
         match c {
             Command::PlayAt(i, ms) => {
                 self.jumps += 1;
@@ -1258,8 +1328,139 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                 self.pause(now, 0);
                 self.release();
             }
+            Command::Follow(lead) => self.follow(lead),
             Command::Look | Command::Stop => {}
         }
+    }
+
+    /// The leader's newer word, or none (playing on its own again).
+    fn follow(&mut self, leading: Option<Box<Leading>>) {
+        let was = self.following.is_some();
+        let Some(l) = leading else {
+            self.following = None;
+            self.p.priming = false;
+            self.p.engine.plans = Plans::Own;
+            if was {
+                self.apply(self.settings.clone());
+                self.replan();
+            }
+            return;
+        };
+        let Leading { led, speed, pitch, mix } = *l;
+        let now_us = self.clock.now_us();
+        match self.following.as_mut() {
+            Some(f) => f.lead(led, now_us),
+            None => self.following = Some(Following::new(led)),
+        }
+        let plans = Plans::Led(mix.map(|(id, plan)| (id, Box::new(plan))));
+        let replan = self.p.engine.plans != plans;
+        self.p.engine.plans = plans;
+        if !was || self.led_speed != (speed, pitch) {
+            self.led_speed = (speed, pitch);
+            self.apply(self.settings.clone());
+        }
+        if replan {
+            self.replan();
+        }
+        // Looked at in this turn, once the player has read where it is.
+    }
+
+    /// Following: makes this turn's step ([`follow`]), or starts the music made ready when its moment
+    /// came.
+    fn follow_lead(&mut self, now: i64) {
+        let Some(f) = self.following.as_mut() else { return };
+        let now_us = self.clock.now_us();
+        if let Some(st) = f.starting {
+            if let Some((index, ms, _)) = st.jump.filter(|j| now_us >= j.2 - 500) {
+                f.starting = Some(follow::Starting { jump: None, ..st });
+                self.prime(index, ms);
+                return;
+            }
+            if st.jump.is_some() || now_us < st.at_us - 500 {
+                return;
+            }
+            // The song may still be on its way: once it is, started again from where the leader is then.
+            let ready = self.p.sink.track.filled_us() >= READY_US || self.p.source_ended();
+            if !ready && self.p.waiting_for_bytes() {
+                return;
+            }
+            if !ready || now_us > st.at_us + START_LATE_US {
+                f.starting = None;
+                if !ready {
+                    f.not_ready();
+                }
+                let why = if ready { "late" } else { "not ready" };
+                self.p.app.log(&format!("following: the start {} ms after its moment, {why}", (now_us - st.at_us) / 1000));
+            } else {
+                f.starting = None;
+                f.started();
+                f.look_at = Some(now_us + LOOK_AFTER_START_US);
+                self.p.priming = false;
+                self.go_on();
+                self.ramp(Some(0.0), 1.0, START_FADE_MS);
+                self.set_state(State::Playing);
+                return;
+            }
+        }
+        let len = self.p.queue.read(|q| q.len());
+        let f = self.following.as_mut().expect("following");
+        f.look_at.take_if(|at| *at <= now_us + 500);
+        if f.led.index >= len {
+            return;
+        }
+        let here = {
+            let s = self.status.lock();
+            let playing = self.state == State::Playing && self.p.playing() && !self.p.priming;
+            // To the µs where the player's own place is the one heard.
+            let audible = self.p.heard().id.is_none() && !s.mixing && s.index == self.p.current();
+            let ms = if audible { self.p.position_us() as f64 / 1000.0 } else { s.position_ms as f64 };
+            Here { playing, at: s.index.map(|i| (i, ms)), mixing: s.mixing, held_us: self.p.sink.track.latency_us() }
+        };
+        let step = f.step(now_us, here);
+        if step != follow::Step::Stay {
+            let led = f.led.place_at(now_us);
+            self.p.app.log(&format!("following: {step:?}, here {:?}, there {led:.1} ms", here.at));
+        }
+        match step {
+            follow::Step::Stay => {}
+            follow::Step::Pause => self.pause(now, self.settings.fade_ms),
+            follow::Step::Trim(t) => {
+                f.trim = t;
+                self.apply(self.settings.clone());
+            }
+            follow::Step::Start { index, ms, at_us } => {
+                let playing = here.playing;
+                f.starting = Some(follow::Starting { at_us, jump: playing.then_some((index, ms, now_us + START_FADE_MS * 1000)) });
+                if playing {
+                    // Down first: the music stops without a click.
+                    self.ramp(None, 0.0, START_FADE_MS);
+                } else {
+                    self.prime(index, ms);
+                }
+            }
+        }
+    }
+
+    /// Song `index` made ready from `ms` while the output waits.
+    fn prime(&mut self, index: usize, ms: f64) {
+        (self.dip, self.pause_at, self.parked) = (None, None, None);
+        self.p.pause();
+        self.leave_offload();
+        self.p.priming = true;
+        self.p.jump(index, ms.max(0.0).round() as i64);
+        self.ramp(Some(0.0), 0.0, 0);
+    }
+
+    /// Until a start's next moment, or a trim has closed its gap, ms.
+    fn wake_to_start(&self) -> Option<i64> {
+        let f = self.following.as_ref()?;
+        let at = match f.starting {
+            // Waiting for the song's bytes, looked at again now and then.
+            Some(st) if st.jump.is_none() && self.clock.now_us() >= st.at_us => return Some(WAIT_FOR_START_MS),
+            Some(st) => st.jump.map_or(st.at_us, |j| j.2),
+            None => f.look_at?,
+        };
+        Some(((at - self.clock.now_us()) as f64 / 1000.0).ceil().max(1.0) as i64)
     }
 
     /// The sleep timer's end of this song.
@@ -1312,7 +1513,13 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     fn apply(&mut self, s: Settings) {
         let hi_res = s.hi_res && self.p.sink.track.takes_float();
         let bit_perfect = self.facts.bit_perfect;
-        let prefs = AudioPrefs { dsp: s.sound.on(), skip_silence: s.skip_silence, offload: s.offload && self.off.is_some(), crossfade_s: s.crossfade_s, auto_mix: s.auto_mix, speed: s.speed, pitch: s.pitch };
+        // Following, the leader's speed (trimmed) plays, its jumps skip silence, and nothing is offloaded.
+        let (speed, pitch, skip_silence) = match &self.following {
+            Some(f) => (self.led_speed.0 * (1.0 + f.trim) as f32, self.led_speed.1 * (1.0 + f.trim) as f32, false),
+            None => (s.speed, s.pitch, s.skip_silence),
+        };
+        let offload = s.offload && self.off.is_some() && self.following.is_none();
+        let prefs = AudioPrefs { dsp: s.sound.on(), skip_silence, offload, crossfade_s: s.crossfade_s, auto_mix: s.auto_mix, speed, pitch };
         let state = OutputState { hi_res, bit_perfect, usb: self.facts.usb, offload_refused: self.h.refused };
         let policy = audio_policy(&prefs, &state);
         self.blocked = if self.off.is_some() { offload_blocked(&prefs, &state) } else { Some("the output does not decode songs itself") };
@@ -1342,7 +1549,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             self.gain_changed |= was.bit_perfect != now.bit_perfect;
         }
         // The equalizer stays in (flat) but for bit-perfect output.
-        self.chain_wanted = Some(ChainSettings { sound, speed: s.speed, pitch: s.pitch, skip_silence: policy.skip_silence, keep_eq: !policy.untouched });
+        self.chain_wanted = Some(ChainSettings { sound, speed, pitch, skip_silence: policy.skip_silence, keep_eq: !policy.untouched });
         // The plan out of the current song was made under the old transition settings.
         let replan = first || was.untouched != now.untouched || (self.settings.crossfade_s, self.settings.auto_mix) != (s.crossfade_s, s.auto_mix);
         self.applied = Some(now);
@@ -1782,7 +1989,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         } else if ended {
             self.p.pause();
             self.set_state(State::Ended);
-        } else if !self.p.playing() && self.state == State::Playing && self.pause_at.is_none() && self.dip.is_none() {
+        } else if !self.p.playing() && self.state == State::Playing && self.pause_at.is_none() && self.dip.is_none() && !self.p.priming {
             // The queue's rules stopped playback (a run of songs that would not play), or the bridge takes over.
             if std::mem::take(&mut self.p.bridge) {
                 (self.events)(Event::Bridge { plays: self.plays });
@@ -2132,7 +2339,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// How long the thread may sleep: `None` until a command, `Some(0)` not at all. The music's timers,
     /// and while music should move, the stall checks ([`Worker::restart_if_stalled`]).
     fn wake_in(&self, now: i64) -> Option<i64> {
-        let d = self.wake_for_music(now);
+        let d = [self.wake_for_music(now), self.wake_to_start()].into_iter().flatten().min();
         let look = match &self.stall {
             Some(q) if q.standing && now - q.since < STALL_SAY_MS => Some((q.since + STALL_SAY_MS - now).max(1)),
             Some(q) if q.standing => Some((q.since + STALL_RESTART_MS - now).max(1)),
@@ -2171,11 +2378,11 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             }
             return d.map(|x| x.max(1));
         }
+        if self.p.hungry() && (self.p.playing() || self.p.priming) {
+            return Some(0);
+        }
         if !self.p.playing() {
             return d.map(|x| x.max(1));
-        }
-        if self.p.hungry() {
-            return Some(0);
         }
         let track = &self.p.sink.track;
         let speed = self.p.speed().0.max(0.1) as f64;

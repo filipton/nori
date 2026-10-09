@@ -193,6 +193,16 @@ pub fn jam_role(role: nori_core::remote::wire::Role) -> &'static str {
     }
 }
 
+/// Why a guest asking to listen along does not, if it does not.
+pub fn jam_along(l: nori_core::remote::Listening) -> &'static str {
+    use nori_core::remote::Listening;
+    match l {
+        Listening::Watching | Listening::Playing => "",
+        Listening::HostOff => "The host doesn't let guests listen along right now. You can still ask for songs.",
+        Listening::ServerOff => "This server doesn't let guests listen along. You can still ask for songs.",
+    }
+}
+
 pub const JAM_UNSUPPORTED: &str = "Your server doesn't support jams yet. They need octo-fiesta with nori support in front of it.";
 pub const JAM_FAILED: &str = "Couldn't start the jam. Jams need octo-fiesta in front of your server.";
 /// Under the invite, when the server's address is a home network's.

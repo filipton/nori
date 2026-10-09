@@ -45,6 +45,8 @@ nori-testdir = { path = "../testdir" }
 nori-player = { path = "../player", features = ["synth"] }
 # tests/stretch.rs: the lyrics page's clock, read through a stretched mix as a screen reads it.
 nori-look = { path = "../look" }
+# tests/along.rs: a jam guest learning its host's clock.
+nori-remote = { path = "../remote" }
 # tests/core.rs: a transport for the core that is never asked.
 async-trait = "0.1"
 # tests/perf_bench.rs: the process's CPU time.

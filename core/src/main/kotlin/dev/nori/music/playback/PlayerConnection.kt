@@ -510,6 +510,9 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     /** Runs [action] on the main thread once the service is up (connecting to it starts it). */
     fun connected(action: () -> Unit) = with { action() }
 
+    /** A jam guest listens along: the player is prepared and wants to play, the engine follows the host. */
+    fun listenAlong() = with { c -> if (c.playbackState == Player.STATE_IDLE) c.prepare(); c.play() }
+
     fun skipTo(index: Int) = with { c ->
         mirror?.let { m -> remoteIndex(m, index)?.let { remote(Op.Jump(it, m.rev)) }; return@with }
         c.seekToDefaultPosition(index); if (c.playbackState == Player.STATE_IDLE) c.prepare(); c.play()

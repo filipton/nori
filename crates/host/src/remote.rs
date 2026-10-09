@@ -83,6 +83,18 @@ impl Remotes {
     }
 }
 
+/// The session's engine playing along with the jam this guest listens along to.
+pub(crate) struct Along {
+    pub(crate) engine: Arc<Engine>,
+    pub(crate) session: Arc<nori_core::queue::Session>,
+}
+
+impl nori_core::remote::Follower for Along {
+    fn lead(&self, lead: Option<nori_core::remote::Lead>) {
+        nori_engine::core::follow(&self.engine, &self.session, lead);
+    }
+}
+
 /// What another device asks of this one, done to the session's queue and engine as its own keys would.
 pub(crate) struct HostPlayer(pub(crate) Handle);
 

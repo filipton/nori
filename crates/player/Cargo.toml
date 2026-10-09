@@ -32,6 +32,7 @@ opus-rs = "0.1.34"
 # BS.1770 / EBU R128 loudness (MIT, pure Rust): the K-weighting and the gated integrated loudness AutoMix
 # measures each song by (automix/loudness.rs).
 ebur128 = "0.1.10"
+serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
 # The beat model's weights, checked against their pin in a test (the core checks them the same way).

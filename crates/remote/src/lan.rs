@@ -245,7 +245,7 @@ fn answer(s: &Shared, conn: &TcpStream, method: &str, target: &str, body: &[u8],
                 .filter(|(seq, to, _)| since.is_some_and(|since| *seq > since) && *to == dev)
                 .map(|(seq, _, body)| Event { seq: *seq, room: ROOM.into(), from: i.me.id.clone(), body: body.clone() })
                 .collect();
-            let a = Answer { seq: i.seq, you: dev.clone(), rooms: vec![Room { room: ROOM.into(), jam: false, members: vec![i.me.clone()] }], events };
+            let a = Answer { seq: i.seq, you: dev.clone(), rooms: vec![Room { room: ROOM.into(), jam: false, members: vec![i.me.clone()] }], events, ..Default::default() };
             Some(("200 OK", serde_json::to_string(&a).unwrap_or_default()))
         }
         // A time exchange (`crate::clock`), answered at once, stamped as near the socket as this gets.

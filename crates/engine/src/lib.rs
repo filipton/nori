@@ -30,7 +30,7 @@ mod no_alloc;
 pub mod testing;
 
 pub use clock::{Clock, Monotonic};
-pub use engine::{Config, Engine, Event, OutputFacts, Settings, State, Status, REMAKE_LEAD_MS};
+pub use engine::{Config, Engine, Event, Lead, OutputFacts, Settings, State, Status, REMAKE_LEAD_MS};
 pub use offload::{Coded, Coding, OffloadOutput, OnCpu, Support};
 pub use library::{Library, Located, Source, Sources};
 pub use nori_player::pipeline::{App, Queue, Sound};

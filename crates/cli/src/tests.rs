@@ -908,6 +908,8 @@ fn jam() -> nori_core::remote::JamView {
         queue: None,
         age_ms: 0,
         refused: None,
+        along: true,
+        listening: nori_core::remote::Listening::Watching,
     }
 }
 

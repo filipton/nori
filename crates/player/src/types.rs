@@ -172,6 +172,7 @@ impl Default for AutoMixSettings {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TransitionKind {
     /// No overlap: the next track follows sample for sample.
     Gapless,
@@ -186,6 +187,7 @@ pub enum TransitionKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FadeCurve {
     /// cos/sin: constant power, for material that does not add coherently.
     EqualPower,
@@ -196,6 +198,7 @@ pub enum FadeCurve {
 
 /// A filter sweep on the outgoing deck over `[start_ms, end_ms]` of the transition, exponential in frequency.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Sweep {
     pub start_ms: i64,
     pub end_ms: i64,
@@ -205,6 +208,7 @@ pub struct Sweep {
 
 /// The incoming lows are cut below `cut_hz` until `at_ms`; over `len_ms` they come in and the outgoing lows go.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BassSwap {
     pub at_ms: i64,
     pub len_ms: i64,
@@ -214,6 +218,7 @@ pub struct BassSwap {
 /// Beat-synced echo on the outgoing deck: `delay_ms` is one outgoing beat, `feedback` (0..1) what each repeat
 /// keeps, `wet_db` the repeats' level.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Echo {
     pub delay_ms: i64,
     pub feedback: f32,
@@ -223,6 +228,7 @@ pub struct Echo {
 /// The incoming voice band (centred on `hz`) is held `db` down until `until_ms`, released over the
 /// `release_ms` before it.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VocalDuck {
     pub until_ms: i64,
     pub release_ms: i64,
@@ -232,6 +238,7 @@ pub struct VocalDuck {
 
 /// A transition between two tracks. "Relative" fields count from the transition's start.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransitionPlan {
     pub kind: TransitionKind,
     /// Position in the outgoing track where the transition starts. It stops at `out_start_ms + duration_ms`.

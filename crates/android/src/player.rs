@@ -57,6 +57,7 @@ pub(crate) static CLASS: Class = Class {
         native!(c"chainIn", c"(J)Z", chain_in),
         native!(c"onCpu", c"(J)Z", on_cpu),
         native!(c"pace", c"(J)F", pace),
+        native!(c"follow", c"(JJ)V", follow),
         native!(c"gainReductionDb", c"(J)F", gain_reduction_db),
         native!(c"compressionDb", c"(J)F", compression_db),
         native!(c"setQuiet", c"(JF)V", set_quiet),
@@ -1555,6 +1556,26 @@ extern "system" fn chain_in(h: jlong) -> jboolean {
 /// `Status::pace`: song ms per real ms.
 extern "system" fn pace(h: jlong) -> f32 {
     player(h).map_or(1.0, |p| p.engine.status_with(|s| s.pace))
+}
+
+/// Plays along with the jam whose guest `remote` is (a `Remote.uniffiCloneHandle()`, taken over) while
+/// it listens along.
+extern "system" fn follow(h: jlong, remote: jlong) {
+    // SAFETY: Kotlin passes `Remote.uniffiCloneHandle()`, once.
+    let remote: Arc<nori_core::remote::Remote> = unsafe { crate::uniffi_object(remote) };
+    let Some(p) = player(h) else { return };
+    remote.follow_with(Some(Arc::new(Along(Arc::downgrade(&p)))));
+}
+
+/// A player playing along with a jam's host, while it is there.
+struct Along(std::sync::Weak<Player>);
+
+impl nori_core::remote::Follower for Along {
+    fn lead(&self, lead: Option<nori_core::remote::Lead>) {
+        if let Some(p) = self.0.upgrade() {
+            nori_engine::core::follow(&p.engine, &p.queue, lead);
+        }
+    }
 }
 
 /// `Status::on_cpu`.

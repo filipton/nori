@@ -456,7 +456,7 @@ impl Build<'_> {
             "Look things up online",
             "Missing lyrics (sends the artist, song and album name) and the AutoEQ headphone list, each with its own switch. Off, nothing is asked.",
         )];
-        let devices = vec![
+        let mut devices = vec![
             self.toggle(
                 "remoteControl",
                 "Control from other devices",
@@ -468,6 +468,9 @@ impl Build<'_> {
                 "Start a jam from the devices button or a song's menu: others join with a link or QR code and ask for songs, and this Mac plays them. Needs octo-fiesta.",
             ),
         ];
+        if self.p.jam {
+            devices.push(self.toggle("jamAlong", "Let guests listen along", "A jam's guests can play its music on their own phones, in step with this Mac. Each jam can change it."));
+        }
         vec![("Search", search), ("Listening history", history), ("Online", online), ("Other devices", devices)]
     }
 

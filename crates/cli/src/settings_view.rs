@@ -601,6 +601,7 @@ fn library(b: &Build, f: &Facts) -> Vec<Section> {
     let devices = vec![
         b.toggle("remoteControl", "Remote control", "Your other devices with nori control what plays here, and this computer controls them (C): on this network directly, elsewhere through octo-fiesta"),
         b.toggle("jam", "Jams", "Start a jam from the devices (C) or on a song, album or playlist (i): others join with a link or QR code and ask for songs, and this computer plays them. Needs octo-fiesta"),
+        b.toggle("jamAlong", "  Let guests listen along", "A jam's guests can play its music on their own devices, in step with this computer"),
     ];
     vec![section("Index and search", index), section("History", history), section("Online", online), section("Other devices", devices)]
 }

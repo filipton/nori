@@ -266,6 +266,8 @@ class PlaybackService : MediaLibraryService() {
         scope.launch { nori.library.starMarks.collect { refreshButtons() } }
         // Controllable from the account's other devices while this runs and remote control is on (Remotes).
         nori.remotes.service = remotePlayer
+        nori.remotes.engine = player
+        nori.remotes.onGuestQueue = ::guestQueue
         scope.launch { nori.settings.prefs.map { it.remoteControl }.distinctUntilChanged().collect { nori.remotes.serve(true) } }
         elsewhere = dev.nori.music.remote.RemoteDevicePlayer(this, nori)
         scope.launch { nori.remotes.mirror.collect(::mirrored) }
@@ -320,6 +322,8 @@ class PlaybackService : MediaLibraryService() {
         nori.remotes.notified(false)
         nori.remotes.service = null
         dev.nori.music.remote.RemoteRoute.show(this, null)
+        nori.remotes.engine = null
+        nori.remotes.onGuestQueue = null
         nori.widgets.onPlaced = null
         sessionPlayer = null
         rustPlayer = null
@@ -768,6 +772,14 @@ class PlaybackService : MediaLibraryService() {
         // inside the queue it hands back.
         // With the page it was started from, so that page still answers for it.
         controls.setMediaItems(startedFrom(held(q.songs), q.origin), q.index.toInt(), q.positionMs.toLong())
+    }
+
+    /** A jam guest listening along: the host's songs the core queued become the player's, which plays (the engine follows the host). */
+    private fun guestQueue() = scope.launch {
+        val q = withContext(Dispatchers.IO) { runCatching { nori.core.loadQueue() }.getOrNull() } ?: return@launch
+        controls.setMediaItems(held(q.songs), q.index.toInt(), q.positionMs.toLong())
+        if (controls.playbackState == Player.STATE_IDLE) controls.prepare()
+        controls.play()
     }
 
     /** Songs as the player's items, handed to the core in one call (see MediaItems.toMediaItems). */

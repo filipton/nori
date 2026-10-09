@@ -277,6 +277,8 @@ pub struct Player<S: Songs, T: Track, A: App, Q: Queue> {
     pub bridge: bool,
     /// Queue entries as last seen, to map indexes across edits.
     seqs: Vec<u64>,
+    /// Music is made while paused, ready for a start at a set moment.
+    pub priming: bool,
 }
 
 impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
@@ -319,6 +321,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             loops: 0,
             bridge: false,
             seqs: Vec::new(),
+            priming: false,
         };
         p.engine.follow_rate = true;
         p.seqs = p.queue.read(|q| q.seqs().to_vec());
@@ -448,7 +451,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         // Read on gaplessly into a song that no longer follows.
         let astray = self.read_astray(cur);
         self.app.clock(self.now_ms);
-        let plan = self.app.plan_for(&id);
+        let plan = self.engine.plans.plan_for(&mut self.app, &id);
         let made = match self.ending_made(cur, plan.as_ref().map(|p| p.out_start_us)) {
             Some(made) => made,
             None if astray => None,
@@ -903,6 +906,13 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         (pos - offset) / 1000
     }
 
+    /// Position in the current song, µs.
+    pub fn position_us(&self) -> i64 {
+        let Some(pos) = self.position_us else { return 0 };
+        let offset = self.current.and_then(|i| self.periods.iter().rev().find(|p| p.index == i)).map_or(0, |p| p.offset_us);
+        pos - offset
+    }
+
     /// Song time until the clock reaches the next stream already handed out.
     pub fn until_next_song_us(&self) -> Option<i64> {
         let pos = self.position_us?;
@@ -1059,10 +1069,12 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.now_ms = now_ms;
         self.opened();
         self.remade();
-        if !self.playing {
+        if !self.playing && !self.priming {
             return;
         }
-        self.follow_clock();
+        if self.playing {
+            self.follow_clock();
+        }
         self.render();
         // A pending failure is raised once everything before it has played.
         if self.failed.is_some() && self.ended() {

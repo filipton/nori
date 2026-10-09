@@ -75,6 +75,21 @@ class Remotes(private val context: Context, private val nori: Nori) {
     /** The playback service's player while it runs; ops go to it, starting the service when it is not. */
     @Volatile var service: RemotePlayer? = null
 
+    /**
+     * The playback service's: the queue the core set for a jam guest listening along (its host's songs)
+     * becomes the player's.
+     */
+    @Volatile var onGuestQueue: (() -> Unit)? = null
+    /** The queue's songs the player was last given for listening along. */
+    private var guestQueue: List<String>? = null
+
+    /** The playback service's engine while it runs: a jam guest listening along plays there. */
+    @Volatile var engine: dev.nori.music.playback.EnginePlayer? = null
+        set(e) {
+            field = e
+            if (e != null) work { remote?.takeIf { isGuest() }?.let(e::follow) }
+        }
+
     private val main = Handler(Looper.getMainLooper())
     /** Calls into the core leave the main thread here, one at a time. */
     private val worker by lazy { Executors.newSingleThreadExecutor { Thread(it, "nori-remote-calls") } }
@@ -114,6 +129,12 @@ class Remotes(private val context: Context, private val nori: Nori) {
         val playing = if (j?.hosting == false) r.jamPlaying() else null
         val relay = r?.relay() ?: RelaySupport.UNKNOWN
         main.post { _jam.value = j; _jamAdded.value = added; _jamPlaying.value = playing; _relay.value = relay }
+        if (j?.listening == dev.nori.music.ffi.Listening.PLAYING) {
+            val ids = runCatching { nori.core.loadQueue()?.songs?.map { it.id } }.getOrNull()
+            if (ids != null && ids != guestQueue) { guestQueue = ids; main.post { onGuestQueue?.invoke() } }
+        } else {
+            guestQueue = null
+        }
     }
 
     /**
@@ -145,6 +166,7 @@ class Remotes(private val context: Context, private val nori: Nori) {
             val kind = if (isGuest()) DeviceKind.GUEST else DeviceKind.PHONE
             remote = Remote(c, RemoteMe(deviceName(context), kind), player, shown, discovery)
             client = c
+            if (isGuest()) remote?.let { r -> engine?.follow(r) }
             if (serving) remote?.serve(p.remoteControl)
             if (watching) remote?.watch(true)
             if (sight() != Sight.SCREEN) remote?.sight(sight())
@@ -232,6 +254,18 @@ class Remotes(private val context: Context, private val nori: Nori) {
             r.played(Playing(playing, buffering, positionMs + ran, rate, index.takeIf { it >= 0 }?.toUInt(), volumePercent(context)?.toUByte()))
         }
     }
+
+    /**
+     * Plays the jam this guest is in here, in step with its host, or only shows it ([on] false). The
+     * playback service starts for it.
+     */
+    fun listen(on: Boolean) {
+        if (on) main.post { nori.player.listenAlong() }
+        work { current()?.listen(on) }
+    }
+
+    /** Lets this jam's guests listen along, or not. */
+    fun jamAlong(on: Boolean) = work { current()?.jamAlong(on) }
 
     /** Moves the playback to [device], or to this phone (null). */
     fun pick(device: String?) = work { current()?.pick(device) }

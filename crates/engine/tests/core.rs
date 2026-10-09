@@ -491,3 +491,29 @@ fn listens_with_a_real_model(core: &Arc<Core>, current: &Mutex<Arc<Client>>, dir
     std::fs::write(&kept, &bytes).unwrap();
     assert!(nori_core::model_download::read(&nori_core::beat_model::BEAT_THIS, &kept).is_err());
 }
+
+/// A jam guest's queue: the host's songs, set anew only when its song and the next are not in a row.
+#[test]
+fn a_guest_queues_the_host_songs_once() {
+    let dir = nori_testdir::TempDir::new("guest");
+    let (core, _client) = common::own_core(&dir, |_| {});
+    let song = |id: &str| Song { id: id.into(), title: id.into(), ..Default::default() };
+    let lead = |ids: &[&str], index: usize| nori_core::remote::Lead {
+        songs: ids.iter().map(|id| song(id)).collect(),
+        index,
+        ms: 0.0,
+        at_us: 0,
+        rate: 1.0,
+        playing: true,
+        speed: 1.0,
+        pitch: 1.0,
+        mix: None,
+    };
+    let s = &core.session;
+    assert_eq!(nori_engine::core::queued_for(s, &lead(&["a", "b", "c"], 0)), (0, true));
+    // The host moved on and its window with it: the queue here already has b then c.
+    assert_eq!(nori_engine::core::queued_for(s, &lead(&["a", "b", "c", "d"], 1)), (1, false));
+    // A song put next there: queued anew.
+    assert_eq!(nori_engine::core::queued_for(s, &lead(&["b", "x", "c"], 0)), (0, true));
+    assert_eq!(s.playlist(|p| p.ids().to_vec()), ["b", "x", "c"]);
+}

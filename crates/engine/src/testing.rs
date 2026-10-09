@@ -55,6 +55,10 @@ impl Clock for Virtual {
         self.0.s.lock().now_ns / 1_000_000
     }
 
+    fn now_us(&self) -> i64 {
+        self.0.s.lock().now_ns / 1_000
+    }
+
     fn sleep(&self, ms: Option<u64>, waiting: impl FnOnce() -> bool) {
         let bytes = waiting();
         let mut s = self.0.s.lock();

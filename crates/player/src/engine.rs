@@ -301,6 +301,28 @@ pub struct TransitionEngine {
     pool: Vec<Vec<u8>>,
 
     heard: Heard,
+    /// Where the plans come from.
+    pub plans: Plans,
+}
+
+/// Where a transition's plan comes from: the host's planner, or a leader's word (a jam guest listening
+/// along plays the transitions its host planned: (outgoing song, plan); a song it has no word for yet
+/// ends gapless until it has).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum Plans {
+    #[default]
+    Own,
+    Led(Option<(String, Box<Plan>)>),
+}
+
+impl Plans {
+    /// The plan out of `outgoing_id`.
+    pub fn plan_for<H: Host>(&self, host: &mut H, outgoing_id: &str) -> Option<Plan> {
+        match self {
+            Plans::Own => host.plan_for(outgoing_id),
+            Plans::Led(p) => p.as_ref().filter(|(id, _)| id == outgoing_id).map(|(_, p)| (**p).clone()),
+        }
+    }
 }
 
 impl Default for TransitionEngine {
@@ -374,6 +396,7 @@ impl TransitionEngine {
             queue: VecDeque::new(),
             pool: Vec::new(),
             heard: Heard { until_us: i64::MAX, audible_us: i64::MAX, next_rate: 1.0, ..Default::default() },
+            plans: Plans::Own,
         }
     }
 
@@ -780,7 +803,7 @@ impl TransitionEngine {
                 Ending::Planned(_) | Ending::LetGo => true,
             };
         if !known {
-            self.ending = host.plan_for(&id.song).map_or(Ending::Gapless(now), Ending::Planned);
+            self.ending = self.plans.plan_for(host, &id.song).map_or(Ending::Gapless(now), Ending::Planned);
             if self.plan_for.as_ref() != Some(id) {
                 self.plan_for = Some(id.clone());
             }

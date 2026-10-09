@@ -9,6 +9,10 @@ use std::time::{Duration, Instant};
 pub trait Clock: Clone + Send + 'static {
     /// Monotonic milliseconds since creation.
     fn now_ms(&self) -> i64;
+    /// [`Clock::now_ms`] in µs, from any thread: a followed device's place is timed on it.
+    fn now_us(&self) -> i64 {
+        self.now_ms() * 1000
+    }
     /// Sleeps until unparked or `ms` passed (`None`: until unparked). `waiting` says whether the engine
     /// awaits a song's bytes; a test clock holds time still then, as if the network were instant.
     fn sleep(&self, ms: Option<u64>, waiting: impl FnOnce() -> bool);
@@ -44,6 +48,10 @@ impl Clock for Monotonic {
     #[inline]
     fn now_ms(&self) -> i64 {
         self.0.elapsed().as_millis() as i64
+    }
+
+    fn now_us(&self) -> i64 {
+        self.0.elapsed().as_micros() as i64
     }
 
     #[inline]

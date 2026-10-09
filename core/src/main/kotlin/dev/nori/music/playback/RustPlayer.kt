@@ -72,6 +72,8 @@ internal object RustPlayerJni {
     @JvmStatic @CriticalNative external fun onCpu(h: Long): Boolean
     /** Song ms per real ms: the speed times a mix's tempo. */
     @JvmStatic @CriticalNative external fun pace(h: Long): Float
+    /** Plays along with the jam whose guest [remote] is (`Remote.uniffiCloneHandle()`, taken over) while it listens along. */
+    @JvmStatic @CriticalNative external fun follow(h: Long, remote: Long)
     @JvmStatic @CriticalNative external fun gainReductionDb(h: Long): Float
     @JvmStatic @CriticalNative external fun compressionDb(h: Long): Float
     /** The outputs play at [level] (0 to 1) of their own volume from their next volume or open on ([Quiet]). */
@@ -307,6 +309,8 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
     val mixing: Boolean get() = RustPlayerJni.mixing(h)
     /** How fast the place moves: the speed times a mix's tempo. */
     val pace: Float get() = RustPlayerJni.pace(h)
+    /** Plays along with the jam whose guest [remote] is, while it listens along (the core says when). */
+    fun follow(remote: dev.nori.music.ffi.Remote) = RustPlayerJni.follow(h, remote.uniffiCloneHandle())
     /** The sound chain is in the samples' path, and what its limiter takes off, dB: see [Equalizer.inChain]. */
     val chainIn: Boolean get() = RustPlayerJni.chainIn(h)
     /** The ear is on music the CPU made, through the engine's own output: where [chainIn] says anything. */
@@ -387,14 +391,16 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
     }
 
     override fun getState(): State {
+        val state = playbackState()
         val b = State.Builder()
             .setAvailableCommands(COMMANDS)
             .setPlayWhenReady(playWhenReady, whyPlayWhenReady)
-            .setPlaybackState(playbackState())
+            .setPlaybackState(state)
             .setPlaybackSuppressionReason(suppressed)
             .setRepeatMode(repeat)
             .setShuffleModeEnabled(shuffle)
-            .setIsLoading(loading > 0)
+            // media3 has nothing loading while idle or ended (the engine may be, following a jam's host).
+            .setIsLoading(loading > 0 && state != Player.STATE_IDLE && state != Player.STATE_ENDED)
             .setAudioAttributes(ATTRIBUTES)
             .setPlaylist(timeline(), Tracks.EMPTY, announcement())
             .setCurrentMediaItemIndex(if (items.isEmpty()) C.INDEX_UNSET else current.coerceIn(0, items.size - 1))

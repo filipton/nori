@@ -73,6 +73,8 @@ pub struct Answer {
     pub rooms: Vec<Room>,
     #[serde(deserialize_with = "readable")]
     pub events: Vec<Event>,
+    /// The relay lets a jam's members stream the songs of its host's queue: they may listen along.
+    pub along: bool,
 }
 
 /// The events this version reads; one from a newer client (an op it does not know) is passed over
@@ -327,6 +329,33 @@ pub struct Pending {
 pub struct JamState {
     pub members: Vec<JamMember>,
     pub pending: Vec<Pending>,
+    /// What guests play along by, while the host lets them.
+    #[serde(deserialize_with = "lenient")]
+    pub along: Option<Along>,
+}
+
+/// What a jam's guests need beyond the host's place to play what it plays: its speed and pitch, and the
+/// transition out of the song playing (a mix's tempo is in it).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+#[serde(rename_all = "camelCase")]
+pub struct Along {
+    pub speed: f32,
+    pub pitch: f32,
+    /// None: gapless, or not planned yet.
+    #[serde(default)]
+    pub mix: Option<Mix>,
+}
+
+/// The transition out of list index `from` into the song `into`, as the host planned it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+#[serde(rename_all = "camelCase")]
+pub struct Mix {
+    pub from: u32,
+    pub into: String,
+    /// nori-player's `TransitionPlan` as JSON, for the core to read.
+    pub plan: String,
 }
 
 #[cfg(test)]

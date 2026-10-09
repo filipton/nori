@@ -118,6 +118,7 @@ fn sample() -> StoredPrefs {
         update_beta: true,
         remote_control: true,
         jam: true,
+        jam_along: false,
         profile_per_output: false,
         auto_eq_auto: true,
         auto_eq_download: false,

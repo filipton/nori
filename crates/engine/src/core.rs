@@ -1218,6 +1218,44 @@ impl OutputVolume {
 }
 
 /// Engine settings from the core's, with loudness compensation for `volume_db` ([`OutputVolume::db`]).
+/// Plays along with a jam's host (a [`nori_core::remote::Follower`]'s lead): the host's songs queued
+/// here ([`queued_for`]) and the engine on its place.
+pub fn follow(engine: &crate::Engine, session: &Session, lead: Option<nori_core::remote::Lead>) {
+    let Some(l) = lead else {
+        engine.follow(None);
+        engine.pause();
+        return;
+    };
+    let (index, changed) = queued_for(session, &l);
+    if changed {
+        engine.queue_changed();
+    }
+    let ago_us = l.ago_us();
+    engine.follow(Some(crate::Lead { index, ms: l.ms, ago_us, rate: l.rate, playing: l.playing, speed: l.speed, pitch: l.pitch, mix: l.mix }));
+}
+
+/// Where the host's song is in this session's queue, followed by the one after it there, and whether
+/// the queue was set to the host's songs for it. The queue is set anew only when those two are not in it
+/// in a row already, so the song playing here and the one read ahead stay as they are.
+pub fn queued_for(session: &Session, l: &nori_core::remote::Lead) -> (usize, bool) {
+    let ids: Vec<String> = l.songs.iter().map(|s| s.id.clone()).collect();
+    let (at, next) = (&ids[l.index], ids.get(l.index + 1));
+    let found = session.playlist(|p| {
+        let here = p.ids();
+        // Nearest to the song playing here: the same song may be queued twice.
+        let cur = p.current().unwrap_or(0);
+        (0..here.len()).filter(|&k| here[k] == *at && here.get(k + 1) == next).min_by_key(|&k| k.abs_diff(cur))
+    });
+    match found {
+        Some(k) => (k, false),
+        None => {
+            session.register(l.songs.clone());
+            session.set(ids, Some(l.index as u32), false, None);
+            (l.index, true)
+        }
+    }
+}
+
 pub fn settings(s: &StoredPrefs, volume_db: f64) -> Settings {
     let bands = if s.eq_enabled { s.eq_bands.iter().map(|b| Band { kind: b.kind as i32, freq: b.freq as f64, gain_db: b.gain_db as f64, q: b.q as f64, channel: b.channel as i32 }).collect() } else { Vec::new() };
     let sound = if s.sound_bypass { Sound::default() } else { Sound {

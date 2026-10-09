@@ -33,11 +33,13 @@ struct State {
     none: Option<(String, u64, Option<Skip>)>,
     /// The last few plans, newest last.
     notes: Vec<TransitionNote>,
+    /// The last plan made, out of which song (None: gapless).
+    made: Option<(String, Option<Plan>)>,
 }
 
 impl State {
     const fn new() -> Self {
-        State { prefs: None, transitions_off: false, window: Vec::new(), shuffling: false, generation: 0, none: None, notes: Vec::new() }
+        State { prefs: None, transitions_off: false, window: Vec::new(), shuffling: false, generation: 0, none: None, notes: Vec::new(), made: None }
     }
 
     fn take_prefs(&mut self, prefs: TransitionPrefs) {
@@ -68,11 +70,16 @@ pub struct Planner {
     read_settings: ReadSettings,
     /// The thread measurements are finished and stored on, never the audio thread. Started on first use.
     worker: OnceLock<Mutex<Sender<Finished>>>,
+    /// Told after each plan made.
+    planned: Mutex<Option<Planned>>,
 }
+
+/// What is told of each plan made (a jam host's guests play its transitions).
+pub type Planned = Box<dyn Fn() + Send + Sync>;
 
 impl Planner {
     pub fn new(db: Arc<nori_db::Profile>, read_settings: ReadSettings) -> Arc<Planner> {
-        Arc::new(Planner { state: Mutex::new(State::new()), db, read_settings, worker: OnceLock::new() })
+        Arc::new(Planner { state: Mutex::new(State::new()), db, read_settings, worker: OnceLock::new(), planned: Mutex::new(None) })
     }
 
     /// Whether the output forbids touching samples (`AudioPolicy::transitions_off`); set whenever the
@@ -151,6 +158,10 @@ impl Planner {
             let mut p = self.state.lock();
             p.none = plan.is_none().then(|| (outgoing_id.to_string(), generation, None));
             p.note(note);
+            p.made = Some((outgoing_id.to_string(), plan.clone()));
+        }
+        if let Some(told) = &*self.planned.lock() {
+            told();
         }
         match &plan {
             None => alog::info(&format!("planFor: gapless ({})", t.reason)),
@@ -166,6 +177,16 @@ impl Planner {
             )),
         }
         plan
+    }
+
+    /// The plan last made out of `outgoing_id`: None while none was, Some(None) when gapless.
+    pub fn made(&self, outgoing_id: &str) -> Option<Option<Plan>> {
+        self.state.lock().made.as_ref().filter(|(id, _)| id == outgoing_id).map(|(_, p)| p.clone())
+    }
+
+    /// Tells `told` after each plan made, from the thread that asked for it; None stops.
+    pub fn on_plan(&self, told: Option<Planned>) {
+        *self.planned.lock() = told;
     }
 
     /// The last plan out of `outgoing_id`.

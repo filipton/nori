@@ -450,6 +450,10 @@ impl Session {
             if let Some(m) = &mdns {
                 m.serve(&r);
             }
+            // A guest listening along plays its jam's music here.
+            if self.guest {
+                r.follow_with(Some(Arc::new(crate::remote::Along { engine: self.engine.clone(), session: self.core.session.clone() })));
+            }
             self.remotes.set(Some(r.clone()));
             r
         });

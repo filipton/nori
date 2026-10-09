@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use nori_core::client::{Client, NetProfile, Starrable};
 use nori_core::library::StarsShown;
-use nori_core::remote::{jam_join, Discovery, Playing, RelaySupport, Remote, RemoteMe, RemotePlayer, RemoteShown, Sight};
+use nori_core::remote::{jam_join, Discovery, Follower, Lead, Listening, Playing, RelaySupport, Remote, RemoteMe, RemotePlayer, RemoteShown, Sight};
 use nori_core::transport::{block_on, Exchange, FailureKind, Transport, TransportError, TransportResponse};
 use nori_player::playlist::Hand;
 use nori_core::{Core, ServerConfig, Song};
@@ -84,7 +84,7 @@ struct Relay {
     absent: std::sync::atomic::AtomicBool,
     /// A device whose clock reads this much ahead (µs), and whose sends reach the relay late: see
     /// [`Relay::lagging`].
-    lagging: Mutex<Option<(String, i64)>>,
+    lagging: Mutex<Option<(String, i64, bool)>>,
     /// Sends of the lagging device so far.
     lagged: AtomicU64,
     /// A door's poll answers come back 250 ms late.
@@ -93,6 +93,8 @@ struct Relay {
     leave_late: std::sync::atomic::AtomicBool,
     /// The server cannot be reached; held polls fail once woken.
     down: std::sync::atomic::AtomicBool,
+    /// Lets jam guests stream the host's queue (listening along).
+    along: std::sync::atomic::AtomicBool,
 }
 
 fn decode(v: &str) -> String {
@@ -124,7 +126,7 @@ const GUEST_ENDPOINTS: &[&str] = &["ping", "search3", "getCoverArt", "getSong", 
 
 impl Relay {
     fn new() -> Arc<Relay> {
-        Arc::new(Relay { hub: Mutex::default(), waiting: Mutex::default(), next: AtomicU64::new(1), absent: Default::default(), lagging: Mutex::new(None), lagged: AtomicU64::new(0), door_late: Default::default(), leave_late: Default::default(), down: Default::default() })
+        Arc::new(Relay { hub: Mutex::default(), waiting: Mutex::default(), next: AtomicU64::new(1), absent: Default::default(), lagging: Mutex::new(None), lagged: AtomicU64::new(0), door_late: Default::default(), leave_late: Default::default(), down: Default::default(), along: std::sync::atomic::AtomicBool::new(true) })
     }
 
     fn absent() -> Arc<Relay> {
@@ -134,16 +136,23 @@ impl Relay {
     /// Device `dev`'s times read `skew_us` ahead as the relay passes them on. Its states reach the relay
     /// 250 ms late; its other sends every other one at once, the rest 60 to 170 ms late.
     fn lag(&self, dev: &str, skew_us: i64) {
-        *self.lagging.lock() = Some((dev.to_string(), skew_us));
+        *self.lagging.lock() = Some((dev.to_string(), skew_us, true));
+    }
+
+    /// Device `dev`'s times read `skew_us` ahead as the relay passes them on; its sends go at once.
+    fn skew(&self, dev: &str, skew_us: i64) {
+        *self.lagging.lock() = Some((dev.to_string(), skew_us, false));
     }
 
     /// The lagging device's send `body`, as it reaches the relay (late) and with its clock read ahead.
     fn lagged(&self, dev: &str, body: Option<String>) -> Option<String> {
-        let Some(skew) = self.lagging.lock().as_ref().filter(|(d, _)| d == dev).map(|(_, s)| *s) else { return body };
+        let Some((skew, slow)) = self.lagging.lock().as_ref().filter(|(d, ..)| d == dev).map(|(_, s, l)| (*s, *l)) else { return body };
         let mut out: Outgoing = serde_json::from_str(body.as_deref()?).unwrap();
         let k = self.lagged.fetch_add(1, Ordering::Relaxed);
         let late = if out.state.is_some() { 250 } else if k % 2 == 1 { 0 } else { 60 + k * 53 % 110 };
-        std::thread::sleep(Duration::from_millis(late));
+        if slow {
+            std::thread::sleep(Duration::from_millis(late));
+        }
         if let Some(at) = out.state.as_mut().and_then(|s| s.at_us.as_mut()) {
             *at += skew;
         }
@@ -269,6 +278,7 @@ impl Relay {
                     you: me.clone(),
                     rooms: rooms.iter().filter_map(|r| hub.rooms.get(r).map(|s| Room { room: r.clone(), jam: s.jam, members: s.members.clone() })).collect(),
                     events: mine(&hub),
+                    along: self.along.load(Ordering::Relaxed),
                 };
                 json(answer)
             }
@@ -1259,5 +1269,81 @@ fn a_device_never_follows_itself() {
     assert!(phone.remote.devices().iter().all(|d| d.id != me), "not listed");
     phone.remote.clone().pick(Some(me));
     assert!(phone.remote.active().is_none(), "not followed");
+    relay.close();
+}
+
+/// The leads a guest's player was given, newest last.
+#[derive(Default)]
+struct Leads(Mutex<Vec<Option<Lead>>>);
+
+impl Follower for Leads {
+    fn lead(&self, lead: Option<Lead>) {
+        self.0.lock().push(lead);
+    }
+}
+
+impl Leads {
+    fn last(&self) -> Option<Option<Lead>> {
+        self.0.lock().last().cloned()
+    }
+}
+
+#[test]
+fn jam_guests_listen_along_where_the_host_is_heard() {
+    let relay = Relay::new();
+    let host = Device::account(&relay, DeviceKind::Phone, "Host");
+    // The host's clock reads four seconds behind the guests'. (Its clock learned through late words is
+    // nori-remote's clock.rs and the engine's along.rs.)
+    relay.skew(&host.remote.id(), -4_000_000);
+    host.playing(&["s1", "s2"], 0);
+    let link = block_on(host.remote.clone().jam_open()).unwrap();
+    host.remote.clone().jam_along(true);
+    let guest_of = |name: &str| {
+        let pass = block_on(jam_join(relay.clone(), link.clone(), name.into())).unwrap();
+        let d = Device::new(&relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, name);
+        let leads = Arc::new(Leads::default());
+        d.remote.follow_with(Some(leads.clone()));
+        d.remote.clone().listen(true);
+        (d, leads)
+    };
+    let (gus, gus_leads) = guest_of("Gus");
+    let (dee, dee_leads) = guest_of("Dee");
+
+    let said = clock::now_us();
+    host.remote.clone().played(Playing { playing: true, position_ms: 30_000, rate: 1.25, index: Some(0), volume: None, ..Default::default() });
+    for (g, leads) in [(&gus, &gus_leads), (&dee, &dee_leads)] {
+        g.until("the host's place", |_| leads.last().flatten().filter(|l| l.ms >= 30_000.0));
+        assert_eq!(g.remote.jam_view().map(|v| v.listening), Some(Listening::Playing));
+    }
+    // The burst of time exchanges is over within three seconds.
+    let settled = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < settled {
+        let _ = gus.news.recv_timeout(Duration::from_millis(100));
+    }
+    for leads in [&gus_leads, &dee_leads] {
+        let l = leads.last().flatten().expect("a lead");
+        assert_eq!((l.songs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), l.index, l.rate, l.playing), (vec!["s1", "s2"], 0, 1.25, true));
+        let now = clock::now_us();
+        let off = l.ms + (now - l.at_us) as f64 / 1000.0 * l.rate - (30_000.0 + (now - said) as f64 / 1000.0 * 1.25);
+        assert!(off.abs() <= 10.0, "the guest plays {off:.1} ms off the host");
+    }
+
+    // The host stops letting its guests listen along: they stop.
+    host.remote.clone().jam_along(false);
+    for (g, leads) in [(&gus, &gus_leads), (&dee, &dee_leads)] {
+        g.until("the host's no", |r| r.jam_view().filter(|v| v.listening == Listening::HostOff));
+        assert_eq!(leads.last(), Some(None), "nothing to follow");
+    }
+    host.remote.clone().jam_along(true);
+    gus.until("listening again", |r| r.jam_view().filter(|v| v.listening == Listening::Playing));
+
+    // A server that does not let guests stream: unavailable, the jam itself still there.
+    relay.along.store(false, Ordering::Relaxed);
+    host.remote.clone().played(Playing { playing: false, position_ms: 31_000, rate: 1.25, index: Some(0), volume: None, ..Default::default() });
+    let view = gus.until("the server's no", |r| r.jam_view().filter(|v| v.listening == Listening::ServerOff));
+    assert_eq!(view.members.len(), 3);
+    assert_eq!(gus_leads.last(), Some(None));
+    gus.remote.clone().listen(false);
+    assert_eq!(gus.remote.jam_view().map(|v| v.listening), Some(Listening::Watching));
     relay.close();
 }

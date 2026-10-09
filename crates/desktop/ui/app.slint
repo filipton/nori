@@ -197,6 +197,13 @@ export global Jam {
     in property <string> strip;
     in property <string> listening;
     in property <[JamAsk]> asks;
+    // The jam's guests may listen along.
+    in property <bool> along;
+    callback set-along(bool);
+    // A guest plays the jam here, in step with the host; why it cannot when it asked to.
+    in property <bool> here;
+    in property <string> along-note;
+    callback listen(bool);
     callback start();
     callback end();
     callback copy-link();
@@ -1787,6 +1794,34 @@ component RoundButton inherits Rectangle {
     }
 }
 
+// A switch in the Mac's own manner.
+component Toggle inherits Rectangle {
+    in property <bool> on;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+    width: 38px;
+    height: 22px;
+    border-radius: 11px;
+    background: root.on ? Theme.accent : #ffffff29;
+    opacity: root.enabled ? 1 : 0.4;
+    animate background { duration: 160ms; easing: ease-out; }
+    Rectangle {
+        x: root.on ? parent.width - self.width - 2px : 2px;
+        animate x { duration: 180ms; easing: cubic-bezier(0.3, 1.2, 0.6, 1); }
+        y: 2px;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: white;
+        drop-shadow-blur: 3px;
+        drop-shadow-color: #00000050;
+    }
+    TouchArea {
+        enabled: root.enabled;
+        clicked => { root.toggled(!root.on); }
+    }
+}
+
 // A person's initial in a circle, coloured by their place in the jam.
 component Avatar inherits Rectangle {
     in property <string> initial;
@@ -1848,7 +1883,37 @@ component JamHeader inherits VerticalLayout {
             vertical-alignment: center;
             overflow: elide;
         }
-        // A guest's "Listen here" (playing along in sync) goes here, where the host has Invite.
+        // A guest plays the jam here or only watches it, where the host has Invite.
+        if Jam.guest: Rectangle {
+            y: (parent.height - self.height) / 2;
+            height: 26px;
+            width: hl.preferred-width + 34px;
+            border-radius: 13px;
+            background: Jam.here ? (ha.has-hover ? Theme.accent.brighter(0.15) : Theme.accent) : (ha.has-hover ? #ffffff2b : #ffffff1a);
+            animate background { duration: 140ms; easing: ease-out; }
+            HorizontalLayout {
+                alignment: center;
+                spacing: 5px;
+                Icon {
+                    y: (parent.height - self.height) / 2;
+                    path: Icons.speaker;
+                    colour: Jam.here ? white : Theme.text;
+                    weight: 2px;
+                    width: 13px;
+                    height: 13px;
+                }
+                hl := Text {
+                    text: Jam.here ? "Playing Here" : "Listen Here";
+                    color: Jam.here ? white : Theme.text;
+                    font-size: 12px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+            ha := TouchArea {
+                clicked => { Jam.listen(!Jam.here); }
+            }
+        }
         if !Jam.guest: Rectangle {
             y: (parent.height - self.height) / 2;
             height: 26px;
@@ -1878,6 +1943,13 @@ component JamHeader inherits VerticalLayout {
                 clicked => { invite.show(); }
             }
         }
+    }
+    if Jam.along-note != "": Text {
+        text: Jam.along-note;
+        color: Theme.dim;
+        font-size: 11px;
+        wrap: word-wrap;
+        x: 4px;
     }
     // Who listens: their avatars overlapping and how many; the people popover on a click.
     HorizontalLayout {
@@ -2092,6 +2164,32 @@ component JamHeader inherits VerticalLayout {
             VerticalLayout {
                 padding: 8px;
                 spacing: 0;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 6px;
+                    padding-bottom: 6px;
+                    spacing: 10px;
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: "Let Guests Listen Along";
+                            color: Theme.text;
+                            font-size: 13px;
+                        }
+                        Text {
+                            text: "They hear the music on their own phones, in step with this Mac.";
+                            color: Theme.dim;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+                    }
+                    Toggle {
+                        y: (parent.height - self.height) / 2;
+                        on: Jam.along;
+                        toggled(v) => { Jam.set-along(v); }
+                    }
+                }
                 Text {
                     text: "People";
                     color: Theme.dim;
@@ -2467,34 +2565,6 @@ component QueueView inherits Rectangle {
                 }
             }
         }
-    }
-}
-
-// A switch in the Mac's own manner.
-component Toggle inherits Rectangle {
-    in property <bool> on;
-    in property <bool> enabled: true;
-    callback toggled(bool);
-    width: 38px;
-    height: 22px;
-    border-radius: 11px;
-    background: root.on ? Theme.accent : #ffffff29;
-    opacity: root.enabled ? 1 : 0.4;
-    animate background { duration: 160ms; easing: ease-out; }
-    Rectangle {
-        x: root.on ? parent.width - self.width - 2px : 2px;
-        animate x { duration: 180ms; easing: cubic-bezier(0.3, 1.2, 0.6, 1); }
-        y: 2px;
-        width: 18px;
-        height: 18px;
-        border-radius: 9px;
-        background: white;
-        drop-shadow-blur: 3px;
-        drop-shadow-color: #00000050;
-    }
-    TouchArea {
-        enabled: root.enabled;
-        clicked => { root.toggled(!root.on); }
     }
 }
 

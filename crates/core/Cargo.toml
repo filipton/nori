@@ -26,7 +26,7 @@ parking_lot = "0.12"
 # A refill's album reads side by side rather than one after another.
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # How music is played - the sound chain and AutoMix - lives in the shared player crate.
-nori-player = { path = "../player" }
+nori-player = { path = "../player", features = ["serde"] }
 nori-look = { path = "../look" }
 nori-model = { path = "../model" }
 nori-db = { path = "../db" }
