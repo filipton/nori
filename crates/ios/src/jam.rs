@@ -19,6 +19,8 @@ pub const JOIN_NOT_AN_INVITE: i32 = 1;
 pub const JOIN_CLOSED: i32 = 2;
 /// The invite is to the jam this iPod hosts.
 pub const JOIN_OWN: i32 = 3;
+/// The invite is to a jam this iPod opened, ended since. One the server says ended is reported as flag 2.
+pub const JOIN_ENDED: i32 = 4;
 
 /// `r` for the app: `{"asks", "account", "sections": [LibrarySection as numbers, in order], "settings":
 /// [SettingsPart as numbers]}`.
@@ -91,16 +93,19 @@ pub unsafe extern "C" fn nori_ios_jam_join(link: *const c_char, name: *const c_c
         return JOIN_NOT_AN_INVITE;
     }
     let Some((app, remote)) = with_session(|s| (s.core.session.clone(), s.remote())) else { return JOIN_CLOSED };
-    if remote.as_ref().is_some_and(|r| r.hosts_invite(link.clone())) {
-        return JOIN_OWN;
+    match nori_core::remote::own_invite(app.settings.clone(), remote.clone(), link.clone()) {
+        Some(nori_core::remote::JamJoin::Own) => return JOIN_OWN,
+        Some(_) => return JOIN_ENDED,
+        None => {}
     }
-    nori_host::spawn("nori-ios-jam-join", move || match nori_host::jam_join(nori_http::Http::new(), &app.settings, link, DEVICE_NAME, remote.as_deref()) {
+    nori_host::spawn("nori-ios-jam-join", move || match nori_host::jam_join(nori_http::Http::new(), &app.settings, link, DEVICE_NAME, remote) {
         Ok(pass) => {
             nori_host::jam_joined(&app.settings, pass, &name);
             report(REPORT_JAM_JOINED, 1, 0, "");
         }
         // Answered above, before joining started.
         Err(nori_host::JoinError::Own) => {}
+        Err(nori_host::JoinError::Ended) => report(REPORT_JAM_JOINED, 2, 0, ""),
         Err(nori_host::JoinError::Failed(e)) => {
             let (code, detail) = crate::account::fail(e);
             report(REPORT_JAM_JOINED, 0, code, &detail.unwrap_or_default());

@@ -197,6 +197,7 @@ enum JamJoin {
         case NORI_JOIN_STARTED: Toast.show(Say.joining)
         case NORI_JOIN_NOT_AN_INVITE: Toast.show(Say.notAnInvite)
         case NORI_JOIN_OWN: Toast.show(Say.ownJam)
+        case NORI_JOIN_ENDED: Toast.show(Say.jamInviteEnded)
         default: waiting = link
         }
     }

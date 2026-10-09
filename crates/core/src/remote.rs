@@ -34,6 +34,7 @@ use serde::Deserialize;
 use crate::client::Client;
 use crate::transport::{self, block_on, Exchange, NetError, Transport};
 use crate::{api, db, Param, Song};
+use nori_settings::settings_store::Settings;
 
 /// The frames, for clients that speak them (the terminal and desktop host).
 pub use nori_remote::wire;
@@ -1312,6 +1313,7 @@ impl Remote {
             }
             i.opening = None;
             i.relay = RelaySupport::Supported;
+            remember_hosted(&self.client.core.session.settings, &opened.invite);
             let along = self.client.core.session.settings.current().is_some_and(|p| p.jam_along);
             i.hosted = Some(Hosted { jam: Jam::new(opened.room, opened.invite, self.id.clone(), self.me.name.clone()), link: link.clone(), along });
             i.published = None;
@@ -1399,13 +1401,6 @@ impl Remote {
                 self.out(Out::send(Link::Relay, Outgoing { room: Some(room), to: Some(host), body: Some(Body::Command { id, op: Box::new(op) }), state: None }));
             }
         }
-    }
-
-    /// Whether `link` invites to the jam this device hosts: joining it would make this device a guest
-    /// of itself, and the jam would end with the profile it was opened from.
-    pub fn hosts_invite(&self, link: String) -> bool {
-        let Some((_, invite)) = nori_remote::parse_invite(&link) else { return false };
-        self.inner.lock().hosted.as_ref().is_some_and(|h| h.jam.invite == invite)
     }
 
     /// The jam this device hosts or is a guest in.
@@ -1566,18 +1561,75 @@ impl Remote {
     }
 }
 
-/// Joins the jam `link` invites to as `name`; what the guest's profile signs in with.
+/// What joining a jam's invite came to.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum JamJoin {
+    /// A guest now: what its profile signs in with.
+    Joined { pass: JamPass },
+    /// The invite is to the jam this device hosts: joining would make it a guest of itself.
+    Own,
+    /// The jam has ended: nothing changes.
+    Ended,
+}
+
+/// The app's key for the invites of the jams this device opened, newest last, one a line.
+const HOSTED_INVITES: &str = "remoteHostedInvites";
+
+/// Invites [`HOSTED_INVITES`] keeps.
+const HOSTED_KEPT: usize = 16;
+
+fn hosted_invites(settings: &Settings) -> Vec<String> {
+    settings.app_value(HOSTED_INVITES).map(|v| v.lines().map(str::to_string).collect()).unwrap_or_default()
+}
+
+/// Keeps `invite` among the jams this device opened, so it is known as its own once the jam ended too.
+fn remember_hosted(settings: &Settings, invite: &str) {
+    let mut kept = hosted_invites(settings);
+    kept.push(invite.to_string());
+    let from = kept.len().saturating_sub(HOSTED_KEPT);
+    let Some(db) = settings.app_db() else { return };
+    // Written here rather than on the settings' writer: an invite opened at once is to read it.
+    let written = db.lock().execute("INSERT OR REPLACE INTO app_kv(key, value) VALUES(?1, ?2)", rusqlite::params![HOSTED_INVITES, kept[from..].join("\n")]);
+    if let Err(e) = written {
+        crate::alog::info(&format!("{HOSTED_INVITES}: could not write: {e}"));
+    }
+}
+
+/// What joining `link` comes to without asking the server: [`JamJoin::Own`] for the jam this device
+/// (`remote`) hosts, [`JamJoin::Ended`] for another it opened; None for anyone else's.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub async fn jam_join(transport: Arc<dyn Transport>, link: String, name: String) -> Result<JamPass, NetError> {
+pub fn own_invite(settings: Arc<Settings>, remote: Option<Arc<Remote>>, link: String) -> Option<JamJoin> {
+    let (_, invite) = nori_remote::parse_invite(&link)?;
+    if remote.is_some_and(|r| r.inner.lock().hosted.as_ref().is_some_and(|h| h.jam.invite == invite)) {
+        return Some(JamJoin::Own);
+    }
+    hosted_invites(&settings).contains(&invite).then_some(JamJoin::Ended)
+}
+
+/// Joins the jam `link` invites to as `name`, unless it is this device's own ([`own_invite`]) or the
+/// server no longer knows the invite.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub async fn jam_join(transport: Arc<dyn Transport>, settings: Arc<Settings>, remote: Option<Arc<Remote>>, link: String, name: String) -> Result<JamJoin, NetError> {
     #[derive(Deserialize)]
     struct Joined {
         key: String,
     }
+    if let Some(own) = own_invite(settings, remote, link.clone()) {
+        return Ok(own);
+    }
     let (server, invite) = nori_remote::parse_invite(&link).ok_or_else(|| NetError::Parse { reason: "not a jam invite".into() })?;
     let url = api::Server::with(&server, api::Auth::ApiKey(&nori_remote::guest_key(&invite))).url("noriRemote.join", &[("name".into(), name)]);
-    let body = transport::get(&*transport, url, 0).await?;
+    let body = match transport::get(&*transport, url, 0).await {
+        Err(NetError::Http { status: 401 }) => return Ok(JamJoin::Ended),
+        got => got?,
+    };
+    // The relay takes an invite only while its jam lasts.
+    if refusal_code(&body) == Some(40) {
+        return Ok(JamJoin::Ended);
+    }
     let joined: Joined = serde_json::from_slice(&body).map_err(|e| NetError::Parse { reason: e.to_string() })?;
-    Ok(JamPass { url: server, api_key: nori_remote::guest_key(&joined.key) })
+    Ok(JamJoin::Joined { pass: JamPass { url: server, api_key: nori_remote::guest_key(&joined.key) } })
 }
 
 /// What a client calls each kind of device, for [`device_names`].

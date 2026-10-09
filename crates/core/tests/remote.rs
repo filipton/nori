@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use nori_core::client::{Client, NetProfile, Starrable};
 use nori_core::library::StarsShown;
-use nori_core::remote::{jam_join, Controls, JamStart, Discovery, Follower, JamControls, Lead, Listening, Playing, Reach, RelaySupport, Remote, RemoteMe, RemotePlayer, RemoteShown, Sight};
+use nori_core::remote::{jam_join, Controls, JamJoin, JamStart, Discovery, Follower, JamControls, Lead, Listening, Playing, Reach, RelaySupport, Remote, RemoteMe, RemotePlayer, RemoteShown, Sight};
 use nori_core::transport::{block_on, Exchange, FailureKind, Transport, TransportError, TransportResponse};
 use nori_player::playlist::Hand;
 use nori_core::{Core, ServerConfig, Song};
@@ -202,7 +202,6 @@ impl Relay {
     fn jams(&self) -> usize {
         self.hub.lock().rooms.values().filter(|r| r.jam).count()
     }
-
 
     fn close(&self) {
         let mut hub = self.hub.lock();
@@ -568,6 +567,15 @@ fn opened(d: &Device) -> String {
     block_on(d.remote.clone().jam_open()).unwrap().expect("a jam opened")
 }
 
+/// Joins the jam `link` invites to from a device of no account, as `name`; its pass.
+fn joined(relay: &Arc<Relay>, link: String, name: String) -> nori_core::remote::JamPass {
+    let settings = nori_core::settings_store::Settings::new();
+    match block_on(jam_join(relay.clone(), settings, None, link, name)).unwrap() {
+        JamJoin::Joined { pass } => pass,
+        other => panic!("not joined: {other:?}"),
+    }
+}
+
 /// Waits for `ready`, for what does not tell a device's change notices (the relay's own state).
 fn eventually(what: &str, ready: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -711,7 +719,7 @@ fn a_jam_takes_requests_through_its_host() {
     assert!(link.starts_with("http://octo:5274/nori/jam#s=http%3A%2F%2Focto%3A5274&k="), "{link}");
 
     let guest_of = |name: &str| {
-        let pass = block_on(jam_join(relay.clone(), link.clone(), name.into())).unwrap();
+        let pass = joined(&relay, link.clone(), name.into());
         assert_eq!(pass.url, SERVER);
         let d = Device::new(&relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, name);
         d.remote.clone().watch(true);
@@ -791,7 +799,7 @@ fn a_jam_opened_while_a_poll_is_held_hears_its_first_request() {
     let link = opened(&host);
 
     // A guest asks at once, before anything else happens in the account's room.
-    let pass = block_on(jam_join(relay.clone(), link, "Gus".into())).unwrap();
+    let pass = joined(&relay, link, "Gus".into());
     let gus = Device::new(&relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, "Gus");
     gus.remote.clone().watch(true);
     gus.until("the host's state", |r| r.jam_view().filter(|v| v.queue.is_some()));
@@ -1443,7 +1451,7 @@ fn jam_guests_listen_along_by_the_relays_clock() {
     host.playing(&["s1", "s2"], 0);
     let link = opened(&host);
     host.remote.clone().jam_along(true);
-    let pass = block_on(jam_join(relay.clone(), link, "Gus".into())).unwrap();
+    let pass = joined(&relay, link, "Gus".into());
     let gus = Device::new(&relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, "Gus");
     let leads = Arc::new(Leads::default());
     gus.remote.follow_with(Some(leads.clone()));
@@ -1512,7 +1520,7 @@ fn jam_guests_listen_along_where_the_host_is_heard() {
     let link = opened(&host);
     host.remote.clone().jam_along(true);
     let guest_of = |name: &str| {
-        let pass = block_on(jam_join(relay.clone(), link.clone(), name.into())).unwrap();
+        let pass = joined(&relay, link.clone(), name.into());
         let d = Device::new(&relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, name);
         let leads = Arc::new(Leads::default());
         d.remote.follow_with(Some(leads.clone()));
@@ -1580,7 +1588,7 @@ fn a_guest_leaving_its_jam_stops_playing_along_at_once() {
     host.playing(&["s1", "s2"], 0);
     let link = opened(&host);
     host.remote.clone().jam_along(true);
-    let pass = block_on(jam_join(relay.clone(), link, "Gus".into())).unwrap();
+    let pass = joined(&relay, link, "Gus".into());
     let gus = Device::new(&relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, "Gus");
     let leads = Arc::new(Leads::default());
     gus.remote.follow_with(Some(leads.clone()));
@@ -1597,19 +1605,32 @@ fn a_guest_leaving_its_jam_stops_playing_along_at_once() {
     relay.close();
 }
 
+/// Its own invite, to the jam open or one it ended (also after the app started again), changes nothing
+/// and asks nothing; anyone's ended jam is told apart from a failure by the relay's answer.
 #[test]
-fn a_device_knows_its_own_jams_invite() {
+fn a_device_knows_its_own_jams_invites_and_ended_ones() {
+    let dir = nori_testdir::TempDir::new("remote-invites");
     let relay = Relay::new();
-    let host = Device::account(&relay, DeviceKind::Phone, "Host");
+    let host = Device::kept(&relay, &dir, DeviceKind::Phone, "Host");
     let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    let join = |d: &Device, link: &str| block_on(jam_join(relay.clone(), d.core.session.settings.clone(), Some(d.remote.clone()), link.into(), "Me".into())).unwrap();
     let link = opened(&host);
     let app_link = link.replacen("http://octo:5274/nori/jam#", "nori://jam?", 1);
-    assert!(host.remote.hosts_invite(link.clone()) && host.remote.hosts_invite(app_link));
-    assert!(!desk.remote.hosts_invite(link.clone()), "another device of the account may join");
-    let desks = opened(&desk);
-    assert!(!host.remote.hosts_invite(desks));
+    assert_eq!((join(&host, &link), join(&host, &app_link)), (JamJoin::Own, JamJoin::Own));
+
     host.remote.clone().jam_close();
-    assert!(!host.remote.hosts_invite(link));
+    assert_eq!(join(&host, &link), JamJoin::Ended);
+    host.remote.clone().stop();
+    let again = Device::kept(&relay, &dir, DeviceKind::Phone, "Host");
+    assert_eq!(join(&again, &link), JamJoin::Ended, "after the app started again");
+    assert_eq!(relay.asked_for("noriRemote.join"), 0, "the relay was not asked");
+    assert!(again.remote.jam_view().is_none());
+
+    let desks = opened(&desk);
+    assert!(matches!(join(&again, &desks), JamJoin::Joined { .. }), "another device of the account may join");
+    desk.remote.clone().jam_close();
+    eventually("the desk's jam closed", || relay.jams() == 0);
+    assert_eq!(join(&again, &desks), JamJoin::Ended);
     relay.close();
 }
 
@@ -1687,7 +1708,7 @@ fn ending_a_jam_being_started_cancels_it() {
 /// A guest of `host`'s jam `link`, listening along: its leads.
 fn listening_guest(relay: &Arc<Relay>, host: &Device, link: String) -> (Device, Arc<Leads>) {
     host.remote.clone().jam_along(true);
-    let pass = block_on(jam_join(relay.clone(), link, "Gus".into())).unwrap();
+    let pass = joined(relay, link, "Gus".into());
     let gus = Device::new(relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, "Gus");
     let leads = Arc::new(Leads::default());
     gus.remote.follow_with(Some(leads.clone()));
@@ -1731,7 +1752,7 @@ fn a_guest_profile_opened_after_its_jam_ended_hears_so_at_once() {
     let relay = Relay::new();
     let host = Device::account(&relay, DeviceKind::Phone, "Host");
     let link = opened(&host);
-    let pass = block_on(jam_join(relay.clone(), link, "Gus".into())).unwrap();
+    let pass = joined(&relay, link, "Gus".into());
     host.remote.clone().jam_close();
     // The app opens again on the guest profile: its first look at the jam finds it gone.
     let gus = Device::new(&relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, "Gus");
@@ -1766,7 +1787,7 @@ fn jam_controls_reach_by_role() {
     let link = opened(&host);
     host.remote.clone().jam_along(true);
     let guest_of = |name: &str| {
-        let pass = block_on(jam_join(relay.clone(), link.clone(), name.into())).unwrap();
+        let pass = joined(&relay, link.clone(), name.into());
         let d = Device::new(&relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, name);
         d.remote.follow_with(Some(Arc::new(Leads::default())));
         d.remote.clone().listen(true);
@@ -1803,3 +1824,4 @@ fn jam_controls_reach_by_role() {
     assert_eq!(host.told(), Op::Next);
     relay.close();
 }
+

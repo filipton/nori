@@ -332,13 +332,14 @@ char *nori_ios_rules(void);
 /// lets no guest}. Its asks are its own requests the host has yet to take.
 char *nori_ios_jam(void);
 /// Joins the jam invite `link` is to, its guest profile named `name`. NORI_JOIN_STARTED: report 20 says
-/// how it went (flag 1 joined: open the active profile; flag 0: index a NORI_LOGIN_* code, text its
-/// detail).
+/// how it went (flag 1 joined: open the active profile; flag 2: the jam has ended; flag 0: index a
+/// NORI_LOGIN_* code, text its detail).
 int32_t nori_ios_jam_join(const char *link, const char *name);
 #define NORI_JOIN_STARTED 0
 #define NORI_JOIN_NOT_AN_INVITE 1
 #define NORI_JOIN_CLOSED 2
 #define NORI_JOIN_OWN 3
+#define NORI_JOIN_ENDED 4
 /// Leaves the jam; report 21 once the guest profile is dropped (flag 1: open the active profile, the
 /// user's own again; 0: none is saved).
 void nori_ios_jam_leave(void);

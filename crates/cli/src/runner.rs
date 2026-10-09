@@ -539,7 +539,7 @@ impl Runner {
             Cmd::JoinJam(link) => {
                 let (http, tx, remote) = (self.http.clone(), self.tx.clone(), self.session.as_ref().and_then(|s| s.remote()));
                 nori_host::spawn("nori-jam-join", move || {
-                    let joined = nori_host::jam_join(http, &crate::backend::app().settings, link, &nori_host::device_name(), remote.as_deref());
+                    let joined = nori_host::jam_join(http, &crate::backend::app().settings, link, &nori_host::device_name(), remote);
                     let _ = tx.send(Msg::Joined(joined.map_err(|e| crate::text::jam_join_failed(&e))));
                 });
                 return;

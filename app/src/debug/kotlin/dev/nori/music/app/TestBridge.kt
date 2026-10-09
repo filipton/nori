@@ -122,7 +122,7 @@ private fun remoteCheck(nori: dev.nori.music.Nori, arg: String, value: String): 
         "ask" -> kotlinx.coroutines.runBlocking { nori.library.search(value).songs.firstOrNull() }?.let { s ->
             r()?.jamAct(dev.nori.music.ffi.remote.Op.Request(s)); "asked for ${s.title}"
         } ?: "nothing found"
-        "join" -> { kotlinx.coroutines.runBlocking { nori.joinJam(value) }; "joined" }
+        "join" -> kotlinx.coroutines.runBlocking { nori.joinJam(value) }.toString()
         // "found <host>|<port>|<k=v;k=v>": a door as mDNS would find it (the emulator sees no multicast
         // from the host); the TXT as `dns-sd -L` prints it.
         "found" -> {

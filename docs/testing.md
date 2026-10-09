@@ -176,7 +176,9 @@ is Android glue and stays on the device. 50 moved, 60 stay.
   `--only jam` hosts a jam on the emulator against octo-fiesta's real relay (the local one on 5274,
   `NORI_E2E_JAM`) with two guests on this Mac (`tools/jam-guest.py`, the relay's frames in Python): what only
   the device shows is the jam in the player, its queue and the devices sheet, requests arriving live and
-  decided by tapping (the accessibility tree's Accept and Refuse), and the accepted song playing. Then the
+  decided by tapping (the accessibility tree's Accept and Refuse), and the accepted song playing; once ended,
+  its own old invite opened through the system's intent saying the jam ended and changing nothing, and a new
+  one starting at once (which invites are its own and what an ended one does are tests/remote.rs'). Then the
   emulator is a guest of a jam on the relay's server hosted on this Mac (`tools/jam-host.py`) while its own
   profile is the home server's: the invite opening the guest's player, a tap asking, Leave returning home.
   Listening along there is the playback service's own (media3's foreground service and notification, the

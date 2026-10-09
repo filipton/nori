@@ -1180,7 +1180,7 @@ impl App {
         ui.set_join_error("".into());
         let (http, tx, remote) = (self.http.clone(), self.tx.clone(), self.session.as_ref().and_then(|s| s.remote()));
         nori_host::spawn("nori-jam-join", move || {
-            let joined = nori_host::jam_join(http, &session::app().settings, link, &nori_host::device_name(), remote.as_deref());
+            let joined = nori_host::jam_join(http, &session::app().settings, link, &nori_host::device_name(), remote);
             tx.send(Msg::Joined(joined.map_err(|e| words::jam_join_failed(&e))))
         });
     }

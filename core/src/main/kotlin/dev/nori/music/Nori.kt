@@ -121,19 +121,19 @@ class Nori private constructor(private val context: Context) {
     val player = PlayerConnection(context, this)
 
     /**
-     * Joins the jam an invite [link] names: the guest profile it gives is the one in use from now on, and
-     * leaving drops it again (the profile in use before takes over).
+     * Joins the jam an invite [link] names (the core's `jam_join`, which knows this phone's own invites):
+     * once joined, the guest profile it gives is the one in use, and leaving drops it again (the profile
+     * in use before takes over). What it came to.
      */
-    suspend fun joinJam(link: String) = withContext(Dispatchers.IO) {
-        if (remotes.peek()?.hostsInvite(link) == true) throw OwnJamException()
-        val pass = lifted { dev.nori.music.ffi.jamJoin(transport, link, dev.nori.music.remote.Remotes.deviceName(context)) }
-        val guest = dev.nori.music.settings.newServer(dev.nori.music.ffi.settings.serverNewId())
-            .copy(name = context.getString(dev.nori.music.core.R.string.jam_profile), url = pass.url, apiKey = pass.apiKey)
-        withContext(Dispatchers.Main) { activate(guest) }
+    suspend fun joinJam(link: String): dev.nori.music.ffi.JamJoin = withContext(Dispatchers.IO) {
+        val joined = lifted { dev.nori.music.ffi.jamJoin(transport, settings.core, remotes.peek(), link, dev.nori.music.remote.Remotes.deviceName(context)) }
+        if (joined is dev.nori.music.ffi.JamJoin.Joined) {
+            val guest = dev.nori.music.settings.newServer(dev.nori.music.ffi.settings.serverNewId())
+                .copy(name = context.getString(dev.nori.music.core.R.string.jam_profile), url = joined.pass.url, apiKey = joined.pass.apiKey)
+            withContext(Dispatchers.Main) { activate(guest) }
+        }
+        joined
     }
-
-    /** The invite [joinJam] was given is to the jam this phone hosts. */
-    class OwnJamException : Exception("the jam this device hosts")
 
     /**
      * Leaves the jam this guest profile is in, at once: its music stops, the profile goes and the one in

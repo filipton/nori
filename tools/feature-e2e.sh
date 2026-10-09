@@ -464,6 +464,17 @@ print(next(json.dumps({'id':s['id'],'title':s['title'],'artist':s['artist'],'cov
     check "End Jam ends it for the guests" wait_until 15 grep -q "the jam is over" "$guests/gus.log"
     check "and here" wait_until 10 bash -c "'$app' remote view | grep -q 'no jam'"
     kill $gus $dee 2>/dev/null
+    # Its own invite to the jam it ended changes nothing, and a new one starts at once.
+    adb shell am start -a android.intent.action.VIEW -d "'$link'" >/dev/null 2>&1
+    check "its ended jam's invite says so" wait_until 10 on_screen 'text="This Jam has ended"'
+    check "on its own profile, in no jam" bash -c "'$app' remote view | grep -q 'no jam'"
+    check "no jam under the song" off_screen 'text="Jam · '
+    "$app" open devices >/dev/null
+    check "the devices sheet offers a jam again" wait_until 10 on_screen 'text="Start a Jam"'
+    tapnode text "Start a Jam"
+    check "and it starts at once" wait_until 5 on_screen 'text="End Jam"'
+    tapnode text "End Jam"
+    check "and ends" wait_until 10 bash -c "'$app' remote view | grep -q 'no jam'"
     "$app" set jam false >/dev/null
     "$app" login "$APP_URL|$USER|$PASS" >/dev/null; wait_for server "$APP_URL" 30 >/dev/null
 
