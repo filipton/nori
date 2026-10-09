@@ -499,10 +499,57 @@ print(json.dumps({k:s.get(k) for k in ['id','title','artist','album','albumId','
     check "the host's queue says it was asked for here" wait_until 10 on_screen 'content-desc="Added by '
     tapnode text "Listen here"
     check "Listen here plays the host's music on this phone" sounds 30
+    # Listening along is playback as any other: the service in the foreground, its notification the
+    # jam's song with whose jam it is, on through the background and the screen off (the deep buffer's
+    # bursts keep coming).
+    jam_notified() { adb shell dumpsys notification --noredact | grep -A40 'pkg=dev.nori.music' | grep -q 'android.subText=String (Jam · Mac Host)'; }
+    check "the notification says whose jam it is" wait_until 10 jam_notified
+    in_foreground() { adb shell dumpsys activity services dev.nori.music | grep -q 'isForeground=true'; }
+    adb shell input keyevent 3
+    adb shell input keyevent 26
+    check "in the background, screen off, the service stays in the foreground" in_foreground
+    check "and the music goes on" bursts_continue
+    check "and on" bursts_continue
+    "$app" wake >/dev/null
+    "$app" launch >/dev/null
+    check "back in the app, the jam plays here" wait_for playing True 10
+    # A plain guest's pause holds its own listening (the host plays on); play joins the jam where it is then.
+    "$app" do pause >/dev/null
+    check "a guest's pause is its own" silent 10
+    check "the player says the jam plays on" wait_until 10 on_screen 'text="Paused here · Jam still playing"'
+    "$app" do resume >/dev/null
+    check "play joins the jam again" sounds 15
+    check "the strip says the jam again" wait_until 10 off_screen 'text="Paused here · Jam still playing"'
     tapnode text Leave
     check "leaving returns to the home server" wait_for server "$APP_URL" 20
     check "and its music stops at once" silent 5
     check "the host saw it leave" wait_until 15 grep -q "left:" "$guests/host.log"
+    kill $host 2>/dev/null
+
+    # An admin's controls are the host's: its pause pauses the jam (and so here), its play and skip too.
+    echo "  -- an admin of a jam on another server"
+    rm -f "$guests/admin-host.log"
+    NORI_JAM_ADMINS=1 python3 "$here/jam-host.py" "$jam_server" admin admin "$(relay_song 'Long%20Track%2004')" "$(relay_song 'Long%20Track%2005')" > "$guests/admin-host.log" 2>&1 & host=$!
+    wait_until 15 grep -qs invite: "$guests/admin-host.log"
+    link=$(grep invite: "$guests/admin-host.log" | cut -d' ' -f2)
+    adb shell am start -a android.intent.action.VIEW -d "'$link'" >/dev/null 2>&1
+    check "the invite opens the player on the host's jam" wait_until 20 on_screen 'text="Listen here"'
+    tapnode text "Listen here"
+    check "Listen here plays the host's music" sounds 30
+    check "an admin skips" wait_until 10 on_screen 'content-desc="Next"'
+    "$app" do pause >/dev/null
+    check "an admin's pause is the host's" wait_until 15 grep -q "obeyed: pause" "$guests/admin-host.log"
+    check "and pauses here with it" silent 15
+    "$app" do resume >/dev/null
+    check "its play is the host's" wait_until 15 grep -q "obeyed: play" "$guests/admin-host.log"
+    check "and plays here with it" sounds 15
+    "$app" do next >/dev/null
+    check "its skip is the host's" wait_until 15 grep -q "obeyed: next" "$guests/admin-host.log"
+    check "and here it plays the host's next song" wait_for title "Long Track 05" 20
+    tapnode text Leave
+    check "leaving returns to the home server" wait_for server "$APP_URL" 20
+    kill $host 2>/dev/null
+
     "$app" play "$LYRICS_SONG" >/dev/null
     check "a song played after leaving plays here" sounds 20
     check "it is the one picked" wait_for title "${LYRICS_SONG#search:}" 10
