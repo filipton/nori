@@ -48,7 +48,7 @@ final class QueueSheet: UIViewController, UITableViewDataSource, UITableViewDele
 
     deinit { if token != 0 { Core.shared.forget(token) } }
 
-    override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+    override var preferredStatusBarStyle: UIStatusBarStyle { Theme.statusBar }
 
     override func viewDidLoad() {
         super.viewDidLoad()

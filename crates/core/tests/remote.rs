@@ -1135,6 +1135,32 @@ fn a_command_shows_until_the_device_says_it_carried_it_out() {
     relay.close();
 }
 
+/// The device says it carried a pause out in a state published before its player has paused (the player
+/// takes a moment): the controller goes on showing the pause until the player's own word.
+#[test]
+fn a_pause_stays_shown_through_the_devices_word_that_it_got_it() {
+    let relay = Relay::new();
+    let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    phone.playing(&["s1", "s2"], 0);
+    phone.remote.clone().serve(true);
+    let phone_id = phone.remote.id();
+    desk.remote.clone().watch(true);
+    desk.until("the phone", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state));
+    desk.remote.clone().pick(Some(phone_id.clone()));
+    desk.until("the phone mirrored", |r| r.active().filter(|m| m.playing));
+
+    desk.remote.clone().send(phone_id.clone(), Op::Pause);
+    assert_eq!(phone.told(), Op::Pause);
+    // The phone's next state carries the answer, its player still playing.
+    phone.remote.clone().volume_changed(Some(41));
+    let m = desk.until("the phone's answer", |r| r.active().filter(|m| m.volume == Some(41)));
+    assert!(!m.playing, "the pause is still shown");
+    phone.remote.clone().played(Playing { playing: false, position_ms: 5_400, index: None, volume: Some(41), ..Default::default() });
+    desk.until("the phone paused", |r| r.active().filter(|m| !m.playing && m.position_ms == 5_400));
+    relay.close();
+}
+
 /// Where the device's listener is at `now_us`, playing on from `position_ms` said at `said_us`.
 fn heard_at(position_ms: i64, said_us: i64, now_us: i64) -> i64 {
     position_ms + (now_us - said_us) / 1000
@@ -1544,20 +1570,24 @@ fn listening_guest(relay: &Arc<Relay>, host: &Device, link: String) -> (Device, 
 
 #[test]
 fn a_guest_hears_its_jam_end_and_stops_playing_along() {
-    // Ended by the host, or forgotten by the relay (its key no longer signs in).
-    for restarted in [false, true] {
+    // Ended by the host, this guest sent out by it, or forgotten by the relay (its key no longer signs in).
+    for how in ["closed", "kicked", "restarted"] {
         let relay = Relay::new();
         let host = Device::account(&relay, DeviceKind::Phone, "Host");
         host.playing(&["s1", "s2"], 0);
         let link = block_on(host.remote.clone().jam_open()).unwrap();
         let (gus, leads) = listening_guest(&relay, &host, link);
-        if restarted {
-            relay.restart();
-        } else {
-            host.remote.clone().jam_close();
+        match how {
+            "closed" => host.remote.clone().jam_close(),
+            "kicked" => {
+                let you = gus.until("its place in the jam", |r| r.jam_view()).you;
+                host.until("its guest", |r| r.jam_view().filter(|v| v.members.iter().any(|m| m.id == you)));
+                host.remote.clone().jam_act(Op::Kick { member: you });
+            }
+            _ => relay.restart(),
         }
-        gus.until(if restarted { "the end, restarted" } else { "the end, closed" }, |_| (!gus.ended.lock().is_empty()).then_some(()));
-        assert_eq!(*gus.ended.lock(), [Some("Host".to_string())], "restarted: {restarted}");
+        gus.until(&format!("the end, {how}"), |_| (!gus.ended.lock().is_empty()).then_some(()));
+        assert_eq!(*gus.ended.lock(), [Some("Host".to_string())], "{how}");
         assert_eq!(leads.last(), Some(None), "nothing to follow");
         assert!(gus.remote.jam_view().is_none());
         gus.remote.clone().stop();

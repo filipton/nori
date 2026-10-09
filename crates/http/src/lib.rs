@@ -85,6 +85,8 @@ fn failure(e: ureq::Error) -> TransportError {
             ErrorKind::ConnectionRefused => FailureKind::Connect,
             ErrorKind::TimedOut => FailureKind::Timeout,
             ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted | ErrorKind::UnexpectedEof => FailureKind::Interrupted,
+            // std's lookup failure has no kind of its own: a name that cannot be resolved (no network).
+            _ if io.to_string().starts_with("failed to lookup address") => FailureKind::UnknownHost,
             _ => FailureKind::Io,
         },
         _ => FailureKind::Io,
@@ -455,6 +457,21 @@ mod tests {
         assert_eq!(content_range("bytes 100-199/1000"), Some((100, Some(1000))));
         assert_eq!(content_range("bytes 5-9/*"), Some((5, None)));
         assert_eq!(content_range("items 1-2/3"), None);
+    }
+
+    #[test]
+    fn failures_are_told_apart() {
+        use std::io::{Error, ErrorKind};
+        let lookup = "failed to lookup address information: nodename nor servname provided, or not known";
+        let cases = [
+            (Error::other(lookup), FailureKind::UnknownHost),
+            (Error::new(ErrorKind::ConnectionRefused, "refused"), FailureKind::Connect),
+            (Error::new(ErrorKind::PermissionDenied, "denied"), FailureKind::Io),
+        ];
+        for (io, want) in cases {
+            let TransportError::Failed { kind, .. } = failure(ureq::Error::Io(io)) else { panic!() };
+            assert_eq!(kind, want);
+        }
     }
 
     #[test]

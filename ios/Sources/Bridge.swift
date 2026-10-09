@@ -105,6 +105,8 @@ struct Now {
     var device: String?
     /// Remote control is on: the music can move to the account's other devices.
     var remote = false
+    /// The other device's volume in percent, when music plays there and it can be set.
+    var volume: Int?
     /// The jam's music, this iPod a guest in it: the host's, which nothing here controls.
     var jam = false
 
@@ -330,6 +332,7 @@ final class Core {
         n.bits = d["bits"] as? Int ?? 0
         n.device = d["device"] as? String
         n.remote = d["remote"] as? Bool ?? false
+        n.volume = d["volume"] as? Int
         n.jam = d["jam"] as? Bool ?? false
         if n.device != nil || n.jam {
             // The device says its own waits.

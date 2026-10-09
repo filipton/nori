@@ -1,14 +1,31 @@
+import AVKit
 import MediaPlayer
 import UIKit
 
-/// "Play on", from the player: this iPod and the account's other devices with nori, each with what it
-/// plays, the one playing ticked, then joining someone's jam. A tap moves the music there. Open, the
-/// other devices are followed.
+/// The system's output picker, which has no call of its own: its button is pressed on the caller's behalf.
+final class OutputPicker {
+    private let picker = AVRoutePickerView()
+
+    /// Puts the picker into `host`, where it must be for its button to answer, out of sight.
+    func attach(to host: UIView) {
+        picker.alpha = 0.011
+        picker.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
+        host.addSubview(picker)
+    }
+
+    func show() {
+        picker.subviews.compactMap { $0 as? UIButton }.first?.sendActions(for: .touchUpInside)
+    }
+}
+
+/// The player's output button: this iPod and the account's other devices with nori, each with what it
+/// plays, the one playing ticked, then the iPod's own outputs (the system's picker) and joining someone's
+/// jam. A tap on a device moves the music there. Open, the other devices are followed.
 final class DevicesSheet: UIViewController, UITableViewDataSource, UITableViewDelegate {
     let transition = CardTransition()
     private var closer: DragToClose?
     private let table = UITableView(frame: .zero, style: .plain)
-    private let empty = UILabel()
+    private let outputs = OutputPicker()
     private var here = true
     private var devices: [[String: Any]] = []
 
@@ -21,7 +38,7 @@ final class DevicesSheet: UIViewController, UITableViewDataSource, UITableViewDe
 
     required init?(coder: NSCoder) { fatalError() }
 
-    override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+    override var preferredStatusBarStyle: UIStatusBarStyle { Theme.statusBar }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -41,11 +58,8 @@ final class DevicesSheet: UIViewController, UITableViewDataSource, UITableViewDe
         table.dataSource = self
         table.delegate = self
         table.tableFooterView = UIView()
-        empty.text = Say.devicesNone
-        empty.font = UIFont.preferredFont(forTextStyle: .footnote)
-        empty.textColor = Theme.Card.secondary
-        empty.numberOfLines = 0
-        for v in [grabber, title, table, empty] {
+        outputs.attach(to: view)
+        for v in [grabber, title, table] {
             v.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(v)
         }
@@ -61,9 +75,6 @@ final class DevicesSheet: UIViewController, UITableViewDataSource, UITableViewDe
             table.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             table.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             table.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            empty.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4 + 60 + 16),
-            empty.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            empty.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
         ])
         closer = DragToClose(self, transition) { [weak self] pan in
             guard let self else { return false }
@@ -89,11 +100,24 @@ final class DevicesSheet: UIViewController, UITableViewDataSource, UITableViewDe
         let d = takenJSON(nori_ios_remote_devices()) as? [String: Any] ?? [:]
         here = d["here"] as? Bool ?? true
         devices = d["devices"] as? [[String: Any]] ?? []
-        empty.isHidden = !devices.isEmpty
+        table.tableFooterView = devices.isEmpty ? footer(Say.devicesNone) : UIView()
         table.reloadData()
     }
 
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { devices.count + 2 }
+    /// A line of quiet text under the rows.
+    private func footer(_ text: String) -> UIView {
+        let label = UILabel(frame: CGRect(x: 16, y: 12, width: view.bounds.width - 32, height: 0))
+        label.text = text
+        label.font = UIFont.preferredFont(forTextStyle: .footnote)
+        label.textColor = Theme.Card.secondary
+        label.numberOfLines = 0
+        label.sizeToFit()
+        let box = UIView(frame: CGRect(x: 0, y: 0, width: view.bounds.width, height: label.frame.height + 24))
+        box.addSubview(label)
+        return box
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { devices.count + 3 }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "device")
@@ -113,6 +137,12 @@ final class DevicesSheet: UIViewController, UITableViewDataSource, UITableViewDe
             return cell
         }
         guard indexPath.row <= devices.count else {
+            if indexPath.row == devices.count + 1 {
+                cell.textLabel?.text = Say.output
+                cell.detailTextLabel?.text = nil
+                cell.accessoryType = .none
+                return cell
+            }
             cell.textLabel?.text = Say.joinJam
             cell.detailTextLabel?.text = nil
             cell.accessoryType = .disclosureIndicator
@@ -130,6 +160,7 @@ final class DevicesSheet: UIViewController, UITableViewDataSource, UITableViewDe
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
+        if indexPath.row == devices.count + 1 { return outputs.show() }
         guard indexPath.row <= devices.count else { return JamJoin.ask(from: self) }
         let id = indexPath.row == 0 ? "" : devices[indexPath.row - 1]["id"] as? String ?? ""
         id.withCString { nori_ios_remote_pick($0) }

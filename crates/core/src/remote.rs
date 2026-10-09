@@ -473,20 +473,31 @@ enum Change {
     Star { id: String, on: bool },
 }
 
+impl Change {
+    /// Whether the device's `state` shows what this changed. A device says it carried a command out in
+    /// the next state it publishes, which may be before its player has played or paused.
+    fn shown_in(&self, state: &DeviceState) -> bool {
+        match *self {
+            Change::Playing { playing, .. } => state.playing == playing,
+            _ => true,
+        }
+    }
+}
+
 impl Mirrored {
     fn new(id: String) -> Mirrored {
         Mirrored { id, heard: None, arrived: 0, shown: None, at: clock::now_us(), device_at: None, clock: ClockSync::default(), pages: Vec::new(), asking: None, taken: Vec::new(), foreseen: Vec::new() }
     }
 
     /// A state arrived from the device (`at`: when, on this device's clock). It ends the foresight of
-    /// every command of this device's (`me`) it says it carried out; the rest still shows over it. False
+    /// every command of this device's (`me`) it says it carried out and shows; the rest still shows over it. False
     /// when it is the one already heard.
     fn heard(&mut self, state: &DeviceState, at: i64, me: &str) -> bool {
         if self.heard.as_ref() == Some(state) {
             return false;
         }
         if let Some(done) = state.obeyed.iter().find(|o| o.from == me) {
-            self.foreseen.retain(|f| f.id > done.id);
+            self.foreseen.retain(|f| f.id > done.id || !f.change.shown_in(state));
         }
         let rev = self.shown.as_ref().map(|s| (s.rev, s.len));
         if rev != Some((state.rev, state.len)) {
@@ -672,6 +683,8 @@ struct Inner {
     relay_polling: bool,
     /// The last relay poll failed: the devices it listed may have gone since, and are not shown.
     relay_down: bool,
+    /// What the relay's last answer said of it, as logged.
+    relay_said: Option<String>,
     /// Bumped to end the nearby doors' pollers.
     lan_generation: u64,
     since: Option<u64>,
@@ -1764,6 +1777,7 @@ impl Remote {
         self.spawn("nori-remote-probe", move || {
             let generation = me.inner.lock().generation;
             let Some(got) = me.get(me.poll_url(None, false, false), 0, |_| true) else { return };
+            me.note_relay(support(&got), &got);
             if me.jam_gone(&got) {
                 return me.jam_ended(generation);
             }
@@ -1839,10 +1853,12 @@ impl Remote {
             if self.inner.lock().generation != generation {
                 return;
             }
+            let found = support(&got);
+            self.note_relay(found, &got);
             if self.jam_gone(&got) {
                 return self.jam_ended(generation);
             }
-            match (support(&got), got) {
+            match (found, got) {
                 (Some(RelaySupport::Supported), Ok(body)) => {
                     self.inner.lock().relay = RelaySupport::Supported;
                     self.took(answer(&body).unwrap_or_default(), received);
@@ -1882,6 +1898,21 @@ impl Remote {
         self.unfollow();
         self.shown.jam_ended(host);
         self.shown.changed();
+    }
+
+    /// Logs what the relay's answer says of it when that differs from the last one: the relay answering,
+    /// the server answering something else, the network failing.
+    fn note_relay(&self, found: Option<RelaySupport>, got: &Result<Vec<u8>, NetError>) {
+        let said = match (found, got) {
+            (Some(RelaySupport::Supported), _) => "answers".to_string(),
+            (Some(_), Ok(body)) => format!("is not there, the server said {}", String::from_utf8_lossy(&body[..body.len().min(120)])),
+            (Some(_), Err(e)) => format!("is not there: {e}"),
+            (None, Ok(_)) => return,
+            (None, Err(e)) => format!("cannot be reached: {e}"),
+        };
+        if self.inner.lock().relay_said.replace(said.clone()).as_deref() != Some(&said) {
+            crate::alog::info(&format!("remote: the relay {said}"));
+        }
     }
 
     fn no_relay(&self, generation: u64) {

@@ -114,13 +114,23 @@ Decisions, with the reasons:
 
 Everything builds in one Docker image (`tools/ios-build/Dockerfile`), on Linux or a Mac alike, with no Xcode:
 swift.org's Linux Swift and clang, lld's Mach-O linker, Rust with the `aarch64-apple-ios` target, and
-Procursus' ldid. What Apple's toolchain would otherwise bring is fetched once into `~/.cache/nori-ios` with
+Procursus' ldid. What Apple's toolchain would otherwise bring is fetched once into the Docker volume `nori-ios-cache` with
 pinned checksums: theos' copy of the iPhoneOS 16.4 SDK (headers, `.tbd` stubs and Swift interfaces, 221
 MB), and from swift.org's macOS toolchain the `libswiftCompatibility*.a` that a deployment target below iOS
 13 links, Darwin's `Dispatch`/`os` API notes and clang's `libclang_rt.ios.a`. Linux's Swift resource
 directory carries its own `Dispatch` module, which clashes with the SDK's, so the build uses a resource
 directory of only `shims`, `clang` and those iOS parts. A first build takes minutes (the image, 1.5 GB of
-toolchain, Swift's module cache); an edit rebuilds in about 15 s.
+toolchain, Swift's module cache); an edit rebuilds in about 15 s. The cache and cargo's target directory are in
+a Docker volume, not a folder shared from the host: the SDK is an archive of symlinks that cannot be unpacked
+onto a folder Docker shares from a Mac, and rustc dies with SIGBUS on mapped files there. A Mac needs a
+Docker runtime (Docker Desktop, or `brew install colima docker`).
+
+The Swift compiler matters too. Built with swift.org's Swift (6.3 and 5.10 alike), the app aborted in malloc a
+moment after launch on iOS 12.5: its optimizer hoists the release of the empty array's storage above the
+retains (`[:]` in `Core.init`), which only an immortal storage survives, and iOS 12's runtime does not have one.
+Apple's compilers drop those operations altogether, so the build turns retain sinking and release hoisting
+off (`-sil-disable-pass`). Check a new toolchain with `otool -tV -p '_$s4nori4CoreCACycfc'`: no
+`swift_release` after the `dictionaryLiteral` calls.
 
 The linker matters: Xcode 26's produces binaries that crash on iOS 12.5.x (reported on the developer
 forums), which is why the app first linked with Xcode 15's classic ld64. lld writes the same load

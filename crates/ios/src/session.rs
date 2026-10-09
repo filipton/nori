@@ -390,6 +390,12 @@ fn level() -> &'static Arc<Level> {
     LEVEL.get_or_init(|| Level::new(1.0, Some(Box::new(|_| {}))))
 }
 
+/// Sets the volume (0 to 1) of the device playing: another device's while the music plays there.
+#[no_mangle]
+pub extern "C" fn nori_ios_set_volume(fraction: f32) {
+    with_session(|s| s.set_volume(fraction));
+}
+
 /// The system volume moved (0 to 1): loudness compensation follows it, and the account's other devices
 /// see it.
 #[no_mangle]
