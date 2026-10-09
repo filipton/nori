@@ -38,6 +38,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.widthIn
+import dev.nori.music.look.CoverLook
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.drawWithCache
 import kotlinx.coroutines.launch
@@ -155,6 +158,9 @@ val LocalPlayerMenu = staticCompositionLocalOf<(Song) -> Unit> { {} }
 
 /** Opens the devices sheet (RemoteScreens.DevicesHost): where the music plays. */
 val LocalDevices = staticCompositionLocalOf<() -> Unit> { {} }
+
+/** Says one line in the app's message pill at the top ([ActionsViewModel.tell]). */
+val LocalMessages = staticCompositionLocalOf<(String) -> Unit> { {} }
 
 /**
  * The profile in use is a jam guest's: the app shows the host's playback and offers only what a guest can
@@ -312,6 +318,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             LocalSongMenu provides { menuSong = it; menuFromPlayer = false },
             LocalPlayerMenu provides { menuSong = it; menuFromPlayer = true },
             LocalDevices provides { devicesOpen = true },
+            LocalMessages provides actions::tell,
             LocalJamGuest provides guest,
             LocalAsked provides asked,
             LocalEinkScreen provides prefs.einkScreen,
@@ -493,7 +500,16 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
                       enableDismissFromStartToEnd = true,
                       enableDismissFromEndToStart = true,
                   ) {
-                      androidx.compose.material3.Snackbar(snackbarData = data)
+                      val v = data.visuals
+                      // The bottom bars' colours, and the accent their lit tab wears.
+                      val accent = rememberTabAccent(player, chromeLook.color(CoverLook.CHROME_SLAB), chromeLook.color(CoverLook.CHROME_CONTENT))
+                      Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                          MessagePill(
+                              v.message, chromeLook, Modifier.widthIn(max = 560.dp), accent = { accent }, maxLines = 3,
+                              action = v.actionLabel, onAction = data::performAction,
+                              onDismiss = if (v.withDismissAction) data::dismiss else null,
+                          )
+                      }
                   }
               }
             }
@@ -503,7 +519,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             SongMenu(menuSong, actions, onDismiss = { menuSong = null }, player = player.takeIf { menuFromPlayer })
             DevicesHost(devicesOpen) { devicesOpen = false }
             // A jam that would not start says so, whichever menu started it.
-            if (prefs.jam) JamFailures()
+            if (prefs.jam) JamFailures(actions)
         }
         }
     }

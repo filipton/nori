@@ -51,6 +51,7 @@ internal fun AboutContent(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val tell = LocalMessages.current
     val facts = remember {
         say.about(
             BuildConfig.VERSION_NAME, BuildConfig.CORE_VERSIONS, BuildConfig.DEBUG, BuildConfig.GIT_SHA,
@@ -61,7 +62,7 @@ internal fun AboutContent(
         InfoRow(facts.title, facts.build, end = say.copyIt) { clipboard.setText(AnnotatedString(facts.report)) }
         InfoRow(say.reportProblem, say.reportProblemDetail) {
             report(facts.report) { uri ->
-                if (uri == null) android.widget.Toast.makeText(context, say.reportFailed, android.widget.Toast.LENGTH_SHORT).show()
+                if (uri == null) tell(say.reportFailed)
                 else context.startActivity(
                     android.content.Intent.createChooser(
                         android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain")

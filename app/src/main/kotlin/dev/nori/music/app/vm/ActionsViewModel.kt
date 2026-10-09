@@ -39,6 +39,7 @@ class ActionsViewModel(app: Application) : NoriViewModel(app) {
     private val _messages = Channel<String>(Channel.CONFLATED)
     /** One-line confirmations and failures, for a snackbar or whatever the UI uses. */
     val messages = _messages.receiveAsFlow()
+    fun tell(words: String) { _messages.trySend(words) }
     /** This session's star changes, so every heart on screen can prefer them over its snapshot. */
     val starMarks: StateFlow<dev.nori.music.ffi.library.StarMarks> = nori.library.starMarks
     val downloads: StateFlow<DownloadState> = nori.downloads.state

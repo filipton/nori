@@ -8,6 +8,7 @@ import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.compose.ui.platform.createLifecycleAwareWindowRecomposer
 import androidx.activity.result.contract.ActivityResultContracts
 import dev.nori.music.Nori
@@ -29,6 +30,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private var started = false
+    /** The same one App's messages come from: one per activity. */
+    private val actions: dev.nori.music.app.vm.ActionsViewModel by viewModels()
     private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
     /** What was asked for from outside (the download notification, a launcher shortcut); App does it and clears this. */
     private val launchRoute = androidx.compose.runtime.mutableStateOf<String?>(null)
@@ -64,7 +67,7 @@ class MainActivity : ComponentActivity() {
         if (!dev.nori.music.ffi.remote.isInvite(link)) return
         lifecycleScope.launch {
             runCatching { Nori.get(this@MainActivity).joinJam(link) }.onFailure {
-                android.widget.Toast.makeText(this@MainActivity, R.string.jam_join_failed, android.widget.Toast.LENGTH_LONG).show()
+                actions.tell(getString(R.string.jam_join_failed))
             }
         }
     }

@@ -846,12 +846,13 @@ private fun OutputButton(otherDevice: Boolean) {
     val prefs by settings.prefs.collectAsStateWithLifecycle()
     val devices = prefs.remoteControl || prefs.jam
     val openDevices = LocalDevices.current
-    IconButton({ if (devices) openDevices() else openOutputPicker(context, output) }) {
+    val tell = LocalMessages.current
+    IconButton({ if (devices) openDevices() else openOutputPicker(context, output, tell) }) {
         LookIcon(icon, description, Modifier.size(27.dp)) { look.color(if (o.elsewhere || otherDevice) CoverLook.ACCENT else CoverLook.ON_VARIANT) }
     }
 }
 
-internal fun openOutputPicker(context: android.content.Context, output: String) {
+internal fun openOutputPicker(context: android.content.Context, output: String, tell: (String) -> Unit) {
     // Android 14 and later have a public call for exactly this, and it is the one that works on a
     // current phone: the same output switcher the media controls open, listing Bluetooth, wired, USB
     // and any Cast target the system knows about.
@@ -880,7 +881,7 @@ internal fun openOutputPicker(context: android.content.Context, output: String) 
             )
         }.isSuccess
     ) return
-    android.widget.Toast.makeText(context, dev.nori.music.ffi.devices.outputLook(output).let { say.playingThrough(say.outputLabel(it.port, it.name)) }, android.widget.Toast.LENGTH_SHORT).show()
+    tell(dev.nori.music.ffi.devices.outputLook(output).let { say.playingThrough(say.outputLabel(it.port, it.name)) })
 }
 
 /**
@@ -3005,33 +3006,24 @@ private fun UndoPill(undo: QueueUndo<Song>, plain: Boolean, modifier: Modifier, 
     val present by remember { derivedStateOf { shown.value > 0f } }
     val t = last ?: return
     if (now == null && !present) return
-    val look = LocalLook.current
     val rise = with(androidx.compose.ui.platform.LocalDensity.current) { 12.dp.toPx() }
-    Box(
+    MessagePill(
+        say.queueRemoved(t.item.title), LocalLook.current,
         modifier
+            .widthIn(max = 320.dp)
             .graphicsLayer {
                 val v = fadeEase(shown.value)
                 alpha = v
                 if (!plain) translationY = (1f - v) * rise
-            }
-            .clip(RoundedCornerShape(50))
-            .drawBehind { drawRect(look.color(CoverLook.SURFACE_CONTAINER_HIGH)) },
-    ) {
-    // The pill takes every touch on it, as it fades out too: a tap meant for Undo a moment late must not
-    // fall through to the × of the row under it and take another song out. It is taken by a layer
-    // beside the button, under it, never by a parent of it: a parent consuming the touch cancels the
-    // button's tap on the first move of the finger (Compose's tap checks for exactly that), and a
-    // finger on a phone always moves a little, so Undo never did anything there.
-    Spacer(Modifier.matchParentSize().pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } } })
-    Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        LookText(
-            say.queueRemoved(t.item.title), { look.color(CoverLook.ON) }, Modifier.widthIn(max = 220.dp),
-            style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
-        )
+            },
         // Taps only while it is there to be read, not as it goes.
-        androidx.compose.material3.TextButton({ if (undo.shown === t) undo.undo()?.let(restore) }, enabled = now != null) {
-            LookText(say.undo, { look.color(CoverLook.ACCENT) }, style = MaterialTheme.typography.labelLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold), maxLines = 1)
-        }
-    }
+        action = say.undo, actionEnabled = now != null, onAction = { if (undo.shown === t) undo.undo()?.let(restore) },
+    ) {
+        // The pill takes every touch on it, as it fades out too: a tap meant for Undo a moment late must not
+        // fall through to the × of the row under it and take another song out. It is taken by a layer
+        // beside the button, under it, never by a parent of it: a parent consuming the touch cancels the
+        // button's tap on the first move of the finger (Compose's tap checks for exactly that), and a
+        // finger on a phone always moves a little, so Undo never did anything there.
+        Spacer(Modifier.matchParentSize().pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } } })
     }
 }

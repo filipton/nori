@@ -136,7 +136,8 @@ fun DevicesHost(open: Boolean, onDismiss: () -> Unit) {
     val prefs by settings.prefs.collectAsStateWithLifecycle()
     val output by settings.currentOutput.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    if (prefs.remoteControl || prefs.jam) DevicesSheet(open, onDismiss, { onDismiss(); openOutputPicker(context, output) }, prefs.jam)
+    val tell = LocalMessages.current
+    if (prefs.remoteControl || prefs.jam) DevicesSheet(open, onDismiss, { onDismiss(); openOutputPicker(context, output, tell) }, prefs.jam)
 }
 
 /** The jam this phone hosts, as the devices list it: a tap opens its queue, End ends it. */

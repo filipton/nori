@@ -31,6 +31,9 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.ColorProducer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -497,6 +500,44 @@ fun PillButton(
     }
 }
 
+/**
+ * A short message on a pill dressed as the tab bar and the mini player are (the chrome's slab, edge and
+ * shadow), its action and its optional × in [accent]: the app's messages at the top and the queue's undo
+ * at its foot. Colours are read while drawing, so a look cross-fading under it redraws it without
+ * recomposing. [behind] sits under the words.
+ */
+@Composable
+fun MessagePill(
+    text: String, look: Look, modifier: Modifier = Modifier, accent: ColorProducer = ColorProducer { look.color(CoverLook.ACCENT) },
+    maxLines: Int = 1, action: String? = null, actionEnabled: Boolean = true, onAction: () -> Unit = {},
+    onDismiss: (() -> Unit)? = null, behind: @Composable androidx.compose.foundation.layout.BoxScope.() -> Unit = {},
+) {
+    Box(
+        modifier.shadow(12.dp, PillShape).drawBehind {
+            val round = androidx.compose.ui.geometry.CornerRadius(size.height / 2)
+            drawRoundRect(look.color(CoverLook.CHROME_SLAB), cornerRadius = round)
+            drawRoundRect(look.color(CoverLook.CHROME_EDGE), cornerRadius = round, style = androidx.compose.ui.graphics.drawscope.Stroke(1f))
+        },
+    ) {
+        behind()
+        Row(Modifier.padding(start = 18.dp, end = 4.dp).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+            LookText(
+                text, { look.color(CoverLook.CHROME_CONTENT) }, Modifier.weight(1f, fill = false).padding(vertical = 10.dp),
+                style = MaterialTheme.typography.bodyMedium, maxLines = maxLines, overflow = TextOverflow.Ellipsis,
+            )
+            if (action != null) {
+                androidx.compose.material3.TextButton(onAction, enabled = actionEnabled) {
+                    LookText(action, accent, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold), maxLines = 1)
+                }
+            }
+            if (onDismiss != null) {
+                IconButton(onDismiss) { LookIcon(Icons.Filled.Clear, words(R.string.close), Modifier.size(20.dp), accent) }
+            } else if (action == null) {
+                Spacer(Modifier.width(14.dp))
+            }
+        }
+    }
+}
 
 /**
  * Dresses everything inside in the colours of one cover: the page colour becomes the surface, the

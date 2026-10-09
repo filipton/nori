@@ -330,7 +330,7 @@ fun rememberChromeLook(): Look {
  * music. The theme's own accent with neither and with the setting off. It changes in the span the chrome's own colours take.
  */
 @Composable
-private fun rememberTabAccent(player: PlayerViewModel, slab: Color, content: Color): Color {
+internal fun rememberTabAccent(player: PlayerViewModel, slab: Color, content: Color): Color {
     val theme = MaterialTheme.colorScheme.primary
     val settings: dev.nori.music.app.vm.SettingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
     val prefs by settings.prefs.collectAsStateWithLifecycle()

@@ -457,10 +457,10 @@ internal fun jamStartEntry(play: () -> Unit): Pair<String, () -> Unit>? {
 
 /** Says a jam that could not start, wherever one was started from. */
 @Composable
-internal fun JamFailures() {
+internal fun JamFailures(actions: dev.nori.music.app.vm.ActionsViewModel) {
     val vm: RemoteViewModel = viewModel()
-    val context = LocalContext.current
+    val failed = words(R.string.jam_failed)
     LaunchedEffect(vm) {
-        vm.jamFailed.collect { android.widget.Toast.makeText(context, R.string.jam_failed, android.widget.Toast.LENGTH_LONG).show() }
+        vm.jamFailed.collect { actions.tell(failed) }
     }
 }
