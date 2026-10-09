@@ -150,6 +150,8 @@ pub enum Cmd {
     Graphic(u32, f32),
     Sound(SoundToolCmd),
     Action(Chore),
+    /// The answer to the last AutoEQ note (`Session::curve_answer`).
+    Curve,
     Mouse(bool),
     Images(bool),
     /// Output device for the next start; empty for the system default.
@@ -200,6 +202,7 @@ impl Cmd {
             Cmd::Repeat(m) => format!("repeat {m}"),
             Cmd::Setting(k, v) => format!("setting {k}={v}"),
             Cmd::Action(a) => format!("action {a:?}"),
+            Cmd::Curve => "curve".into(),
             Cmd::Tuning(on) => format!("tuning {on}"),
             Cmd::Mouse(on) => format!("mouse {on}"),
             Cmd::Images(on) => format!("images {on}"),
@@ -1631,6 +1634,7 @@ impl App {
             Action::VolumeUp => self.set_volume(self.volume + 0.05),
             Action::VolumeDown => self.set_volume(self.volume - 0.05),
             Action::Search => self.open_nav(Nav::Search),
+            Action::Curve => self.cmds.push(Cmd::Curve),
             Action::Mouse => {
                 self.mouse = !self.mouse;
                 self.cmds.push(Cmd::Mouse(self.mouse));

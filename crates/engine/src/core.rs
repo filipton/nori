@@ -153,7 +153,8 @@ impl App for CoreApp {
         }
     }
 
-    /// The core names the device and applies its sound (`Core::device_arrive`), stored in the settings.
+    /// The core names the device and applies its sound (`Core::device_arrive`), stored in the settings;
+    /// its AutoEQ curve is the client's to ask for on `Event::Output` (`Client::device_curve`).
     fn output_changed(&mut self, kind: nori_player::outputs::OutputKind, name: &str) -> Option<(String, Option<Sound>)> {
         let core = self.devices.clone()?;
         let seen = nori_player::outputs::refresh(&[(kind, name)], &self.known, None);
@@ -164,20 +165,14 @@ impl App for CoreApp {
             return None;
         }
         self.output = Some(seen.current.clone());
-        let mut effect = core.device_arrive(seen.current.clone()).effect;
-        let mut sound = None;
-        // A step may ask to arrive again once done.
-        for _ in 0..2 {
-            if let Some(s) = effect.apply.take() {
+        let sound = match core.device_arrive(seen.current.clone()).apply {
+            Some(s) => {
                 let prefs = self.session.settings.current()?.with_sound(s);
                 self.session.settings.put(prefs.clone());
-                sound = Some(settings(&prefs, self.volume.db()).sound);
+                Some(settings(&prefs, self.volume.db()).sound)
             }
-            if !effect.arrive {
-                break;
-            }
-            effect = core.device_arrive(seen.current.clone()).effect;
-        }
+            None => None,
+        };
         Some((seen.current, sound))
     }
 

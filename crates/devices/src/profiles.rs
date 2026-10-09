@@ -10,7 +10,6 @@ pub use nori_player::outputs::OutputPort;
 
 use nori_settings::settings::{sound_json, SoundSettings, StoredPrefs};
 use nori_model::AutoEqEntry;
-use nori_model::CurveStep;
 use nori_model::SoundProfile;
 
 /// `app_kv` key: the sound from before a bound device took over.
@@ -107,15 +106,33 @@ impl Now {
     }
 }
 
-/// A device's arrival: the effect, and the AutoEQ curve offered or applied (`entry` and its preset URL
-/// when one matches).
+/// What to tell the user about the AutoEQ curve of a device music moved to.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum CurveNotice {
+    /// Nothing is chosen for `output`, and AutoEQ's `entry` looks like it.
+    Offer { output: String, entry: AutoEqEntry },
+    /// `curve` was applied and kept for `output` without asking: undo puts `before` back, and deletes the
+    /// profile if `created`.
+    Applied { output: String, curve: String, before: SoundSettings, created: bool },
+}
+
+/// An AutoEQ step's outcome: the effect to perform, then the notice to show.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
-pub struct DeviceArrival {
+pub struct DeviceCurve {
     pub effect: DeviceEffect,
-    pub curve: CurveStep,
-    pub entry: Option<AutoEqEntry>,
-    pub preset_url: Option<String>,
+    pub notice: Option<CurveNotice>,
+}
+
+impl DeviceCurve {
+    pub fn none() -> Self {
+        DeviceCurve { effect: DeviceEffect::none(), notice: None }
+    }
+
+    pub fn offer(output: &str, entry: AutoEqEntry) -> Self {
+        DeviceCurve { effect: DeviceEffect::none(), notice: Some(CurveNotice::Offer { output: output.to_string(), entry }) }
+    }
 }
 
 /// Applies a device's sound, storing the current one as loose if it is the first replaced.

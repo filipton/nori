@@ -3469,6 +3469,9 @@ export component AppWindow inherits Window {
     in property <string> failed;
     in property <string> note;
     in property <bool> note-error;
+    // A button on the note ("Apply", "Undo"), and its press.
+    in property <string> note-action;
+    callback note-act();
     // Bumped whenever a cover arrives: every picture asks `art` again and finds the new one.
     in property <int> covers-rev;
     pure callback art(string, int, int) -> image;
@@ -4525,10 +4528,25 @@ export component AppWindow inherits Window {
                     width: min(parent.width - 40px, toast.preferred-width + 32px);
                     height: 32px;
                     radius: 16px;
-                    toast := Text {
-                        text: root.note;
-                        color: root.note-error ? #ff453a : Theme.text;
-                        overflow: elide;
+                    toast := HorizontalLayout {
+                        alignment: center;
+                        spacing: 14px;
+                        Text {
+                            text: root.note;
+                            color: root.note-error ? #ff453a : Theme.text;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        if root.note-action != "": Text {
+                            text: root.note-action;
+                            color: Theme.accent;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.note-act(); }
+                            }
+                        }
                     }
                 }
 

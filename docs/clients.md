@@ -242,9 +242,12 @@ The engine also plays what the Android player plays around the sound chain, each
   next song as the engine's loader fetches it (as long as the decoder keeps up; else it is measured from
   the disk) and a download (`Downloader`; Android's `MeasuringSink`).
 
-Not in the engine yet: AutoEQ curves offered for a new device (the core's `DeviceArrival` names one;
-the core fetches its curve, `Client::autoeq_curve`, and keeps the list, `Client::autoeq_update`, but
-offering it is the client's, as Android's `DeviceSound` does over `Outputs` ), a desktop client's radio stations (the core keeps no station's address; the client's library
+A new device's AutoEQ curve is the core's (`Client::device_curve` after `Core::device_arrive`: the list
+fetched when due, an entry with no curve passed over, a failed fetch offered instead); the host asks for
+it on `Event::Output` and says `Said::Curve`, Android's `DeviceSound` on `Outputs`; each client words the
+notice and answers it (`Session::curve_answer`, `Client::device_accept`).
+
+Not in the engine yet: a desktop client's radio stations (the core keeps no station's address; the client's library
 says where each is), and symphonia's readers still allocate a buffer per packet (their API has no way to
 read into one kept).
 

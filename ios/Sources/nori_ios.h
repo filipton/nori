@@ -135,6 +135,7 @@ void nori_ios_remote_pick(const char *id);
 #define NORI_NOTE_INDEX_STOPPED 13
 #define NORI_NOTE_DONE 14
 #define NORI_NOTE_FORGOT 15
+#define NORI_NOTE_CURVE_FAILED 16
 
 /// Pages for `nori_ios_read`. `arg`: the id for album/artist/playlist/mix, the name for a genre, the
 /// query for search, the offset for songs; empty otherwise.
@@ -247,6 +248,8 @@ int32_t nori_ios_device_assign(const char *output, int32_t choice, const char *p
 int32_t nori_ios_device_adopt(const char *output, const char *name, const char *source,
                               const char *form, const char *target, const char *path);
 void nori_ios_device_forget(const char *output);
+/// The answer to the last AutoEQ report (22): the curve offered applied, or the one applied undone.
+void nori_ios_curve_answer(void);
 
 /// The AutoEQ list's hits, JSON to free: {short, count, hits: [{name, source, form, target, path}]}.
 char *nori_ios_autoeq_browse(const char *query);

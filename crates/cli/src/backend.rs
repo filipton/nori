@@ -362,6 +362,7 @@ fn worded(s: Said) -> Msg {
         Said::JamEnded { host } => Msg::Left(crate::text::jam_ended(host.as_deref())),
         Said::Starred(marks) => Msg::Starred(marks),
         Said::Volume(v) => Msg::Volume(v),
+        Said::Curve(n) => note(crate::text::curve_notice(&n), false),
         Said::Engine(e) => Msg::Engine(e),
         Said::Lyrics { song, pick } => Msg::Lyrics { song, pick },
         Said::Search(v) => Msg::Search(v),
@@ -379,6 +380,7 @@ fn worded(s: Said) -> Msg {
             Note::Indexed(t) => note(format!("Offline index: {} songs, {} albums, {} artists", t.songs, t.albums, t.artists), false),
             Note::IndexStopped(e) => note(format!("The offline index stopped: {}", net_error(&e)), true),
             Note::Forgot(n) => note(format!("Forgot {n} measured songs"), false),
+            Note::CurveFailed(e) => note(format!("Could not fetch the AutoEQ curve: {}", net_error(&e)), true),
             Note::Done(chore) => note(
                 match chore {
                     Chore::ClearStream => "Cleared the streamed music",

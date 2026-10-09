@@ -1,5 +1,6 @@
 //! User-facing wording for numbers and errors (mirrors the terminal's text.rs).
 
+use nori_core::profiles::CurveNotice;
 use nori_core::transport::{FailureKind, NetError};
 use nori_core::Song;
 
@@ -7,6 +8,14 @@ use nori_core::Song;
 pub fn duration(seconds: i64) -> String {
     let s = seconds.max(0);
     if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+}
+
+/// What to say about a device's AutoEQ curve, and the button's word.
+pub fn curve_notice(n: &CurveNotice) -> (String, &'static str) {
+    match n {
+        CurveNotice::Offer { entry, .. } => (format!("{} connected. Use its AutoEQ curve?", entry.name), "Apply"),
+        CurveNotice::Applied { curve, .. } => (format!("Using AutoEQ for {curve}"), "Undo"),
+    }
 }
 
 pub fn count(n: impl Into<u64>, one: &str, many: &str) -> String {

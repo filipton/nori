@@ -75,8 +75,8 @@ object TestActions {
             "eqNotice" -> devices.lastNotice?.let { n ->
                 settings.viewModelScope.launch {
                     when (n) {
-                        is DeviceSound.Offer -> if (value == "apply") devices.accept(n)
-                        is DeviceSound.Applied -> if (value == "undo") devices.undo(n)
+                        is dev.nori.music.ffi.devices.CurveNotice.Offer -> if (value == "apply") devices.accept(n)
+                        is dev.nori.music.ffi.devices.CurveNotice.Applied -> if (value == "undo") devices.undo(n)
                     }
                     devices.consume(n)
                 }

@@ -427,6 +427,7 @@ pub fn stop(app: &RefCell<App>) {
 fn wire(ui: &AppWindow, h: &AppHandle) {
     on!(ui.on_messages_arrived, h, |a| a.drain_inbox());
     on!(ui.on_go, h, |a, v| a.go(v));
+    on!(ui.on_note_act, h, |a| a.note_act());
     on!(ui.on_open_album, h, |a, id| a.open_page(Req::Album(id.into())));
     on!(ui.on_open_artist, h, |a, id| a.open_page(Req::Artist(id.into())));
     on!(ui.on_open_playlist, h, |a, id| a.open_page(Req::Playlist(id.into())));
@@ -628,15 +629,34 @@ impl App {
     }
 
     fn say(&self, text: &str, error: bool) {
+        self.note_for(text, error, "", Duration::from_millis(if error { 5000 } else { 2500 }));
+    }
+
+    /// A note with a button, up long enough to be answered.
+    fn ask(&self, text: &str, action: &str) {
+        self.note_for(text, false, action, Duration::from_secs(8));
+    }
+
+    fn note_for(&self, text: &str, error: bool, action: &str, up: Duration) {
         let ui = self.ui();
         ui.set_note(text.into());
         ui.set_note_error(error);
+        ui.set_note_action(action.into());
         let weak = self.ui.clone();
-        self.note.start(TimerMode::SingleShot, Duration::from_millis(if error { 5000 } else { 2500 }), move || {
+        self.note.start(TimerMode::SingleShot, up, move || {
             if let Some(ui) = weak.upgrade() {
                 ui.set_note("".into());
+                ui.set_note_action("".into());
             }
         });
+    }
+
+    /// The note's button: the session's last AutoEQ notice answered.
+    fn note_act(&self) {
+        self.on_session(|s| s.curve_answer());
+        let ui = self.ui();
+        ui.set_note("".into());
+        ui.set_note_action("".into());
     }
 
     fn open(&mut self, profile: SavedServer) {
@@ -1247,6 +1267,7 @@ impl App {
                 self.settings_shown();
             }
             Msg::Note { text, error } => self.say(&text, error),
+            Msg::Ask { text, action } => self.ask(&text, &action),
             Msg::Reachable(Err(e)) => self.say(&e, true),
             Msg::Reachable(Ok(())) | Msg::From(..) => {}
             Msg::Remote => {

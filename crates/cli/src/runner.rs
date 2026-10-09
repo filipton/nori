@@ -645,6 +645,7 @@ impl Runner {
                 sound_edited(s, app, effect);
             }
             Cmd::Action(c) => s.action(c),
+            Cmd::Curve => s.curve_answer(),
             Cmd::Tuning(on) => s.engine.set_shallow(on),
             Cmd::SearchTyped(text) => {
                 let v = s.search_typed(&text);

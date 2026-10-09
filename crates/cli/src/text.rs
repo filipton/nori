@@ -2,6 +2,7 @@
 
 use nori_core::beat_model::BeatFailure;
 use nori_core::lyrics_sources::LyricsOrigin;
+use nori_core::profiles::CurveNotice;
 use nori_core::settings::{BandMark, EqBypass};
 use nori_core::transport::{FailureKind, NetError};
 use nori_core::remote::wire::{DeviceKind, Refusal, Role};
@@ -317,6 +318,14 @@ pub const JOINING: &str = "Joining…";
 pub const NOT_AN_INVITE: &str = "That is not a jam invite. Paste the whole link the host sent you.";
 pub const JAM_LEAVE: &str = "Leave the jam";
 pub const JAM_LEFT: &str = "You left the jam";
+
+/// What to say about a device's AutoEQ curve, with the key that answers it.
+pub fn curve_notice(n: &CurveNotice) -> String {
+    match n {
+        CurveNotice::Offer { entry, .. } => format!("{} connected. Use its AutoEQ curve? (E: apply)", entry.name),
+        CurveNotice::Applied { curve, .. } => format!("Using AutoEQ for {curve} (E: undo)"),
+    }
+}
 
 pub fn jam_ended(host: Option<&str>) -> String {
     host.map_or("The jam ended".into(), |h| format!("{h} ended the jam"))

@@ -24,6 +24,8 @@ pub enum Action {
     PreviousPane,
     Mouse,
     Images,
+    /// Answers the AutoEQ note: apply the curve offered, or undo the one applied.
+    Curve,
     Shuffle,
     Repeat,
     /// Index into `app::GO`.
@@ -152,6 +154,7 @@ pub const BINDINGS: &[Binding] = &[
     b!(Global, "F", Action::Full, "The player over the whole window", [(Char('F'), S), (Char('F'), N)]),
     b!(Global, "esc / h / ⌫", Action::Back, "Back: out of a page, to the sidebar", [(Esc, N), (Char('h'), N), (Backspace, N)]),
     b!(Global, "R", Action::Refresh, "Ask the server again", [(Char('R'), S), (Char('R'), N)]),
+    b!(Global, "E", Action::Curve, "AutoEQ for the headphones just connected: apply it, or undo it", [(Char('E'), S), (Char('E'), N)]),
     b!(Global, "m", Action::Mouse, "Mouse on or off (off: the terminal selects text)", [(Char('m'), N)]),
     b!(Global, "I", Action::Images, "Covers on or off", [(Char('I'), S), (Char('I'), N)]),
     b!(Global, "?", Action::Help, "This help", [(Char('?'), N), (Char('?'), S), (F(1), N)]),

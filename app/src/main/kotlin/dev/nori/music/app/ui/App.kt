@@ -264,7 +264,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
         LaunchedEffect(eqNotice) {
             val n = eqNotice ?: return@LaunchedEffect
             // An offer waits for an answer; a curve already applied only offers to undo it.
-            val offer = n.source is dev.nori.music.playback.DeviceSound.Offer
+            val offer = n.source is dev.nori.music.ffi.devices.CurveNotice.Offer
             val result = snackbar.showSnackbar(
                 n.message, actionLabel = n.action, withDismissAction = offer,
                 duration = if (offer) androidx.compose.material3.SnackbarDuration.Long else androidx.compose.material3.SnackbarDuration.Short,

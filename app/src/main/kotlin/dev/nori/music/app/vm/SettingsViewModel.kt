@@ -74,7 +74,7 @@ data class AutoEqHit(val entry: dev.nori.music.ffi.model.AutoEqEntry, val captio
 }
 
 /** A line for the snackbar about the device that just connected, with the one thing it offers to do. */
-data class EqNotice(val message: String, val action: String, val source: DeviceSound.Notice)
+data class EqNotice(val message: String, val action: String, val source: dev.nori.music.ffi.devices.CurveNotice)
 
 data class SyncUi(val running: Boolean = false, val indexed: IngestStats = IngestStats(0u, 0u, 0u), val error: String? = null)
 
@@ -441,12 +441,12 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     /** What to say about the device that just connected; only while it is still the one playing. */
     val eqNotice: StateFlow<EqNotice?> = combine(devices.notice, currentOutput) { n, current ->
         // Only about the device still playing; the words are Say's.
-        val text = when (n) {
-            is DeviceSound.Offer -> dev.nori.music.app.ui.say.deviceNotice(true, n.entry.name)
-            is DeviceSound.Applied -> dev.nori.music.app.ui.say.deviceNotice(false, n.curve)
-            null -> null
+        val (output, text) = when (n) {
+            is dev.nori.music.ffi.devices.CurveNotice.Offer -> n.output to dev.nori.music.app.ui.say.deviceNotice(true, n.entry.name)
+            is dev.nori.music.ffi.devices.CurveNotice.Applied -> n.output to dev.nori.music.app.ui.say.deviceNotice(false, n.curve)
+            null -> null to null
         }
-        if (n == null || text == null || n.output != current) null else EqNotice(text.first, text.second, n)
+        if (n == null || text == null || output != current) null else EqNotice(text.first, text.second, n)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** The notice is on screen now, so it is not shown again. */
@@ -455,12 +455,12 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     /** "Apply" on an offer, "Undo" on a curve applied without asking. */
     fun eqNoticeAction(n: EqNotice) = viewModelScope.launch {
         when (val src = n.source) {
-            is DeviceSound.Offer -> try {
+            is dev.nori.music.ffi.devices.CurveNotice.Offer -> try {
                 devices.accept(src)
             } catch (e: Exception) {
                 _autoEq.update { it.copy(error = describeConnectionError(e)) }
             }
-            is DeviceSound.Applied -> devices.undo(src)
+            is dev.nori.music.ffi.devices.CurveNotice.Applied -> devices.undo(src)
         }
     }
 
