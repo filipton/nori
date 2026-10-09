@@ -163,10 +163,10 @@ val LocalDevices = staticCompositionLocalOf<() -> Unit> { {} }
 val LocalMessages = staticCompositionLocalOf<(String) -> Unit> { {} }
 
 /**
- * The profile in use is a jam guest's: the app shows the host's playback and offers only what a guest can
- * do (search, the albums and artists it may open, asking for songs).
+ * What the app offers over the profile in use (the core's `profile_rules`): a jam guest's is the same app
+ * over its host's library, read only, where a song played or queued is asked of the host.
  */
-val LocalJamGuest = staticCompositionLocalOf { false }
+val LocalRules = staticCompositionLocalOf { dev.nori.music.ffi.library.profileRules(false) }
 
 /**
  * The songs a jam guest asked for that the host has not decided on yet, by id: their rows say "Asked". Read
@@ -181,8 +181,8 @@ private val tabs = listOf(
     Tab("settings", say.settings, Icons.Filled.Settings),
 )
 
-/** A jam guest's tabs: Search alone; the rest is the account's, which a guest has none of. */
-private val guestTabs = tabs.filter { it.route == "search" }
+/** A jam guest's tabs: the settings are the account's. */
+private val guestTabs = tabs.filter { it.route != "settings" }
 
 /**
  * [launchRoute] is what the activity was asked for from outside - a tap on the download notification, or
@@ -198,7 +198,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
         // Sign-in used to cut straight to the app. One short fade is enough: the screens are different
         // enough that a direction would invent a relationship they do not have.
         val plain = reduceMotion()
-        // A jam guest's profile is the same app with less in it, started afresh on joining and on leaving.
+        // A jam guest's profile is the same app over its host's library, started afresh on joining and on leaving.
         val guest = remember(prefs.activeServerId, prefs.server?.apiKey) { prefs.server?.apiKey?.let { dev.nori.music.ffi.remote.isGuestKey(it) } == true }
         androidx.compose.animation.Crossfade(
             targetState = prefs.loggedIn to guest,
@@ -209,8 +209,9 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             LoginScreen(settings)
             return@Crossfade
         }
-        val home = if (guest) "search" else "home"
-        val shownTabs = if (guest) guestTabs else tabs
+        val rules = remember(guest) { dev.nori.music.ffi.library.profileRules(guest) }
+        val home = "home"
+        val shownTabs = if (rules.account) tabs else guestTabs
         // A guest follows the host while the app is in sight: what plays, the queue, its requests.
         val remote: dev.nori.music.app.vm.RemoteViewModel = viewModel()
         if (guest) androidx.lifecycle.compose.LifecycleResumeEffect(Unit) { remote.watch(true); onPauseOrDispose { remote.watch(false) } }
@@ -319,7 +320,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             LocalPlayerMenu provides { menuSong = it; menuFromPlayer = true },
             LocalDevices provides { devicesOpen = true },
             LocalMessages provides actions::tell,
-            LocalJamGuest provides guest,
+            LocalRules provides rules,
             LocalAsked provides asked,
             LocalEinkScreen provides prefs.einkScreen,
         ) {

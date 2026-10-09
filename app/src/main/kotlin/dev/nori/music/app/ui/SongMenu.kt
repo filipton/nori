@@ -142,7 +142,7 @@ fun SongMenu(
             val jamCan by remote.canStartJam.collectAsState()
             // A jam guest's Play next and Add to queue ask the host (ActionsViewModel).
             val jam = when {
-                LocalJamGuest.current -> dev.nori.music.ffi.library.JamOffer.GUEST
+                LocalRules.current.asks -> dev.nori.music.ffi.library.JamOffer.GUEST
                 jamCan -> dev.nori.music.ffi.library.JamOffer.START
                 else -> null
             }

@@ -480,6 +480,9 @@ print(json.dumps({k:s.get(k) for k in ['id','title','artist','album','albumId','
     check "said under the song" on_screen 'text="Jam · Mac Host · 1 listening"'
     no_controls() { off_screen 'content-desc="Next"' && off_screen 'content-desc="Shuffle"' && off_screen 'content-desc="Remove"'; }
     check "with no controls of its own" no_controls
+    "$app" open library >/dev/null
+    guest_library() { on_screen 'text="Albums"' && on_screen 'text="Artists"' && on_screen 'text="Genres"' && off_screen 'text="Playlists"'; }
+    check "its Library is the host's, without the account's playlists" wait_until 10 guest_library
     far=$(relay_song 'Far%20Song%20Two' | python3 -c 'import sys,json; print(json.load(sys.stdin)["albumId"])')
     "$app" open "album/$far" >/dev/null
     wait_until 15 on_screen 'text="Far Song Two"'

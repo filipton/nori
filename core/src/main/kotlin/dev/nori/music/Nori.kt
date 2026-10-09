@@ -112,6 +112,12 @@ class Nori private constructor(private val context: Context) {
     val deviceSound by lazy { dev.nori.music.playback.DeviceSound(settings, { core }, { client }, { http.metered }) }
     /** Remote control and jams; nothing runs unless they are switched on (or this is a jam guest). */
     val remotes = dev.nori.music.remote.Remotes(context, this)
+
+    /**
+     * What the app offers over the profile in use (the core's `profile_rules`): a jam guest's browses its
+     * host's library and asks for songs, and does none of the account's work.
+     */
+    val rules: dev.nori.music.ffi.library.ProfileRules get() = dev.nori.music.ffi.library.profileRules(remotes.isGuest())
     val player = PlayerConnection(context, this)
 
     /**

@@ -63,6 +63,9 @@ fun HomeScreen(actions: ActionsViewModel, vm: HomeViewModel = viewModel()) {
     val settings: dev.nori.music.app.vm.SettingsViewModel = viewModel()
     var rearranging by remember { mutableStateOf(false) }
     if (rearranging) { RowOrder(settings) { rearranging = false }; return }
+    // The mixes, the favourites and the page's own settings are the account's: a jam guest's Home is the
+    // host's shelves.
+    val account = LocalRules.current.account
     LoadBox(load) { ui ->
         val arrival = rememberArrival()
         val rise = with(LocalDensity.current) { Arrival.RISE.toPx() }
@@ -81,7 +84,7 @@ fun HomeScreen(actions: ActionsViewModel, vm: HomeViewModel = viewModel()) {
             item(key = "title") {
                 var menu by remember { mutableStateOf(false) }
                 LargeTitle(say.listenNow, Modifier.arriving(arrival, 0, rise)) {
-                    Box {
+                    if (account) Box {
                         IconButton({ menu = true }) { Icon(Icons.Filled.MoreHoriz, say.more, Modifier.size(22.dp)) }
                         DropdownMenu(menu, { menu = false }) {
                             DropdownMenuItem({ Text(say.shuffleSongs) }, { actions.shuffleAll(); menu = false })
@@ -93,7 +96,7 @@ fun HomeScreen(actions: ActionsViewModel, vm: HomeViewModel = viewModel()) {
                 }
             }
             // Favourites are always here; the mixes join them when the taste model is on (MixesViewModel).
-            item(key = "mixes") { Column(Modifier.arriving(arrival, 1, rise)) { SectionTitle(say.forYou); MixTiles() } }
+            if (account) item(key = "mixes") { Column(Modifier.arriving(arrival, 1, rise)) { SectionTitle(say.forYou); MixTiles() } }
             // The shelves carry on the count the sections above started, so each one arrives a moment
             // after the one over it; an empty shelf is not drawn and does not take a place in the order.
             var place = 2

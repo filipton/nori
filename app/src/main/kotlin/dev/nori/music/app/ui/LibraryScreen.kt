@@ -97,11 +97,10 @@ private fun <T> SortMenu(options: List<Pair<T, String>>, value: T, onChange: (T)
     }
 }
 
-/** The library's sections, in the order their pills run (the core's `library_sections`). */
-private val sections: List<dev.nori.music.ffi.library.LibrarySection> by lazy { dev.nori.music.ffi.library.librarySections() }
-
 @Composable
 fun LibraryScreen(actions: ActionsViewModel) {
+    // The library's sections, in the order their pills run (the core's `ProfileRules`).
+    val sections = LocalRules.current.sections
     var tab by rememberSaveable { mutableIntStateOf(0) }
     Column {
         LargeTitle(say.library)
@@ -201,7 +200,10 @@ private fun Artists(vm: ArtistsViewModel = viewModel()) {
     }
 }
 
-/** Every indexed song, sorted; with [decade] set, only that decade. Reads the offline index, never the network. */
+/**
+ * Every indexed song, sorted; with [decade] set, only that decade. Reads the offline index, or the server's
+ * list in its own order where the profile keeps none (a jam guest's).
+ */
 @Composable
 fun SongsScreen(actions: ActionsViewModel, decade: Int?, vm: SongsViewModel = viewModel(key = "songs-$decade")) {
     LaunchedEffect(decade) { vm.setYears(decade?.let { dev.nori.music.ffi.library.decadeYears(it.toUInt()) }?.let { it.from.toInt()..it.to.toInt() }) }
@@ -219,11 +221,12 @@ fun SongsScreen(actions: ActionsViewModel, decade: Int?, vm: SongsViewModel = vi
     LaunchedEffect(list, songs.size) { snapshotFlow { (list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= songs.size - 40 }.collect { if (it) vm.loadMore() } }
     Column {
         if (decade != null) SectionTitle(remember(decade) { say.decade(decade) })
-        LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        val indexed = LocalRules.current.indexed
+        if (indexed) LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             item { Chip(say.starredFavourites, starred) { vm.setStarredOnly(!starred) } }
             items(SongSort.entries) { s -> Chip(say.songSort(s.name), sort == s) { vm.setSort(s) } }
         }
-        if (songs.isEmpty()) EmptyNote(Note.NO_INDEX)
+        if (songs.isEmpty() && indexed) EmptyNote(Note.NO_INDEX)
         LazyColumn(state = list, contentPadding = PaddingValues(bottom = LocalChromeInset.current)) { songRows(songs, actions, playing, done, selected, menu, cover = { vm.cover(it.coverArt, CoverSize.ROW) }, from = LIBRARY_SONGS) }
     }
 }

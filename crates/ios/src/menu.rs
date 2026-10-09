@@ -225,7 +225,7 @@ pub unsafe extern "C" fn nori_ios_playlist_create(token: u64, index: i32, name: 
 #[no_mangle]
 pub extern "C" fn nori_ios_row_swipe(left: i32, starred: i32) -> i32 {
     let setting = with_session(|s| s.core.session.settings.prefs(|p| if left != 0 { p.swipe_left } else { p.swipe_right }));
-    match setting.and_then(|s| row_swipe(s, starred != 0)) {
+    match setting.and_then(|s| row_swipe(s, starred != 0, true)) {
         None => -1,
         Some(RowSwipeAct::Queue) => 0,
         Some(RowSwipeAct::PlayNext) => 1,

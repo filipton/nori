@@ -3291,7 +3291,7 @@ component SidebarContent inherits Rectangle {
     in property <string> server;
     in property <string> account;
     in property <string> account-initial;
-    // A jam guest's: search only (the host's library opens from what it finds).
+    // A jam guest's: the host's library, without the account's playlists and settings.
     in property <bool> guest;
     callback open-accounts();
     in property <int> covers-rev;
@@ -3323,28 +3323,28 @@ component SidebarContent inherits Rectangle {
                 chosen: root.view == 1;
                 clicked => { root.go(1); }
             }
-            if !root.guest: SideItem {
+            SideItem {
                 text: "Home";
                 icon: Icons.home;
                 chosen: root.view == 0;
                 clicked => { root.go(0); }
             }
-            if !root.guest: SideHeading {
+            SideHeading {
                 text: "Library";
             }
-            if !root.guest: SideItem {
+            SideItem {
                 text: "Artists";
                 icon: Icons.artists;
                 chosen: root.view == 3 || (root.view == 6 && root.page-kind == 1);
                 clicked => { root.go(3); }
             }
-            if !root.guest: SideItem {
+            SideItem {
                 text: "Albums";
                 icon: Icons.albums;
                 chosen: root.view == 2 || (root.view == 6 && root.page-kind == 0);
                 clicked => { root.go(2); }
             }
-            if !root.guest: SideItem {
+            SideItem {
                 text: "Songs";
                 icon: Icons.songs;
                 chosen: root.view == 5;

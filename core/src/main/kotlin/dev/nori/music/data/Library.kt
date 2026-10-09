@@ -311,6 +311,10 @@ class Library(
      * Walks the whole library into the local index and drops what the server no longer has. The pages go
      * from the socket into SQLite inside Rust; only the counts come back.
      */
+    /** A page of the songs list (the core's `songs_listed`): the offline index's, or the server's where the profile keeps none. */
+    suspend fun songsListed(sort: String, starredOnly: Boolean, yearFrom: UInt, yearTo: UInt, offset: UInt) =
+        withContext(Dispatchers.IO) { lifted { client.songsListed(sort, starredOnly, yearFrom, yearTo, offset) } }
+
     suspend fun sync(): IngestStats = withContext(Dispatchers.IO) { lifted { client.syncLibrary() } }
 
     suspend fun indexSize(): IngestStats = withContext(Dispatchers.IO) { core.indexSize() }

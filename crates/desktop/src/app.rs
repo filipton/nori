@@ -604,9 +604,6 @@ impl App {
 
     /// Adds the whole page to the queue.
     fn enqueue_page(&self) {
-        if self.guest() {
-            return self.say(words::ASK_ONE, false);
-        }
         if !self.page_songs.is_empty() {
             self.on_session(|s| s.enqueue(self.page_songs.clone(), false));
         }
@@ -667,15 +664,14 @@ impl App {
                 self.jam_now = None;
                 self.follow();
                 self.jam_shown();
-                if self.guest() {
-                    // Search, and the jam in the queue panel; the host's library is not the guest's to list.
-                    ui.set_side_playlists(ModelRc::default());
-                    ui.set_inspector(1);
-                    self.go(SEARCH);
-                } else {
-                    self.go(HOME);
+                self.go(HOME);
+                if self.account() {
                     // The sidebar lists playlists on every page.
                     self.on_session(|s| s.load(Req::Playlists));
+                } else {
+                    // A jam guest's: the host's library, and the jam in the queue panel.
+                    ui.set_side_playlists(ModelRc::default());
+                    ui.set_inspector(1);
                 }
             }
             Err(e) => {
@@ -1054,9 +1050,6 @@ impl App {
     }
 
     fn play_fetch(&self, what: Fetch) {
-        if self.guest() {
-            return self.say(words::ASK_ONE, false);
-        }
         self.on_session(|s| s.play_later(what, false));
     }
 
@@ -1085,9 +1078,6 @@ impl App {
     }
 
     fn play_page(&self, shuffle: bool) {
-        if self.guest() {
-            return self.say(words::ASK_ONE, false);
-        }
         let Some(fetch) = self.page_fetch.clone() else { return };
         if self.page_songs.is_empty() {
             self.on_session(|s| s.play_later(fetch, shuffle));
@@ -1140,9 +1130,15 @@ impl App {
         self.session.as_ref().is_some_and(|s| s.guest)
     }
 
+    /// Whether the open profile has the account's things (hearts, playlists, settings): a jam guest's has
+    /// not (the core's `ProfileRules`).
+    fn account(&self) -> bool {
+        self.session.as_ref().is_some_and(|s| s.rules.account)
+    }
+
     /// `s`'s heart as the lists show it; a guest has none.
     fn heart(&self, s: &Song) -> Option<bool> {
-        (!self.guest()).then(|| self.starred(s))
+        self.account().then(|| self.starred(s))
     }
 
     /// Joins the jam `link` invites to, as a guest profile of its own.

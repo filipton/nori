@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use nori_core::bridge::BridgeTake;
+use nori_core::browse::ProfileRules;
 use nori_core::cache_policy::{Page, Read};
 use nori_core::client::{Client, Starrable};
 use nori_core::covers::CoverNet;
@@ -218,6 +219,8 @@ pub struct Session {
     device: nori_core::remote::RemoteMe,
     /// The profile is a jam guest's: songs picked are asked of the jam's host, and nothing else plays.
     pub guest: bool,
+    /// What the app offers over the profile (a guest's: the host's library, read only).
+    pub rules: ProfileRules,
     discovery: Option<Arc<dyn nori_core::remote::Discovery>>,
     out: Out,
 }
@@ -243,7 +246,11 @@ impl Session {
         let analyses = Analyses::of(client.clone());
         let downloader = Downloader::new(client.clone(), audio.clone(), store.clone(), analyses.clone());
         // `bridging`: a song the network cannot bring raises `Event::Bridge` (see `Session::bridge`).
-        let app = CoreApp::new(core.session.clone()).measuring(Measurer::new(analyses.clone(), store.clone())).per_device(core.clone()).bridging().volume(loudness.clone());
+        let guest = nori_remote::is_guest_key(&o.profile.api_key);
+        let rules = core.rules();
+        let app = CoreApp::new(core.session.clone()).per_device(core.clone()).bridging().volume(loudness.clone());
+        // Measuring ahead is the account's: a guest plays its host's transitions.
+        let app = if rules.account { app.measuring(Measurer::new(analyses.clone(), store.clone())) } else { app };
         let library = CoreLibrary { client: client.clone(), bytes: audio, store: Some(store.clone()), analyses };
         let events = o.out.clone();
         let config = Config { memory_mb: o.memory_mb, settings: settings(&prefs, loudness.db()), ..Config::default() };
@@ -251,8 +258,7 @@ impl Session {
         let covers = o.covers.then(|| Arc::new(Loader::new(CoverConfig::new(o.data.join("covers")), cover_net)));
         let remotes = Arc::new(crate::remote::Remotes::new(level.clone()));
         let keeper = Keeper::start(core.clone(), engine.clone());
-        let guest = nori_remote::is_guest_key(&o.profile.api_key);
-        let s = Session { core, client, engine, store, downloader, covers, level, search: SearchSession::new(), offline: o.offline, #[cfg(feature = "desktop")] mpris: o.mpris, keeper, db: PathBuf::from(db), remotes, device: o.device, guest, discovery: o.discovery, out: o.out };
+        let s = Session { core, client, engine, store, downloader, covers, level, search: SearchSession::new(), offline: o.offline, #[cfg(feature = "desktop")] mpris: o.mpris, keeper, db: PathBuf::from(db), remotes, device: o.device, guest, rules, discovery: o.discovery, out: o.out };
         #[cfg(feature = "desktop")]
         if let Some(m) = &s.mpris {
             let cover = crate::remote::NowCover::new(s.covers.clone(), s.core.clone(), Arc::downgrade(m));
@@ -260,7 +266,7 @@ impl Session {
         }
         s.restore();
         s.follow_remote();
-        if !s.offline && s.core.download_counts().pending > 0 {
+        if !s.offline && s.rules.account && s.core.download_counts().pending > 0 {
             s.start_downloads();
         }
         Ok(s)
@@ -283,13 +289,13 @@ impl Session {
         if self.offline {
             return;
         }
-        let (client, core, out, guest) = (self.client.clone(), self.core.clone(), self.out.clone(), self.guest);
+        let (client, core, out, indexed) = (self.client.clone(), self.core.clone(), self.out.clone(), self.rules.indexed);
         spawn("nori-check", move || {
             let r = block_on(client.read_now(Read::Ping)).map(|_| ());
             let ok = r.is_ok();
             out(Said::Reachable(r));
-            // Search and the songs list read the offline index; a guest has no library to index.
-            if ok && !guest && core.index_size().map_or(true, |s| s.songs == 0) {
+            // Search and the songs list read the offline index, where the profile keeps one.
+            if ok && indexed && core.index_size().map_or(true, |s| s.songs == 0) {
                 sync(&client, &out);
             }
             let _ = block_on(client.flush_pending());
@@ -323,7 +329,7 @@ impl Session {
         } else {
             save(&self.core, &self.engine);
         }
-        if k.push {
+        if k.push && self.rules.account {
             let (client, st) = (self.client.clone(), self.engine.status());
             spawn("nori-push", move || {
                 let _ = block_on(client.playlist_push(st.id.clone(), st.position_now().max(0)));
@@ -662,8 +668,7 @@ impl Session {
     /// Stars or unstars on the server (queued when offline); says so if "Confirm favorites" is on, and
     /// always when it fails.
     pub fn star(&self, kind: Starrable, id: String, on: bool) {
-        // A jam guest's key cannot star.
-        if self.guest {
+        if !self.rules.account {
             return;
         }
         let (client, out, notice, hearts) = (self.client.clone(), self.out.clone(), self.core.favourite_notice(), self.handle().hearts());
@@ -737,7 +742,7 @@ impl Session {
             }
             _ => None,
         };
-        if let Some(send) = send.filter(|s| s.submit_id.is_some() || s.now_playing_id.is_some()) {
+        if let Some(send) = send.filter(|s| self.rules.account && (s.submit_id.is_some() || s.now_playing_id.is_some())) {
             let client = self.client.clone();
             spawn("nori-scrobble", move || {
                 // Offline, writes wait in the pending queue with their original time.

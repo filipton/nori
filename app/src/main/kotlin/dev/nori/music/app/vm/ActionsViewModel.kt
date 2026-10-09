@@ -56,15 +56,24 @@ class ActionsViewModel(app: Application) : NoriViewModel(app) {
     private val picked = Selection<Song> { it.id }
     val selection: StateFlow<List<Song>> = picked.items
     /** A jam guest has nothing to do with a selection: a long press selects nothing. */
-    fun toggleSelected(song: Song) { if (!guest) picked.toggle(song) }
+    fun toggleSelected(song: Song) { if (!asks) picked.toggle(song) }
 
-    /** A jam guest's profile: a song picked here is asked of the jam's host, and nothing plays on this phone. */
-    private val guest: Boolean get() = nori.remotes.isGuest()
+    /** A song played or queued here is asked of the jam's host (a guest's profile, the core's `ProfileRules`). */
+    private val asks: Boolean get() = nori.rules.asks
 
-    /** Asks the jam's host for [songs] (a guest's tap, Play next and Add to queue). */
+    /** Asks the jam's host for [songs] (a guest's Play next and Add to queue). */
     private fun ask(songs: List<Song>) {
         songs.forEach(nori.remotes::request)
         songs.firstOrNull()?.let { _messages.trySend(say.jamAsked(it.title)) }
+    }
+
+    /**
+     * Plays [songs] from [index], or shuffled; a jam guest asks for the song that would start instead, the
+     * one at [index] or, shuffled, any.
+     */
+    private fun start(songs: List<Song>, index: Int = 0, shuffle: Boolean = false, from: PageOrigin? = null) {
+        if (asks) ask(listOfNotNull(if (shuffle) songs.randomOrNull() else songs.getOrNull(index)))
+        else nori.player.play(songs, index, shuffle = shuffle, from = from)
     }
     fun clearSelection() = picked.clear()
     /** Back while songs are selected lets go of them and goes no further (see [Selection.back]). */
@@ -80,7 +89,7 @@ class ActionsViewModel(app: Application) : NoriViewModel(app) {
      * open on it.
      */
     fun tap(songs: List<Song>, index: Int, from: PageOrigin? = null, playing: Boolean = false): Boolean {
-        if (guest) return false.also { ask(listOf(songs[index])) }
+        if (asks) return false.also { ask(listOf(songs[index])) }
         val plan = nori.session.tapPlan(picked.items.value.isNotEmpty())
         when (plan) {
             TapPlan.SELECT -> toggleSelected(songs[index])
@@ -97,18 +106,19 @@ class ActionsViewModel(app: Application) : NoriViewModel(app) {
 
     // By id: the core has the artist's albums from reading the page, so they need not be handed back.
     fun playArtist(artistId: String, shuffle: Boolean = false) = attempt(null) {
-        nori.player.play(nori.library.artistSongs(artistId), shuffle = shuffle, from = PageOrigin(OriginKind.ARTIST, artistId))
+        start(nori.library.artistSongs(artistId), shuffle = shuffle, from = PageOrigin(OriginKind.ARTIST, artistId))
     }
     fun queueArtist(artistId: String) = attempt(null) { enqueue(nori.library.artistSongs(artistId)) }
     fun downloadArtist(artistId: String) = attempt(null) { download(nori.library.artistSongs(artistId)) }
 
     /** [songs] from [index]; [from] the page they are the list of, if they are one page's (see [tap]). */
     fun play(songs: List<Song>, index: Int = 0, from: PageOrigin? = null) {
-        if (guest) ask(listOfNotNull(songs.getOrNull(index))) else nori.player.play(songs, index, from = from)
+        start(songs, index, from = from)
     }
 
     /** Spreads artists and albums apart (in the core) unless the user prefers a plain random order. */
     fun shuffle(songs: List<Song>, from: PageOrigin? = null) {
+        if (asks) return start(songs, shuffle = true)
         when (val plan = shufflePlan(songs)) {
             ShufflePlan.Empty -> {}
             ShufflePlan.PlayerShuffle -> nori.player.play(songs, shuffle = true, from = from)
@@ -116,7 +126,7 @@ class ActionsViewModel(app: Application) : NoriViewModel(app) {
         }
     }
 
-    fun instantMix(song: Song) = attempt(null) { nori.player.play(nori.library.instantMix(song)) }
+    fun instantMix(song: Song) = attempt(null) { start(nori.library.instantMix(song)) }
 
     fun excludeFromMixes(song: Song) = attempt(say.excludedFromMixes) { nori.library.excludeFromMixes(song.id, true) }
 
@@ -129,16 +139,16 @@ class ActionsViewModel(app: Application) : NoriViewModel(app) {
         _messages.send(say.m3uImported(imported.songIds.size, imported.entries.toInt(), name))
     }
     /** [songs] added by hand. */
-    fun playNext(songs: List<Song>) { if (guest) ask(songs) else { nori.player.playNext(songs); _messages.trySend(say.playingNext) } }
-    fun enqueue(songs: List<Song>) { if (guest) ask(songs) else { nori.player.enqueue(songs); _messages.trySend(say.addedToQueue) } }
+    fun playNext(songs: List<Song>) { if (asks) ask(songs) else { nori.player.playNext(songs); _messages.trySend(say.playingNext) } }
+    fun enqueue(songs: List<Song>) { if (asks) ask(songs) else { nori.player.enqueue(songs); _messages.trySend(say.addedToQueue) } }
 
     // Each shuffle marks its queue, so its refills go on the same way whatever the autoplay setting says.
-    fun shuffleAll() = attempt(null) { nori.player.play(nori.library.shuffleAll(), from = PageOrigin(OriginKind.SHUFFLE_SONGS, "")) }
+    fun shuffleAll() = attempt(null) { start(nori.library.shuffleAll(), from = PageOrigin(OriginKind.SHUFFLE_SONGS, "")) }
     /** Random albums, each whole and in its own order. */
-    fun shuffleAlbums() = attempt(null) { nori.player.play(nori.library.shuffleAlbums(), from = PageOrigin(OriginKind.SHUFFLE_ALBUMS, "")) }
+    fun shuffleAlbums() = attempt(null) { start(nori.library.shuffleAlbums(), from = PageOrigin(OriginKind.SHUFFLE_ALBUMS, "")) }
 
     /** An endless-ish mix seeded from one song. */
-    fun startRadio(song: Song) = attempt(null) { nori.player.play(nori.library.radio(song)) }
+    fun startRadio(song: Song) = attempt(null) { start(nori.library.radio(song)) }
 
     /** Picks up the queue another device (or the web player) left on the server. */
     fun resumeFromServer() = attempt(null) {

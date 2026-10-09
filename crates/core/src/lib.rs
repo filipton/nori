@@ -380,6 +380,8 @@ pub struct Core {
     /// The user and the Subsonic secret (password or API key) the LAN's remote control proves the account
     /// with; None for a jam guest.
     account: RwLock<Option<(String, String)>>,
+    /// What the app offers over the profile (a jam guest's: the host's library, read only).
+    rules: RwLock<browse::ProfileRules>,
     /// What the stored queue's songs were saved from (queue.rs).
     saved_queue: Mutex<Option<queue::SavedQueue>>,
 }
@@ -445,6 +447,7 @@ impl Core {
             stars: Mutex::new(stars::StarMarks::default()),
             session,
             account: RwLock::new(None),
+            rules: RwLock::new(browse::profile_rules(false)),
             saved_queue: Mutex::new(None),
         });
         core.session.db.set(&core.db);
@@ -464,6 +467,7 @@ impl Core {
         let base = s.base.clone();
         *self.server.write() = s;
         let key = config.api_key.unwrap_or_default();
+        *self.rules.write() = browse::profile_rules(nori_remote::is_guest_key(&key));
         *self.account.write() = match (key.is_empty(), nori_remote::is_guest_key(&key)) {
             (true, _) => Some((config.user, config.password)),
             (false, false) => Some((config.user, key)),

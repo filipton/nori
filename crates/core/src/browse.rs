@@ -1,11 +1,18 @@
 //! Browse-screen reads of the index and history. Layouts are nori-library's.
 
+use crate::cache_policy::{Page, Read};
+use crate::client::{Client, NetResult};
 use crate::{db, history, Core, ListeningStats, Result};
 
 pub use nori_library::browse::*;
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
+    /// What the app offers over this profile, as configured: a jam guest's or the account's.
+    pub fn rules(&self) -> ProfileRules {
+        self.rules.read().clone()
+    }
+
     /// A page of the local song list at `offset`, sorted by the [song_sorts] entry `sort` (unknown: index
     /// order), optionally starred only and within `year_from..=year_to` (when `year_to` > 0).
     pub fn songs_page(&self, sort: String, starred_only: bool, year_from: u32, year_to: u32, offset: u32) -> Result<SongsPage> {
@@ -34,6 +41,22 @@ impl Core {
             Ok(Decade { start, song_count: r.get(1)? })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+}
+
+#[cfg_attr(feature = "ffi", uniffi::export)]
+impl Client {
+    /// A page of the songs list at `offset`: the offline index's, as [`Core::songs_page`] has it, or for a
+    /// profile that keeps none (a jam guest's) the server's, in its own order whatever the sort.
+    pub async fn songs_listed(&self, sort: String, starred_only: bool, year_from: u32, year_to: u32, offset: u32) -> NetResult<SongsPage> {
+        if self.core.rules().indexed {
+            return Ok(self.core.songs_page(sort, starred_only, year_from, year_to, offset)?);
+        }
+        let songs = match self.read_now(Read::SongPage { offset: offset as i32, count: SONG_PAGE as i32 }).await? {
+            Page::Found { v } => v.songs,
+            _ => Vec::new(),
+        };
+        Ok(SongsPage { exhausted: (songs.len() as u32) < SONG_PAGE, songs })
     }
 }
 

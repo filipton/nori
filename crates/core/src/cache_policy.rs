@@ -47,6 +47,9 @@ pub enum Read {
     Ping,
     /// Uncached so octo-fiesta's provider results show; one big page since the proxy repeats them per offset.
     Search { query: String, songs: i32, albums: i32, artists: i32 },
+    /// Every song on the server, `count` from `offset`, in the server's order: the songs list of a profile
+    /// that keeps no offline index (a jam guest's).
+    SongPage { offset: i32, count: i32 },
     RandomSongs { size: i32, genre: Option<String> },
     SongsByGenre { genre: String, count: i32 },
     SimilarSongs { id: String, count: i32 },
@@ -202,6 +205,12 @@ fn spec(read: Read) -> Spec {
         Read::Search { query, songs, albums, artists } => s(
             "search3",
             pairs(&[("query", query), ("songCount", songs.to_string()), ("albumCount", albums.to_string()), ("artistCount", artists.to_string())]),
+            None,
+            Parser::Search,
+        ),
+        Read::SongPage { offset, count } => s(
+            "search3",
+            pairs(&[("query", String::new()), ("songCount", count.to_string()), ("songOffset", offset.to_string()), ("albumCount", "0".into()), ("artistCount", "0".into())]),
             None,
             Parser::Search,
         ),
@@ -511,6 +520,28 @@ mod tests {
         block(c.read_fetch(Read::AlbumList { kind: crate::browse::AlbumSort::ByYear, size: 50, offset: 0, genre: None }, None)).unwrap();
         let year = this_year();
         assert!(fake.asked()[2].ends_with(&format!("&type=byYear&fromYear={year}&toYear=0&size=50&offset=0&musicFolderId=7")));
+
+        // A page of every song, as a profile without the offline index lists them.
+        fake.answer(r#"{"subsonic-response":{"status":"ok","searchResult3":{"song":[{"id":"s9","title":"t"}]}}}"#);
+        let page = block(c.read_now(Read::SongPage { offset: 100, count: 50 })).unwrap();
+        assert!(matches!(page, Page::Found { v } if v.songs.iter().map(|s| s.id.as_str()).eq(["s9"])));
+        assert!(fake.asked()[3].ends_with("&query=&songCount=50&songOffset=100&albumCount=0&artistCount=0&musicFolderId=7"), "{}", fake.asked()[3]);
+    }
+
+    #[test]
+    fn a_guest_lists_the_servers_songs_and_an_account_its_index() {
+        let (c, fake) = setup();
+        c.core.configure(crate::ServerConfig { url: "h".into(), api_key: Some(nori_remote::guest_key("k")), ..Default::default() }).unwrap();
+        assert!(c.core.rules().asks);
+        fake.answer(r#"{"subsonic-response":{"status":"ok","searchResult3":{"song":[{"id":"s9","title":"t"}]}}}"#);
+        let page = block(c.songs_listed("title".into(), false, 0, 0, 0)).unwrap();
+        assert!(page.exhausted && page.songs.iter().map(|s| s.id.as_str()).eq(["s9"]));
+        assert!(fake.asked()[0].contains("search3?") && fake.asked()[0].contains("&query=&songCount="), "{}", fake.asked()[0]);
+
+        c.core.configure(crate::ServerConfig { url: "h".into(), user: "ann".into(), password: "pw".into(), ..Default::default() }).unwrap();
+        assert!(!c.core.rules().asks);
+        assert!(block(c.songs_listed("title".into(), false, 0, 0, 0)).unwrap().songs.is_empty(), "nothing indexed");
+        assert_eq!(fake.asked().len(), 1, "the index, not the server");
     }
 
     #[test]

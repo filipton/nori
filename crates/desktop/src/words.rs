@@ -170,8 +170,6 @@ pub const ASKED: &str = "Asked";
 pub const JAM_GUEST: &str = "Jam";
 pub const NOT_AN_INVITE: &str = "That is not a jam invite. Paste the whole link the host sent you.";
 pub const JAM_LEFT: &str = "You left the jam";
-/// A guest asks for songs one at a time.
-pub const ASK_ONE: &str = "Ask for songs one at a time";
 
 pub fn jam_join_failed(e: &str) -> String {
     format!("Couldn't join the jam ({e})")

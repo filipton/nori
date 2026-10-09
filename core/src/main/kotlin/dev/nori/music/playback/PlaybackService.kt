@@ -707,7 +707,8 @@ class PlaybackService : MediaLibraryService() {
      * Off entirely when AutoMix is (the core then names no songs), and it never fetches anything (see
      * AutoMixPrefetch). Asked again with the same songs, it does nothing.
      */
-    private fun analyseAhead() = analyser.update()
+    /** The account's: a jam guest plays its host's transitions. */
+    private fun analyseAhead() { if (nori.rules.account) analyser.update() }
 
     /**
      * Keeps the music going past the end of the queue. When to fetch (the end in sight, two songs left
@@ -761,7 +762,7 @@ class PlaybackService : MediaLibraryService() {
         scope.launch(Dispatchers.IO + NonCancellable) {
             runCatching { nori.core.playlistSave(position.toULong()) }
             // What the server is handed (only with scrobbling on, radio left out) is the core's too, read there.
-            if (push) runCatching { nori.library.pushQueue(current, position) }
+            if (push && nori.rules.account) runCatching { nori.library.pushQueue(current, position) }
         }
     }
 

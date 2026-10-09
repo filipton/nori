@@ -140,9 +140,7 @@ fun TabBar(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look,
                 .padding(start = BAR_END, end = BAR_END, top = 8.dp, bottom = BAR_OFF),
             Arrangement.spacedBy(BAR_GAP), Alignment.CenterVertically,
         ) {
-            // A jam guest has Search alone: it stands at the end by itself.
-            if (rest.isEmpty()) Spacer(Modifier.weight(1f).height(BAR_THICK))
-            else Surface(
+            Surface(
                 shape = PillShape, color = slab, contentColor = content, shadowElevation = 12.dp,
                 border = androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp.Hairline, edge),
                 modifier = Modifier.weight(1f).height(BAR_THICK),

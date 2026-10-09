@@ -245,20 +245,26 @@ impl Session {
             };
             match &req {
                 Req::Home => {
+                    // The mixes and the favourites are the account's: a jam guest's Home is the shelves.
+                    let account = core.rules().account;
                     // The mixes are drawn here from the index and the history; the favourites follow the
                     // starred songs, stored at once and the server's after.
                     let taste = app().settings.prefs(|p| p.taste_model);
-                    let stored = client.mix_favourites_stored().ok();
-                    if taste {
+                    let stored = client.mix_favourites_stored().ok().filter(|_| account);
+                    if taste && account {
                         block_on(client.mix_warm_all());
                     }
-                    send(Ok(Data::Picks(core.mix_cards(taste))));
+                    send(Ok(Data::Picks(if account { core.mix_cards(taste) } else { Vec::new() })));
                     if let Some(s) = stored.filter(|s| !s.fresh) {
                         if block_on(client.mix_favourites_refresh(s.digest)).is_ok_and(|changed| changed) {
                             send(Ok(Data::Picks(core.mix_cards(taste))));
                         }
                     }
                     for (i, (_, kind)) in HOME_ROWS.iter().enumerate() {
+                        if *kind == AlbumSort::Starred && !account {
+                            send(Ok(Data::HomeRow(i, Vec::new())));
+                            continue;
+                        }
                         let read = if *kind == AlbumSort::Starred { Read::FavouriteAlbums { size: 40 } } else { Read::AlbumList { kind: *kind, size: 40, offset: 0, genre: None } };
                         let mut got = false;
                         if let Err(e) = read_pages(&client, read, |p| {
@@ -291,7 +297,7 @@ impl Session {
                     },
                     Err(e) => send(Err(net_error(&e))),
                 },
-                Req::Songs { offset } => send(core.songs_page("title".into(), false, 0, 0, *offset).map(|p| Data::Songs(p.songs, p.exhausted)).map_err(|e| e.to_string())),
+                Req::Songs { offset } => send(block_on(client.songs_listed("title".into(), false, 0, 0, *offset)).map(|p| Data::Songs(p.songs, p.exhausted)).map_err(|e| net_error(&e))),
             }
         });
     }

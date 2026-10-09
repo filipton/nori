@@ -210,15 +210,16 @@ pub enum RowSwipeAct {
     Download,
 }
 
-/// The swipe `setting` on a song whose heart is `starred`; none when it does nothing.
+/// The swipe `setting` on a song whose heart is `starred`; none when it does nothing. Without the
+/// `account`'s things (a jam guest's profile, `ProfileRules::account`) a song is not hearted or kept.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn row_swipe(setting: SwipeAction, starred: bool) -> Option<RowSwipeAct> {
+pub fn row_swipe(setting: SwipeAction, starred: bool, account: bool) -> Option<RowSwipeAct> {
     match setting {
         SwipeAction::None => None,
         SwipeAction::Queue => Some(RowSwipeAct::Queue),
         SwipeAction::PlayNext => Some(RowSwipeAct::PlayNext),
-        SwipeAction::Favourite => Some(RowSwipeAct::Favourite { on: !starred }),
-        SwipeAction::Download => Some(RowSwipeAct::Download),
+        SwipeAction::Favourite => account.then_some(RowSwipeAct::Favourite { on: !starred }),
+        SwipeAction::Download => account.then_some(RowSwipeAct::Download),
     }
 }
 
@@ -378,9 +379,12 @@ mod tests {
 
     #[test]
     fn marks() {
-        assert_eq!(row_swipe(SwipeAction::None, false), None);
-        assert_eq!(row_swipe(SwipeAction::Favourite, true), Some(RowSwipeAct::Favourite { on: false }));
-        assert_eq!(row_swipe(SwipeAction::Favourite, false), Some(RowSwipeAct::Favourite { on: true }));
+        assert_eq!(row_swipe(SwipeAction::None, false, true), None);
+        assert_eq!(row_swipe(SwipeAction::Favourite, true, true), Some(RowSwipeAct::Favourite { on: false }));
+        assert_eq!(row_swipe(SwipeAction::Favourite, false, true), Some(RowSwipeAct::Favourite { on: true }));
+        // A jam guest's swipes ask for songs; hearts and downloads are the account's.
+        let guest: Vec<_> = [SwipeAction::Queue, SwipeAction::PlayNext, SwipeAction::Favourite, SwipeAction::Download].map(|s| row_swipe(s, false, false)).into();
+        assert_eq!(guest, [Some(RowSwipeAct::Queue), Some(RowSwipeAct::PlayNext), None, None]);
 
         // A rows download mark.
         use DownloadPhase as P;

@@ -54,6 +54,13 @@ pub fn home_shelves(rows: Vec<HomeRow>) -> Vec<HomeShelf> {
     rows.into_iter().map(shelf).collect()
 }
 
+/// The home rows a profile shows of the ones kept: without the `account`'s things (a jam guest's,
+/// [`ProfileRules::account`]) the server's album shelves, not its favourites, playlists or indexed songs.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn home_rows_shown(rows: Vec<HomeRow>, account: bool) -> Vec<HomeRow> {
+    rows.into_iter().filter(|r| account || matches!(shelf(*r), HomeShelf::Albums { follows_stars: false, .. })).collect()
+}
+
 /// The pinned playlists, in the order the server lists them.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn home_pinned(playlists: Vec<Playlist>, pins: Vec<String>) -> Vec<Playlist> {
@@ -234,11 +241,31 @@ pub enum LibrarySection {
     Downloads,
 }
 
-/// The library's sections, in the order their pills run.
+/// What the app offers over a profile. A jam guest's is the normal app over the host's library, read
+/// only: what it plays or queues is asked of the host, and nothing in it is the account's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct ProfileRules {
+    /// Playing or queueing songs asks the jam's host for them: a tap or Play asks for the song that
+    /// would start, Play next and Add to queue for each song.
+    pub asks: bool,
+    /// What is the account's: hearts and ratings, playlists, downloads, sharing, mixes and history, the
+    /// settings; and its work in the background: scrobbles and now playing, queue pushes, downloads,
+    /// analysis read ahead, being a device remote control reaches.
+    pub account: bool,
+    /// The library is kept in the offline index (synced); without it the songs list reads the server a
+    /// page at a time.
+    pub indexed: bool,
+    /// The library's sections, in the order their pills run.
+    pub sections: Vec<LibrarySection>,
+}
+
+/// The rules of a jam `guest`'s profile, or of an account's.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn library_sections() -> Vec<LibrarySection> {
+pub fn profile_rules(guest: bool) -> ProfileRules {
     use LibrarySection::*;
-    vec![Albums, Favourites, Artists, Songs, Playlists, Smart, History, Genres, Decades, Folders, Radio, Downloads]
+    let sections = if guest { vec![Albums, Artists, Songs, Genres] } else { vec![Albums, Favourites, Artists, Songs, Playlists, Smart, History, Genres, Decades, Folders, Radio, Downloads] };
+    ProfileRules { asks: guest, account: !guest, indexed: !guest, sections }
 }
 
 /// A decade's years, first and last, from its first year.
@@ -385,6 +412,13 @@ pub struct Decade {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_guest_home_shows_the_hosts_album_shelves_only() {
+        let every = HomeRow::every().to_vec();
+        assert_eq!(home_rows_shown(every.clone(), true), every);
+        assert_eq!(home_rows_shown(every, false), [HomeRow::Recent, HomeRow::Newest, HomeRow::Frequent, HomeRow::Random]);
+    }
 
     #[test]
     fn listening_page_reads_numbers() {
