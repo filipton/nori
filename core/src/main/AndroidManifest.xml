@@ -32,9 +32,10 @@
             </intent-filter>
         </service>
         <!-- The device this phone mirrors, as the system's output switcher names it (remote/RemoteRoute.kt);
-             bound only for this app's own scan or while it has a session. -->
+             enabled only while something is mirrored, bound only for this app's own scan or while it has a session. -->
         <service
             android:name="dev.nori.music.remote.RemoteRoute$Provider"
+            android:enabled="false"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.media.MediaRoute2ProviderService" />

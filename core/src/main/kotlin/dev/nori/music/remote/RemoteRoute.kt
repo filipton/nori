@@ -2,6 +2,7 @@ package dev.nori.music.remote
 
 import android.content.ComponentName
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.MediaRoute2Info
 import android.media.MediaRoute2ProviderService
 import android.media.MediaRouter2
@@ -18,6 +19,10 @@ import androidx.annotation.RequiresApi
  * its remote volume's controller (RemoteDevicePlayer's DeviceInfo). Nothing is registered while nothing
  * is mirrored. While something is, this app scans for its own route (the system binds the provider for
  * that, and lists the route as where this app's media goes) and the provider holds the session.
+ *
+ * The provider is enabled only while something is mirrored (manifest: disabled): the system keeps a
+ * provider it bound, at a foreground service's priority, after its session is released until it next
+ * looks at the routes; disabling the component makes it let go at once.
  */
 object RemoteRoute {
     /** The device mirrored now, or null; the provider shows it whenever the system binds it. */
@@ -39,8 +44,20 @@ object RemoteRoute {
         if (Build.VERSION.SDK_INT < 30 || device == shown) return
         shown = device
         provider?.show(device)
-        if (device != null) startScan(context) else stopScan(context)
+        if (device != null) {
+            enable(context, true)
+            startScan(context)
+        } else {
+            stopScan(context)
+            enable(context, false)
+        }
     }
+
+    private fun enable(context: Context, on: Boolean) = context.packageManager.setComponentEnabledSetting(
+        ComponentName(context, Provider::class.java),
+        if (on) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DEFAULT,
+        PackageManager.DONT_KILL_APP,
+    )
 
     /** A scan for this app's own route only: a self-scan-only provider is bound for no other app's. */
     @RequiresApi(30)
