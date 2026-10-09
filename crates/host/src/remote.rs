@@ -8,7 +8,7 @@ use std::sync::Arc;
 #[cfg(feature = "desktop")]
 use std::sync::Weak;
 
-use nori_core::remote::{Mirror, MirrorRow, Playing, Remote, RemotePlayer, RemoteShown};
+use nori_core::remote::{JamControls, Mirror, MirrorRow, Playing, Reach, Remote, RemotePlayer, RemoteShown};
 #[cfg(feature = "desktop")]
 use nori_core::remote::{Announcement, Discovery};
 use nori_core::playlist::PlaylistView;
@@ -255,7 +255,7 @@ impl Elsewhere {
     }
 
     /// `press` as a command for the device; None when there is nothing to ask.
-    fn op(&self, press: Press) -> Option<Op> {
+    pub(crate) fn op(&self, press: Press) -> Option<Op> {
         let m = &self.mirror;
         Some(match press {
             Press::Toggle if m.playing => Op::Pause,
@@ -296,6 +296,16 @@ impl Elsewhere {
     /// Puts song `id`, removed here, back where it was in the device's queue; false when it was not.
     pub(crate) fn put_back(&self, id: &str) -> bool {
         self.remote.clone().put_back(self.mirror.id.clone(), id.to_string())
+    }
+
+    /// This jam guest's control `op`, by its role ([`Remote::jam_press`]).
+    pub(crate) fn jam_press(&self, op: Op) -> Reach {
+        self.remote.clone().jam_press(op)
+    }
+
+    /// What this jam guest's controls reach, and what its play button shows; None outside a jam.
+    pub fn jam_controls(&self) -> Option<JamControls> {
+        self.remote.jam_controls()
     }
 
     pub(crate) fn send(&self, op: Op) {

@@ -379,6 +379,8 @@ enum Say {
     static func listening(_ n: Int) -> String { n == 0 ? "no one yet" : "\(n) listening" }
     /// The jam on the player: "Jam · Desk · 2 listening".
     static func jamStrip(_ host: String, _ n: Int) -> String { "Jam · \(host) · \(listening(n))" }
+    /// A jam guest paused its own listening; play joins the jam again.
+    static let jamPausedHere = "Paused here · Jam still playing"
     static func waitingFor(_ host: String) -> String { "Waiting for \(host)" }
     /// Why a guest who asked to listen along does not, by `nori_ios_jam` listening code.
     static func jamAlong(_ code: Int) -> String? {

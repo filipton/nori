@@ -30,6 +30,7 @@ use nori_look::cover::CoverColours;
 #[cfg(feature = "desktop")]
 use crate::Controls;
 use crate::remote::Press;
+use nori_core::remote::Reach;
 use crate::{config, db_path, derive, net, save, spawn, Fetch, Keeper, Level};
 use nori_remote::wire::Op;
 
@@ -431,10 +432,15 @@ impl Session {
     }
 
     /// Sends `press` to the active device while it is another one; false while this one plays. A jam
-    /// guest's presses go nowhere but its own volume.
+    /// guest's go by its role ([`nori_core::remote::Remote::jam_press`]): to the host, carried out here
+    /// (false), or nowhere; its volume is its own.
     fn there(&self, press: Press) -> bool {
-        if self.guest && !matches!(press, Press::Volume(_)) {
-            return true;
+        if self.guest {
+            let jam = self.jam_playing();
+            return match jam.as_ref().and_then(|j| Some((j, j.op(press)?))) {
+                Some((j, op)) => j.jam_press(op) != Reach::Here,
+                None => !matches!(press, Press::Volume(_)),
+            };
         }
         self.elsewhere().map(|e| e.press(press)).is_some()
     }

@@ -6,7 +6,8 @@
 //! little to close a gap beyond a few ms. Song time is never moved: the place heard stays exact. What
 //! the output holds already is written again only to put a start right once its place settles: a
 //! drift is slipped away in the music written next, however deep the output, and a reading off the
-//! others (an output's delay misread for a moment) is not acted on until the next one agrees.
+//! others (an output's delay misread for a moment) is not acted on until the next one agrees. This
+//! device's own pause holds its listening here; play joins the leader again where it is then.
 //! Here are the decisions; the worker carries them out.
 
 use std::collections::VecDeque;
@@ -172,6 +173,8 @@ pub(super) struct Following {
     /// A reading off the line the others make, held back until the next says whether the gap stepped
     /// (when, µs; the gap with the time slipped in, ms).
     odd: Option<(i64, f64)>,
+    /// This device's own pause holds its listening here.
+    pub held: bool,
     /// The pace there changed since the last start: the place settled after it says nothing of how late
     /// starts are heard.
     paced: bool,
@@ -195,6 +198,15 @@ impl Following {
             elsewhere: None,
             odd: None,
             paced: false,
+            held: false,
+        }
+    }
+
+    /// Holds the listening here (this device's own pause), or lets it join the leader again where it is.
+    pub fn hold(&mut self, on: bool) {
+        if self.held != on {
+            self.held = on;
+            self.leapt = true;
         }
     }
 
@@ -244,7 +256,7 @@ impl Following {
 
     /// The step at `now_us` for what is heard `here`.
     pub fn step(&mut self, now_us: i64, here: Here) -> Step {
-        if !self.led.playing {
+        if !self.led.playing || self.held {
             self.starting = None;
             self.leapt = true;
             return if here.playing { Step::Pause } else { Step::Stay };
@@ -523,6 +535,18 @@ mod tests {
         assert_eq!(f.step(1_000_000, here(Some((2, 11_250.0)))), Step::Pause);
         f.lead(led(10_500.0, 2_000_000), 2_000_000);
         assert!(matches!(f.step(2_000_000, here(None)), Step::Start { ms, .. } if (ms - (10_500.0 + 375.0)).abs() < 1e-6));
+    }
+
+    #[test]
+    fn a_pause_here_holds_and_play_joins_where_the_leader_is_then() {
+        let mut f = Following::new(led(10_000.0, 0));
+        f.leapt = false;
+        f.hold(true);
+        assert_eq!(f.step(1_000_000, here(Some((2, 11_250.0)))), Step::Pause);
+        assert_eq!(f.step(5_000_000, here(None)), Step::Stay, "held while the leader plays on");
+        f.hold(false);
+        let Step::Start { ms, at_us, .. } = f.step(9_000_000, here(None)) else { panic!("joins again") };
+        assert!((ms - f.led.place_at(at_us)).abs() < 1e-6, "where the leader is, not where it paused: {ms}");
     }
 
     #[test]

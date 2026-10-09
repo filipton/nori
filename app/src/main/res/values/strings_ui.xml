@@ -645,6 +645,8 @@
     <string name="jam_ended">The Jam ended</string>
     <string name="jam_listen_here">Listen here</string>
     <string name="jam_playing_here">Playing here</string>
+    <!-- A jam guest paused its own listening; play joins the jam again. -->
+    <string name="jam_paused_here">Paused here · Jam still playing</string>
     <string name="jam_along_host_off">The host isn’t letting guests listen along right now. You can still ask for songs.</string>
     <string name="jam_along_server_off">This server doesn’t let guests listen along. You can still ask for songs.</string>
     <string name="jam_let_listen">Let guests listen along</string>

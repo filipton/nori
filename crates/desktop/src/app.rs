@@ -221,6 +221,8 @@ pub struct App {
     elsewhere: Option<Elsewhere>,
     /// A jam guest's: the host's playback as last published, and when it was right.
     jam_now: Option<(DeviceState, Instant)>,
+    /// A jam guest's controls by its role: what the player offers, and whether it paused here.
+    jam_controls: Option<nori_core::remote::JamControls>,
     /// The songs this guest asked for that wait for the host.
     asked: HashSet<String>,
 }
@@ -352,6 +354,7 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
             jam_hosting: false,
             elsewhere: None,
             jam_now: None,
+            jam_controls: None,
             asked: HashSet::new(),
         })
     });
@@ -1130,6 +1133,12 @@ impl App {
         self.session.as_ref().is_some_and(|s| s.guest)
     }
 
+    /// Whether the player offers `control`: a jam guest's by its role (the core's jam controls), this
+    /// computer's own player all of them.
+    fn offers(&self, control: fn(&nori_core::remote::Controls) -> nori_core::remote::Reach) -> bool {
+        !self.guest() || self.jam_controls.is_some_and(|c| control(&c.controls) != nori_core::remote::Reach::Nowhere)
+    }
+
     /// Whether the open profile has the account's things (hearts, playlists, settings): a jam guest's has
     /// not (the core's `ProfileRules`).
     fn account(&self) -> bool {
@@ -1393,6 +1402,9 @@ impl App {
             p.set_devices_on(ui.get_devices_on());
             p.set_jam(ui.global::<crate::Jam>().get_strip());
             p.set_guest(ui.global::<crate::Jam>().get_guest());
+            p.set_can_play(ui.global::<crate::Jam>().get_can_play());
+            p.set_can_skip(ui.global::<crate::Jam>().get_can_skip());
+            p.set_can_seek(ui.global::<crate::Jam>().get_can_seek());
             p.set_playing_on(ui.get_playing_on());
         }
         if let Some(sd) = &self.sidebar {
@@ -1611,6 +1623,10 @@ impl App {
         g.set_along_note(words::jam_along(listening).into());
         // A guest follows the host's playback, its place run on from when the host heard it.
         let heard = remote.as_ref().and_then(|r| r.jam_playing()).map(|m| Instant::now() - Duration::from_millis(m.heard_ago_ms().max(0) as u64));
+        self.jam_controls = remote.as_ref().filter(|_| guest).and_then(|r| r.jam_controls());
+        g.set_can_play(self.offers(|c| c.play_pause));
+        g.set_can_skip(self.offers(|c| c.skip));
+        g.set_can_seek(self.offers(|c| c.seek));
         self.jam_now = view.as_ref().filter(|_| guest).and_then(|v| v.queue.clone().map(|q| (q, heard.unwrap_or_else(|| Instant::now() - Duration::from_millis(v.age_ms.max(0) as u64)))));
         let link = view.as_ref().and_then(|v| v.link.clone()).unwrap_or_default();
         if link != self.jam_link {
@@ -1627,7 +1643,10 @@ impl App {
             self.asked = asked;
             self.mark_playing();
         }
-        g.set_strip(shown.as_ref().map_or_else(String::new, |s| s.strip.clone()).into());
+        let strip = shown.as_ref().map_or_else(String::new, |s| s.strip.clone());
+        // Paused here while the jam plays on: play joins it again.
+        let strip = if self.jam_controls.is_some_and(|c| c.paused_here) { words::JAM_PAUSED_HERE.to_string() } else { strip };
+        g.set_strip(strip.into());
         g.set_listening(shown.as_ref().map_or_else(String::new, |s| s.listening.clone()).into());
         let (people, asks) = shown.map_or_else(Default::default, |s| (s.people, s.asks));
         g.set_people(ModelRc::new(VecModel::from(people)));
@@ -1792,7 +1811,8 @@ impl App {
         let guest = s.guest;
         let (id, playing) = match (&self.elsewhere, &self.jam_now) {
             (Some(e), _) => (e.song().map(|s| s.id.clone()), e.mirror.playing),
-            (None, Some((st, _))) => (crate::jam::playing(st).map(|e| e.id.clone()), st.playing),
+            // A guest's play button says what its controls say: paused here while the jam plays on.
+            (None, Some((st, _))) => (crate::jam::playing(st).map(|e| e.id.clone()), self.jam_controls.map_or(st.playing, |c| c.playing)),
             (None, None) if guest => (None, false),
             (None, None) => s.engine.status_with(|st| (st.id.clone(), st.state == State::Playing)),
         };

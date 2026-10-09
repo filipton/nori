@@ -15,7 +15,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use common::{Stepper, Virtual};
-use nori_engine::{AudioOutput, Body, ByteSource, Config, Engine, Event, Feed, Lead, Library, Located, OpenError, OutputFormat, Settings, SharedQueue, Source};
+use nori_engine::{AudioOutput, Body, ByteSource, Config, Engine, Event, Feed, Followed, Lead, Library, Located, OpenError, OutputFormat, Settings, SharedQueue, Source};
 use nori_player::automix::analysis::Analyzer;
 use nori_player::automix::plan;
 use nori_player::automix::synth::Rng;
@@ -880,23 +880,95 @@ fn a_stalled_guest_catches_up() {
     in_step(&mut jam, 2_000, 8_000, 2.5, 5.0);
 }
 
+/// How guest `g` said it follows the host, last.
+fn followed(jam: &Jam, g: usize) -> Option<Option<Followed>> {
+    jam.guests[g].rig.events.lock().iter().rev().find_map(|(_, e)| match e {
+        Event::Following(f) => Some(*f),
+        _ => None,
+    })
+}
+
+/// A plain guest's own controls (Spotify's Jam): its skips and seeks do nothing; its pause holds its own
+/// listening, silent while the host plays on; play joins the host again where it is then, not where it
+/// paused.
 #[test]
-fn a_guests_own_controls_do_not_move_it() {
-    let a = song(60.0, 1, None);
+fn a_guest_paused_here_joins_again_where_the_host_is() {
+    let a = song(120.0, 1, None);
     let mut jam = Jam::new(&[("a", &a)], None, Settings::default(), &two_ways()[..1]);
     jam.host.engine.play_at(0, 0);
     jam.run(1_000);
     jam.join(0);
-    jam.run(2_000);
-    let g = &jam.guests[0].rig.engine;
-    g.pause();
+    in_step(&mut jam, 2_000, 2_000, 2.5, 5.0);
+    let g = jam.guests[0].rig.engine.clone();
     g.seek(40_000);
     g.next();
-    for _ in 0..40 {
-        jam.run(50);
-        assert_eq!(jam.guests[0].rig.engine.status().state, nori_engine::State::Playing, "it plays on");
+    in_step(&mut jam, 500, 2_000, 2.5, 5.0);
+
+    g.pause();
+    jam.run(1_000);
+    assert_eq!(g.status().state, nori_engine::State::Paused, "paused here");
+    assert_eq!(followed(&jam, 0), Some(Some(Followed { playing: true, held: true })));
+    let heard = jam.guests[0].rig.card.0.lock().heard.len();
+    jam.run(10_000);
+    assert_eq!(jam.guests[0].rig.card.0.lock().heard.len(), heard, "silent here");
+    assert_eq!(jam.host.engine.status().state, nori_engine::State::Playing, "the jam plays on");
+
+    g.play();
+    jam.run(1_000);
+    assert_eq!(followed(&jam, 0), Some(Some(Followed { playing: true, held: false })));
+    in_step(&mut jam, 1_000, 4_000, 2.5, 5.0);
+}
+
+/// An admin's pause is the host's (its controls reach the jam): every listener pauses with it, the admin
+/// too, none of them held; its play starts them all again, in step.
+#[test]
+fn an_admins_pause_pauses_every_guest() {
+    let a = song(120.0, 1, None);
+    let mut jam = Jam::new(&[("a", &a)], None, Settings::default(), &two_ways());
+    jam.host.engine.play_at(0, 0);
+    jam.run(1_000);
+    jam.join(0);
+    jam.join(1);
+    in_step(&mut jam, 2_000, 2_000, 2.5, 5.0);
+    // Guest 0 is the admin: its pause takes its way to the host.
+    jam.run(jam.guests[0].word_ms as u64);
+    jam.host.engine.pause();
+    jam.run(2_000);
+    for g in 0..2 {
+        assert_eq!(jam.guests[g].rig.engine.status().state, nori_engine::State::Paused, "guest {g} paused");
+        assert_eq!(followed(&jam, g), Some(Some(Followed { playing: false, held: false })), "guest {g}: the jam paused, not it");
     }
-    in_step(&mut jam, 0, 4_000, 2.5, 5.0);
+    jam.run(jam.guests[0].word_ms as u64);
+    jam.host.engine.play();
+    in_step(&mut jam, 2_000, 4_000, 2.5, 5.0);
+}
+
+/// The app in the background: the platform lets the guest's output go (the engine's release), which
+/// holds its listening; play opens it again in step. And a host paused past the idle release: the
+/// guest's output goes too, and comes back in step when the host plays again.
+#[test]
+fn a_guests_output_let_go_comes_back_in_step() {
+    let a = song(500.0, 1, None);
+    let mut jam = Jam::new(&[("a", &a)], None, Settings::default(), &two_ways()[..1]);
+    jam.host.engine.play_at(0, 0);
+    jam.run(1_000);
+    jam.join(0);
+    in_step(&mut jam, 2_000, 2_000, 2.5, 5.0);
+    let g = jam.guests[0].rig.engine.clone();
+    g.release_now();
+    jam.run(2_000);
+    assert_eq!(g.status().releases, 1, "let go");
+    assert_eq!(followed(&jam, 0), Some(Some(Followed { playing: true, held: true })));
+    g.play();
+    in_step(&mut jam, 2_000, 4_000, 2.5, 5.0);
+
+    jam.host.engine.pause();
+    jam.run(6 * 60_000);
+    assert_eq!(g.status().releases, 2, "let go after the idle time");
+    jam.host.engine.play();
+    // The host's own word on its place, its card opened again, is up to a block of the card's off what
+    // the card plays (it starts at its next pull), and the guest plays where the word says.
+    in_step(&mut jam, 2_000, 4_000, 3.5, 5.0);
 }
 
 /// Leaving the jam (`nori_engine::core::follow` given no lead): silent at once, then the guest's own

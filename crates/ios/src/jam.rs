@@ -5,7 +5,7 @@
 use std::ffi::c_char;
 
 use nori_core::browse::ProfileRules;
-use nori_core::remote::{JamView, Listening};
+use nori_core::remote::{Controls, JamControls, JamView, Listening, Reach};
 use serde_json::{json, Value};
 
 use crate::pages::owned;
@@ -44,20 +44,37 @@ fn listening_code(l: Listening) -> u8 {
     }
 }
 
+fn reach_code(r: Reach) -> u8 {
+    match r {
+        Reach::Nowhere => 0,
+        Reach::Here => 1,
+        Reach::Jam => 2,
+    }
+}
+
 /// A guest's jam `v` for the app: `{"host", "listeners": [names], "asked": [song ids], "asks": [{"t", "s",
 /// "c"}], "listening": 0 only shown, 1 playing here, 2 asked but the host lets no one, 3 asked but the
-/// server lets no guest}`. Its asks and asked songs are its own requests the host has yet to take.
-fn jam_json(v: &JamView) -> Value {
+/// server lets no guest, "play", "skip", "seek": what each control reaches by its role (0 offered not,
+/// 1 this iPod's own listening, 2 the host's playback), "playing": what the play button shows,
+/// "pausedHere": paused here while the jam plays on}`. Its asks and asked songs are its own requests the
+/// host has yet to take.
+fn jam_json(v: &JamView, controls: Option<JamControls>) -> Value {
     let listeners: Vec<&str> = v.listeners().map(|m| m.name.as_str()).collect();
     let asks: Vec<Value> = v.asks().map(|p| json!({ "t": p.song.title, "s": p.song.artist, "c": p.song.cover_art.as_deref().unwrap_or("") })).collect();
     let asked: Vec<&str> = v.asks().map(|p| p.song.id.as_str()).collect();
-    json!({ "host": v.host(), "listeners": listeners, "asked": asked, "asks": asks, "listening": listening_code(v.listening) })
+    let c = controls.map(|c| c.controls);
+    let code = |f: fn(&Controls) -> Reach| c.as_ref().map_or(0, |c| reach_code(f(c)));
+    json!({
+        "host": v.host(), "listeners": listeners, "asked": asked, "asks": asks, "listening": listening_code(v.listening),
+        "play": code(|c| c.play_pause), "skip": code(|c| c.skip), "seek": code(|c| c.seek),
+        "playing": controls.is_some_and(|c| c.playing), "pausedHere": controls.is_some_and(|c| c.paused_here),
+    })
 }
 
 /// The jam this iPod is a guest in, as JSON to free ([`jam_json`]); NULL in none.
 #[no_mangle]
 pub extern "C" fn nori_ios_jam() -> *mut c_char {
-    with_session(|s| s.remote().filter(|_| s.guest).and_then(|r| r.jam_view()).map(|v| owned(&jam_json(&v))))
+    with_session(|s| s.remote().filter(|_| s.guest).and_then(|r| r.jam_view().map(|v| owned(&jam_json(&v, r.jam_controls())))))
         .flatten()
         .unwrap_or(std::ptr::null_mut())
 }
@@ -148,9 +165,17 @@ mod tests {
             along: false,
             listening: Listening::HostOff,
         };
+        // Paused here, a plain guest's play and pause are its own; it skips and seeks nothing.
+        let controls = JamControls { controls: Controls::of(Role::Guest, true), playing: false, paused_here: true };
         assert_eq!(
-            jam_json(&v),
-            json!({ "host": "Desk", "listeners": ["iPod", "Dee"], "asked": ["x"], "asks": [{ "t": "X", "s": "Band", "c": "al-x" }], "listening": 2 })
+            jam_json(&v, Some(controls)),
+            json!({
+                "host": "Desk", "listeners": ["iPod", "Dee"], "asked": ["x"], "asks": [{ "t": "X", "s": "Band", "c": "al-x" }], "listening": 2,
+                "play": 1, "skip": 0, "seek": 0, "playing": false, "pausedHere": true,
+            })
         );
+        let admin = JamControls { controls: Controls::of(Role::Admin, false), playing: true, paused_here: false };
+        let j = jam_json(&v, Some(admin));
+        assert_eq!((&j["play"], &j["skip"], &j["seek"], &j["playing"]), (&json!(2), &json!(2), &json!(2), &json!(true)), "an admin's reach the host");
     }
 }

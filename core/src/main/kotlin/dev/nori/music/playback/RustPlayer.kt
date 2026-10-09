@@ -290,6 +290,35 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
     var onBridge: (() -> Boolean)? = null
     /** The speed and pitch the engine plays at, as media3 is told them. */
     private var parameters = nori.settings.value.let { PlaybackParameters(it.speed, it.pitch) }
+    /**
+     * How the engine follows a jam's host (nori-engine's `Event::Following`): -1 while it does not; else
+     * bit 0 the music plays there, bit 1 this phone's own pause holds it here. While it follows, wanting to
+     * play is the engine's word: the host pausing pauses here too, as a remote change.
+     */
+    private var led = -1
+    /** Following a jam's host. */
+    val following: Boolean get() = led >= 0
+    /** Following a jam's host that paused, this phone not paused by its own listener. */
+    val hostPaused: Boolean get() = led == 0
+    /** The controls offered ([offer]). */
+    private var commands: Player.Commands = COMMANDS
+
+    /** Offers the controls a jam guest's role reaches with ([jam], the core's `jam_controls`), or all of them (null). */
+    fun offer(jam: dev.nori.music.ffi.JamControls?) {
+        val c = jam?.controls
+        val none = dev.nori.music.ffi.remote.Reach.NOWHERE
+        val offered = if (c == null) COMMANDS else COMMANDS.buildUpon().apply {
+            if (c.playPause == none) remove(Player.COMMAND_PLAY_PAUSE)
+            if (c.skip == none) removeAll(
+                Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM, Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+                Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_MEDIA_ITEM, Player.COMMAND_SEEK_TO_DEFAULT_POSITION,
+            )
+            if (c.seek == none) removeAll(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM, Player.COMMAND_SEEK_BACK, Player.COMMAND_SEEK_FORWARD)
+        }.build()
+        if (offered == commands) return
+        commands = offered
+        invalidateState()
+    }
 
     // ---- what the service asks of it directly ----
 
@@ -393,7 +422,7 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
     override fun getState(): State {
         val state = playbackState()
         val b = State.Builder()
-            .setAvailableCommands(COMMANDS)
+            .setAvailableCommands(commands)
             .setPlayWhenReady(playWhenReady, whyPlayWhenReady)
             .setPlaybackState(state)
             .setPlaybackSuppressionReason(suppressed)
@@ -468,10 +497,27 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
             if (prepared) start()
         } else {
             RustPlayerJni.pause(h)
-            unfocus()
+            // Following a jam's host the focus stays: the host playing on is heard again on play.
+            if (!following) unfocus()
         }
+        // Played while the host is paused, this phone joins it once it plays (the engine says so then).
+        if (following && led and 1 == 0) this.playWhenReady = false
         follow()
         return done()
+    }
+
+    /** The engine's word on following a jam's host ([led]): the host's pause and play are this player's too. */
+    private fun onFollowing(code: Int) {
+        val was = led
+        led = code
+        // Listening along ended (the jam left, or only watched now): the engine paused, and so is this.
+        if (code < 0 && was < 0) return
+        val plays = code == 1
+        if (plays != playWhenReady) {
+            dev.nori.music.NoriLog.i("rust player: ${if (plays) "plays" else "pauses"} with the jam's host")
+            playWhenReady = plays
+            whyPlayWhenReady = Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE
+        }
     }
 
     override fun handlePrepare(): ListenableFuture<*> {
@@ -641,6 +687,7 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
                 // else changes, so nothing else is said.
                 EVENT_MIXING -> PlaybackService.onMixingChanged?.invoke()
                 EVENT_PLACED -> placed = true
+                EVENT_FOLLOWING -> onFollowing(arg)
                 // The engine is where a jump or seek asked: the session says that place, not its own guess.
                 EVENT_LANDED -> { landed = RustPlayerJni.eventJumps(h); placed = true; PlaybackService.onLanded?.invoke() }
                 // Handed on after the batch: the bridge edits and seeks this player itself.
@@ -1044,6 +1091,7 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
         const val EVENT_MIXING = 9
         const val EVENT_PLACED = 10
         const val EVENT_LANDED = 11
+        const val EVENT_FOLLOWING = 12
 
         val ATTRIBUTES: AudioAttributes = AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
         val PLATFORM_ATTRIBUTES: android.media.AudioAttributes = android.media.AudioAttributes.Builder()

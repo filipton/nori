@@ -50,6 +50,7 @@ class Say(private val r: Resources) {
     val repeat: String = r.getString(R.string.repeat)
     val queue: String = r.getString(R.string.queue)
     val lyrics: String = r.getString(R.string.lyrics)
+    val jamPausedHere: String = r.getString(R.string.jam_paused_here)
     val favourite: String = r.getString(R.string.favourite)
     val addToFavourites: String = r.getString(R.string.add_to_favourites)
     val removeFromFavourites: String = r.getString(R.string.remove_from_favourites)

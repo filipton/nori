@@ -125,6 +125,17 @@ pub enum Event {
     Placed { index: usize, ms: i64 },
     /// Whether the CPU must be kept awake while playing; said before the work it is for.
     Awake(bool),
+    /// Following another device ([`Engine::follow`]), or not any more (None).
+    Following(Option<Followed>),
+}
+
+/// How this engine follows another device's playback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Followed {
+    /// The music plays there.
+    pub playing: bool,
+    /// This device's own pause holds its listening here; play joins again where the music is then.
+    pub held: bool,
 }
 
 /// Another device's playback this engine follows place for place (a jam guest listening along): its
@@ -615,6 +626,8 @@ struct Told {
     due: Option<i64>,
     /// The place last read (song, ms).
     read: Option<(usize, i64)>,
+    /// How another device was followed, as last said.
+    followed: Option<Followed>,
 }
 
 /// Where the position stood still since `since` (engine ms), and whether it did at the last look.
@@ -836,6 +849,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         self.announce(now);
         self.report(now);
         self.follow_lead(now);
+        self.say_followed();
         self.follow_why();
         self.restart_if_stalled(now);
         self.watch(now);
@@ -1264,15 +1278,36 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
 
     fn command(&mut self, c: Command) {
         let now = self.now();
-        // Following another device, its place rules: this one's own controls do nothing (counted still).
-        if self.following.is_some() {
-            match c {
+        // Following another device, its place rules: this one's own skips and seeks do nothing (counted
+        // still); its pause holds the listening here, and play joins the leader again where it is.
+        if let Some(f) = self.following.as_mut() {
+            let hold = match c {
                 Command::PlayAt(..) | Command::GoTo(..) | Command::Next | Command::Previous => return self.jumps += 1,
-                Command::Play => return self.plays += 1,
-                Command::Pause(_) | Command::Toggle | Command::Seek(_) => return,
+                Command::Seek(_) => return,
+                Command::Play => {
+                    self.plays += 1;
+                    false
+                }
+                Command::Toggle => self.state == State::Playing && !f.held,
+                Command::Pause(_) | Command::Release => true,
+                _ => {
+                    return self.obey(c, now);
+                }
+            };
+            f.hold(hold);
+            match c {
+                Command::Pause(fade) => self.pause(now, fade.unwrap_or(self.settings.fade_ms)),
+                Command::Toggle if hold => self.pause(now, self.settings.fade_ms),
+                Command::Release => self.obey(c, now),
                 _ => {}
             }
+            return;
         }
+        self.obey(c, now);
+    }
+
+    /// Carries out `c` as this engine's own command.
+    fn obey(&mut self, c: Command, now: i64) {
         match c {
             Command::PlayAt(i, ms) => {
                 self.jumps += 1;
@@ -1467,6 +1502,15 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                     self.prime(index, ms);
                 }
             }
+        }
+    }
+
+    /// Says how another device is followed when that changed.
+    fn say_followed(&mut self) {
+        let now = self.following.as_ref().map(|f| Followed { playing: f.led.playing, held: f.held });
+        if now != self.told.followed {
+            self.told.followed = now;
+            (self.events)(Event::Following(now));
         }
     }
 

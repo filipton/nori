@@ -146,6 +146,15 @@ struct Jam {
     let asks: [Item]
     /// 0 only shown, 1 playing here, 2 asked but the host lets no one, 3 asked but the server lets no guest.
     let listening: Int
+    /// What its play, skip and seek controls reach by its role: 0 offered not, 1 this iPod's own
+    /// listening, 2 the host's playback.
+    let play: Int
+    let skip: Int
+    let seek: Int
+    /// What the play button shows.
+    let playing: Bool
+    /// Paused here while the jam plays on: play joins it again.
+    let pausedHere: Bool
 
     init(_ d: [String: Any]) {
         host = d["host"] as? String ?? ""
@@ -153,9 +162,14 @@ struct Jam {
         asked = Set(d["asked"] as? [String] ?? [])
         asks = (d["asks"] as? [[String: Any]] ?? []).map { Item($0.merging(["k": "song"]) { a, _ in a }) }
         listening = d["listening"] as? Int ?? 0
+        play = d["play"] as? Int ?? 0
+        skip = d["skip"] as? Int ?? 0
+        seek = d["seek"] as? Int ?? 0
+        playing = d["playing"] as? Bool ?? false
+        pausedHere = d["pausedHere"] as? Bool ?? false
     }
 
-    var strip: String { Say.jamStrip(host, listeners.count) }
+    var strip: String { pausedHere ? Say.jamPausedHere : Say.jamStrip(host, listeners.count) }
 }
 
 private func json(_ text: UnsafePointer<CChar>) -> [String: Any] {

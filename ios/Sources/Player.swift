@@ -232,10 +232,15 @@ final class PlayerCard: UIViewController {
         volume.isHidden = now.device != nil
         playingOn.isHidden = now.device == nil
         playingOn.setTitle(now.device.map(Say.playingOn), for: .normal)
-        transport.isHidden = now.jam
+        // A jam guest's controls are those its role offers (the core's jam controls).
+        let jam = now.jam ? Core.shared.jam : nil
+        previous.isHidden = now.jam && (jam?.skip ?? 0) == 0
+        nextButton.isHidden = previous.isHidden
+        play.isHidden = now.jam && (jam?.play ?? 0) == 0
+        transport.isHidden = previous.isHidden && play.isHidden
         jamStrip.isHidden = !now.jam
         jamStrip.setTitle(Core.shared.jam?.strip ?? Say.jamGuest, for: .normal)
-        seek.isUserInteractionEnabled = !now.jam
+        seek.isUserInteractionEnabled = !now.jam || (jam?.seek ?? 0) != 0
         guard let song = now.song else {
             songTitle.text = Say.nothingPlaying
             artist.text = ""
@@ -252,9 +257,11 @@ final class PlayerCard: UIViewController {
             paintedCover = song.cover
             cover.show(song.cover, points: PlayerCard.coverPoints)
         }
-        play.setImage(now.playing ? Glyph.bigPause : Glyph.bigPlay, for: .normal)
-        play.accessibilityLabel = now.playing ? Say.pause : Say.play
-        let target: CGAffineTransform = now.playing ? .identity : CGAffineTransform(scaleX: 0.82, y: 0.82)
+        // A jam guest's says what its controls say: paused here while the jam plays on.
+        let playing = jam?.playing ?? now.playing
+        play.setImage(playing ? Glyph.bigPause : Glyph.bigPlay, for: .normal)
+        play.accessibilityLabel = playing ? Say.pause : Say.play
+        let target: CGAffineTransform = playing ? .identity : CGAffineTransform(scaleX: 0.82, y: 0.82)
         if cover.transform != target {
             if view.window != nil && !UIAccessibility.isReduceMotionEnabled {
                 UIView.animate(withDuration: 0.45, delay: 0, usingSpringWithDamping: 0.75, initialSpringVelocity: 0, options: [.beginFromCurrentState]) {

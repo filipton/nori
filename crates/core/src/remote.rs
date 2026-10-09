@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use nori_remote::clock::{self, ClockSync};
 use nori_remote::device::{admit, is_jam, Sender};
+pub use nori_remote::device::{Controls, Reach};
 use nori_remote::jam::{By, Jam};
 use nori_remote::lan::{self, Door};
 use nori_player::engine::Plan;
@@ -268,6 +269,18 @@ pub enum Listening {
     HostOff,
     /// Asked for, but the server does not let jam guests stream.
     ServerOff,
+}
+
+/// A jam guest's player controls: what each reaches by its role, and what its play button shows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct JamControls {
+    pub controls: Controls,
+    /// The play button shows playing: the jam's playback where play and pause reach the jam, else this
+    /// device's.
+    pub playing: bool,
+    /// This guest paused its own listening while the jam plays on; play joins it again where it is.
+    pub paused_here: bool,
 }
 
 /// The host's playback as a guest listening along plays it: the host's queue around its song, the place
@@ -825,6 +838,21 @@ impl Inner {
         }
     }
 
+    /// This guest's player controls by its role in the jam it is in; None while hosting or in no jam.
+    fn jam_controls(&self) -> Option<JamControls> {
+        if self.hosted.is_some() {
+            return None;
+        }
+        let st = self.joined()?.1?.state.as_ref()?;
+        let role = st.jam.as_ref()?.members.iter().find(|m| m.id == self.you).map_or(Role::Guest, |m| m.role);
+        let listening = self.listening() == Listening::Playing;
+        let controls = Controls::of(role, listening);
+        let (there, here) = (st.playing, self.playing.playing);
+        let paused_here = listening && there && !here;
+        let playing = !paused_here && if controls.play_pause == Reach::Jam { there } else { here };
+        Some(JamControls { controls, playing, paused_here })
+    }
+
     /// When the jam's host heard `st`'s place, on this device's clock, once its clock is known here
     /// (listening along): through the relay's clock when both know it, else as learned from the host.
     fn heard_at(&self, st: &DeviceState) -> Option<i64> {
@@ -1011,9 +1039,11 @@ impl Remote {
     /// The platform's playback changed (play, pause, seek, another song, the queue, the volume). Music
     /// starting here makes this the active device again.
     pub fn played(self: Arc<Self>, playing: Playing) {
-        let (publish, started) = {
+        let (publish, started, shown) = {
             let mut i = self.inner.lock();
             let started = playing.playing && !i.playing.playing;
+            // A guest listening along paused or played here: its controls say so.
+            let shown = i.listen.is_some() && playing.playing != i.playing.playing;
             if started {
                 i.handed_to = None;
             }
@@ -1023,13 +1053,16 @@ impl Remote {
             }
             i.playing = playing;
             i.playing_at = Some(now);
-            (i.serving || i.hosted.is_some(), started && i.mirror.is_some())
+            (i.serving || i.hosted.is_some(), started && i.mirror.is_some(), shown)
         };
         if started {
             self.set_active(None);
         }
         if publish {
             self.publish();
+        }
+        if shown {
+            self.shown.changed();
         }
     }
 
@@ -1330,6 +1363,39 @@ impl Remote {
             refused: host.and_then(|h| i.refused.get(&h.id).copied()),
             queue: state.map(|s| DeviceState { jam: None, ..s }),
         })
+    }
+
+    /// This jam guest's player controls by its role (Spotify's Jam): what each reaches, and what the play
+    /// button shows. None while hosting or in no jam.
+    pub fn jam_controls(&self) -> Option<JamControls> {
+        self.inner.lock().jam_controls()
+    }
+
+    /// Carries out this jam guest's player control `op` by its role: sent to the host when it reaches the
+    /// jam. [`Reach::Here`]: the platform's player carries it out (a guest's pause holds its own listening,
+    /// and play joins the jam again where it is). [`Reach::Nowhere`]: nothing is done.
+    pub fn jam_press(self: Arc<Self>, op: Op) -> Reach {
+        let (reach, to) = {
+            let mut i = self.inner.lock();
+            let Some(c) = i.jam_controls() else { return Reach::Nowhere };
+            let reach = match op {
+                // Paused here while the jam plays on: play joins it again, whoever presses it.
+                Op::Play if c.paused_here => Reach::Here,
+                _ => c.controls.reach(&op),
+            };
+            let to = i.joined().and_then(|(room, host)| Some((room.room.clone(), host?.id.clone())));
+            if let Some((_, host)) = &to {
+                i.refused.remove(host);
+            }
+            (reach, to)
+        };
+        if reach != Reach::Jam {
+            return reach;
+        }
+        let Some((room, host)) = to else { return Reach::Nowhere };
+        let id = self.next_id();
+        self.out(Out::send(Link::Relay, Outgoing { room: Some(room), to: Some(host), body: Some(Body::Command { id, op: Box::new(op) }), state: None }));
+        reach
     }
 
     /// Ends remote control here for good: leaves the relay, withdraws the door, ends a hosted jam, stops
@@ -2162,7 +2228,12 @@ impl Remote {
             self.publish();
             return Ok(());
         }
-        let sender = if in_jam { Sender::Member(Role::Guest) } else { Sender::Owner };
+        let sender = if in_jam {
+            let role = self.inner.lock().hosted.as_ref().and_then(|h| h.jam.role(By::Member(from)));
+            Sender::Member(role.ok_or(Refusal::NotAllowed)?)
+        } else {
+            Sender::Owner
+        };
         let (rev, len) = self.client.core.session.playlist(|p| (p.rev(), p.len() as u32));
         admit(&op, sender, rev, len)?;
         // Said with the next state published, which shows what the player made of it.

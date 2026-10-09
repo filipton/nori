@@ -264,6 +264,8 @@ class PlaybackService : MediaLibraryService() {
         nori.remotes.service = remotePlayer
         nori.remotes.engine = player
         nori.remotes.onGuestQueue = ::guestQueue
+        // A jam guest's controls by its role: what the session, the notification and a car offer.
+        scope.launch { nori.remotes.jamControls.collect { player.offer(it) } }
         scope.launch { nori.settings.prefs.map { it.remoteControl }.distinctUntilChanged().collect { nori.remotes.serve(true) } }
         elsewhere = dev.nori.music.remote.RemoteDevicePlayer(this, nori)
         scope.launch { nori.remotes.mirror.collect(::mirrored) }
@@ -307,7 +309,9 @@ class PlaybackService : MediaLibraryService() {
     private fun showRoute() = dev.nori.music.remote.RemoteRoute.show(this, nori.remotes.mirror.value?.name?.takeIf { engaged })
 
     override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
-        super.onUpdateNotification(session, startInForegroundRequired)
+        // Listening along while the jam's host is paused: still in the foreground, so its play is heard here
+        // with the screen off (a service in the background could not start again).
+        super.onUpdateNotification(session, startInForegroundRequired || player.hostPaused)
         engaged = startInForegroundRequired
         nori.remotes.notified(engaged)
         showRoute()
@@ -394,7 +398,8 @@ class PlaybackService : MediaLibraryService() {
             announce()
             scrobbler.onPlaying(isPlaying)
             main.removeCallbacks(idleRelease)
-            if (LongPause.arms(isPlaying, player.playWhenReady, player.playbackState)) main.postDelayed(idleRelease, timings.idleReleaseMs)
+            // Not while the jam's host is paused: its play is this player's too.
+            if (LongPause.arms(isPlaying, player.playWhenReady, player.playbackState) && !player.hostPaused) main.postDelayed(idleRelease, timings.idleReleaseMs)
         }
 
         /**
@@ -573,11 +578,33 @@ class PlaybackService : MediaLibraryService() {
      * configured manners. How each control sounds (the fades, the dip around a switch) is nori-engine's.
      */
     private inner class Controls(p: Player) : androidx.media3.common.ForwardingPlayer(p) {
-        override fun play() {
+        /**
+         * A jam guest's control goes by its role (the core's `jam_press`, Spotify's Jam): to the host's
+         * playback, which this phone follows, or to this phone's own listening ([here]: a guest's pause
+         * holds it, play joins the jam again where it is); else nowhere. Anyone else's acts [here].
+         */
+        private fun jam(op: dev.nori.music.ffi.remote.Op, here: () -> Unit) = if (nori.remotes.isGuest()) nori.remotes.jamPress(op, here) else here()
+
+        /** The host's list index for this player's item [at] (its items are the host's, in play order). */
+        private fun hostIndex(at: Int): UInt? = nori.remotes.jamPlaying.value?.rows?.getOrNull(at)?.index
+
+        /** A jump to item [at]: the host's, for a jam guest. */
+        private fun jump(at: Int, here: () -> Unit) {
+            if (!nori.remotes.isGuest()) return here()
+            val m = nori.remotes.jamPlaying.value ?: return
+            hostIndex(at)?.let { jam(dev.nori.music.ffi.remote.Op.Jump(it, m.rev), here) }
+        }
+
+        override fun play() = jam(dev.nori.music.ffi.remote.Op.Play) {
             // Let go after a long pause (see idleRelease): opened again here.
             if (wrappedPlayer.playbackState == Player.STATE_IDLE && wrappedPlayer.mediaItemCount > 0) wrappedPlayer.prepare()
             super.play()
         }
+        override fun pause() = jam(dev.nori.music.ffi.remote.Op.Pause) { super.pause() }
+        override fun seekTo(positionMs: Long) = jam(dev.nori.music.ffi.remote.Op.Seek(positionMs.coerceAtLeast(0))) { super.seekTo(positionMs) }
+        override fun seekTo(mediaItemIndex: Int, positionMs: Long) =
+            if (mediaItemIndex == currentMediaItemIndex) seekTo(positionMs) else jump(mediaItemIndex) { super.seekTo(mediaItemIndex, positionMs) }
+        override fun seekToDefaultPosition(mediaItemIndex: Int) = jump(mediaItemIndex) { super.seekToDefaultPosition(mediaItemIndex) }
 
         /**
          * A skip the user asked for while the music is paused starts it (nori_player::transport::
@@ -657,6 +684,13 @@ class PlaybackService : MediaLibraryService() {
         }
         override fun moveMediaItem(currentIndex: Int, newIndex: Int) = moveMediaItems(currentIndex, currentIndex + 1, newIndex)
         override fun moveMediaItems(fromIndex: Int, toIndex: Int, newIndex: Int) {
+            // A jam guest's move is the host's queue's, which this phone's follows.
+            if (nori.remotes.isGuest()) {
+                val m = nori.remotes.jamPlaying.value ?: return
+                val (from, to) = hostIndex(fromIndex) to hostIndex(newIndex)
+                if (from != null && to != null && toIndex == fromIndex + 1) jam(dev.nori.music.ffi.remote.Op.Move(from, to, m.rev)) {}
+                return
+            }
             nori.session.playlistMove(fromIndex.toUInt(), toIndex.toUInt(), newIndex.toUInt())
             super.moveMediaItems(fromIndex, toIndex, newIndex)
         }
@@ -670,16 +704,18 @@ class PlaybackService : MediaLibraryService() {
             super.setRepeatMode(repeatMode)
         }
 
-        override fun seekToNext() { observer?.skipped(currentMediaItemIndex); andPlay { super.seekToNext() } }
-        override fun seekToNextMediaItem() { observer?.skipped(currentMediaItemIndex); andPlay { super.seekToNextMediaItem() } }
-        override fun seekToPreviousMediaItem() { observer?.skipped(currentMediaItemIndex); andPlay { super.seekToPreviousMediaItem() } }
+        override fun seekToNext() = jam(dev.nori.music.ffi.remote.Op.Next) { observer?.skipped(currentMediaItemIndex); andPlay { super.seekToNext() } }
+        override fun seekToNextMediaItem() = jam(dev.nori.music.ffi.remote.Op.Next) { observer?.skipped(currentMediaItemIndex); andPlay { super.seekToNextMediaItem() } }
+        override fun seekToPreviousMediaItem() = jam(dev.nori.music.ffi.remote.Op.Previous) { observer?.skipped(currentMediaItemIndex); andPlay { super.seekToPreviousMediaItem() } }
         // Well into a song this goes back to 0:00 rather than to the song before (media3's own rule,
         // three seconds, unless the user has previous always skip: nori_player::queue::previous_restarts),
         // which paused means: start this one again, from the top, playing.
-        override fun seekToPrevious() = andPlay {
-            observer?.skipped(currentMediaItemIndex)
-            if (!nori.session.queuePreviousRestarts(currentPosition, hasPreviousMediaItem()) && hasPreviousMediaItem()) super.seekToPreviousMediaItem()
-            else super.seekToPrevious()
+        override fun seekToPrevious() = jam(dev.nori.music.ffi.remote.Op.Previous) {
+            andPlay {
+                observer?.skipped(currentMediaItemIndex)
+                if (!nori.session.queuePreviousRestarts(currentPosition, hasPreviousMediaItem()) && hasPreviousMediaItem()) super.seekToPreviousMediaItem()
+                else super.seekToPrevious()
+            }
         }
     }
 

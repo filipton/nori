@@ -496,15 +496,13 @@ fun MiniPlayer(vm: PlayerViewModel, actions: ActionsViewModel, onOpen: () -> Uni
             // The one judgement worth making without opening the player: whether this is a song to keep.
             // Apple has only the transport here; the owner asked for the heart, and the bar has the room
             // for it because the title beside it is already allowed to run out of space gracefully.
-            // A jam guest controls nothing: the host plays.
-            if (!state.jamGuest) {
-                song?.let { s ->
-                    val starred = LocalStarMarks.current.effectiveStar(dev.nori.music.data.StarKind.SONG, s.id, s.starred)
-                    FavoriteHeart(starred, tint = content, muted = look.color(CoverLook.CHROME_CONTENT_75)) { actions.star(s, !starred) }
-                }
-                IconButton(vm::toggle) { PlayPauseGlyph(state.playing, state.buffering, 26.dp, 20.dp) }
-                IconButton(vm::next) { Icon(Icons.Filled.FastForward, say.next, Modifier.size(25.dp)) }
+            // A jam guest's heart would be the host's; its play and skip are those its role offers.
+            if (!state.jamGuest) song?.let { s ->
+                val starred = LocalStarMarks.current.effectiveStar(dev.nori.music.data.StarKind.SONG, s.id, s.starred)
+                FavoriteHeart(starred, tint = content, muted = look.color(CoverLook.CHROME_CONTENT_75)) { actions.star(s, !starred) }
             }
+            if (state.offersPlayPause) IconButton(vm::toggle) { PlayPauseGlyph(state.playing, state.buffering, 26.dp, 20.dp) }
+            if (state.offersSkip) IconButton(vm::next) { Icon(Icons.Filled.FastForward, say.next, Modifier.size(25.dp)) }
         }
         // The jam this phone hosts or is a guest in: said under the song, a tap away from its queue. Else
         // another device that plays: a tap away from moving it.

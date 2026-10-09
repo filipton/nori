@@ -11,6 +11,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.SettableFuture
 import dev.nori.music.Nori
 import dev.nori.music.ffi.Client
+import dev.nori.music.ffi.JamControls
 import dev.nori.music.ffi.JamView
 import dev.nori.music.ffi.Mirror
 import dev.nori.music.ffi.Playing
@@ -22,6 +23,7 @@ import dev.nori.music.ffi.RemoteShown
 import dev.nori.music.ffi.Sight
 import dev.nori.music.ffi.remote.DeviceKind
 import dev.nori.music.ffi.remote.Op
+import dev.nori.music.ffi.remote.Reach
 import dev.nori.music.ffi.remote.isGuestKey
 import dev.nori.music.settings.server
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -75,6 +77,14 @@ class Remotes(private val context: Context, private val nori: Nori) {
 
     /** The playback service's player while it runs; ops go to it, starting the service when it is not. */
     @Volatile var service: RemotePlayer? = null
+
+    private val _jamControls = MutableStateFlow<JamControls?>(null)
+
+    /**
+     * What this jam guest's player controls reach by its role, and what its play button shows (the core's
+     * `jam_controls`); null while hosting or in no jam.
+     */
+    val jamControls: StateFlow<JamControls?> = _jamControls.asStateFlow()
 
     /**
      * The playback service's: the queue the core set for a jam guest listening along (its host's songs)
@@ -143,8 +153,9 @@ class Remotes(private val context: Context, private val nori: Nori) {
         val j = r?.jamView()
         val added = if (j != null) r.jamAdded() else emptyMap()
         val playing = if (j?.hosting == false) r.jamPlaying() else null
+        val controls = if (j?.hosting == false) r.jamControls() else null
         val relay = r?.relay() ?: RelaySupport.UNKNOWN
-        main.post { _jam.value = j; _jamAdded.value = added; _jamPlaying.value = playing; _relay.value = relay }
+        main.post { _jam.value = j; _jamAdded.value = added; _jamPlaying.value = playing; _jamControls.value = controls; _relay.value = relay }
         if (j?.listening == dev.nori.music.ffi.Listening.PLAYING) {
             // The queue as the follower set it in the session, not as last saved.
             val ids = nori.session.playlistNow().songs.map { it.id }
@@ -154,6 +165,14 @@ class Remotes(private val context: Context, private val nori: Nori) {
         } else {
             guestQueue = null
         }
+    }
+
+    /**
+     * This jam guest's player control [op], by its role (the core's `jam_press`): sent to the host when it
+     * reaches the jam; [here] runs (on the main thread) when it acts on this phone's own listening.
+     */
+    fun jamPress(op: Op, here: () -> Unit) = work {
+        if (remote?.jamPress(op) == Reach.HERE) main.post(here)
     }
 
     /**

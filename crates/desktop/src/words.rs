@@ -170,6 +170,8 @@ pub const ASKED: &str = "Asked";
 pub const JAM_GUEST: &str = "Jam";
 pub const NOT_AN_INVITE: &str = "That is not a jam invite. Paste the whole link the host sent you.";
 pub const JAM_LEFT: &str = "You left the jam";
+/// Beside a jam guest's song while it paused its own listening: play joins the jam again.
+pub const JAM_PAUSED_HERE: &str = "Paused here · Jam still playing";
 
 pub fn jam_ended(host: Option<&str>) -> String {
     host.map_or("The jam ended".into(), |h| format!("{h} ended the jam"))

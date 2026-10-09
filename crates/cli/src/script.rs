@@ -322,7 +322,7 @@ pub fn main(argv: Vec<String>) {
                 Event::Bridge { .. } => println!("stopped: the network is gone"),
                 Event::Mixing(on) => println!("{}", if on { "mixing" } else { "mixed" }),
                 Event::Placed { index, ms } => println!("  {} at {} (another path)", shown(index), clock(ms)),
-                Event::Awake(_) => {}
+                Event::Awake(_) | Event::Following(_) => {}
             }
         }
     });

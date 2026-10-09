@@ -1223,6 +1223,35 @@ fn a_guest_browses_the_hosts_library_and_asks_for_songs() {
     assert_eq!(a.cmds, [Cmd::Enqueue(vec![song("1", "One", 200)], false)]);
 }
 
+/// A jam guest's player offers what its role reaches (Spotify's Jam): listening along, play and pause of
+/// its own, saying so while it paused here; an admin's skips are the host's too. Shuffle and repeat
+/// stay the host's.
+#[test]
+fn a_guests_controls_go_by_its_role() {
+    use nori_core::remote::wire::Role;
+    use nori_core::remote::{Controls, JamControls};
+    let mut a = guest();
+    a.go(View::Songs);
+    a.devices.controls = Some(JamControls { controls: Controls::of(Role::Guest, true), playing: false, paused_here: true });
+    let s = draw(&mut a, 160, 30);
+    dump("guest-paused-here", &s);
+    assert!(s.contains(" ▶ ") && !s.contains('⏮') && !s.contains('⤮') && s.contains(crate::text::JAM_PAUSED_HERE), "play only, and paused here:\n{s}");
+    a.cmds.clear();
+    for k in [' ', 'n', 's'] {
+        key(&mut a, KeyCode::Char(k));
+    }
+    assert_eq!(a.cmds, [Cmd::Toggle], "its play, not a skip");
+
+    a.devices.controls = Some(JamControls { controls: Controls::of(Role::Admin, true), playing: true, paused_here: false });
+    let s = draw(&mut a, 160, 30);
+    assert!(s.contains('⏮') && s.contains('⏭') && !s.contains('⤮') && s.contains("◉ Jam · Desk"), "the host's skips:\n{s}");
+    a.cmds.clear();
+    for k in [' ', 'n', 's'] {
+        key(&mut a, KeyCode::Char(k));
+    }
+    assert_eq!(a.cmds, [Cmd::Toggle, Cmd::Next]);
+}
+
 #[test]
 fn a_guests_queue_shows_the_jam() {
     let mut a = guest();

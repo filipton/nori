@@ -377,6 +377,7 @@ impl Runner {
         let jam = remote.as_ref().filter(|_| jams).and_then(|r| r.jam_view().filter(|v| v.hosting || guest).map(|v| (v, r.jam_added())));
         (d.jam, d.added) = jam.map_or_else(Default::default, |(v, added)| (Some(v), added));
         let e = if guest { s.jam_playing() } else { s.elsewhere() };
+        d.controls = e.as_ref().filter(|_| guest).and_then(|e| e.jam_controls());
         let moved = e.is_some() != self.elsewhere.is_some();
         let device = e.as_ref().filter(|_| !guest);
         d.active = device.map(|e| (e.mirror.id.clone(), e.mirror.name.clone()));
@@ -414,7 +415,9 @@ impl Runner {
         }
         if let Some(e) = &self.elsewhere {
             let m = &e.mirror;
-            let state = match (m.playing, e.song()) {
+            // A jam guest's play button says what its controls say: paused here while the jam plays on.
+            let playing = app.devices.controls.map_or(m.playing, |c| c.playing);
+            let state = match (playing, e.song()) {
                 (true, _) => State::Playing,
                 (false, Some(_)) => State::Paused,
                 (false, None) => State::Idle,

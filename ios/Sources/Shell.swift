@@ -179,6 +179,7 @@ final class MiniPlayer: UIView {
         addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(panned(_:))))
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(changed), name: .noriNow, object: nil)
+        center.addObserver(self, selector: #selector(changed), name: .noriJam, object: nil)
         center.addObserver(self, selector: #selector(paintHeart), name: .noriFavorites, object: nil)
         center.addObserver(self, selector: #selector(changed), name: UIApplication.didBecomeActiveNotification, object: nil)
         center.addObserver(self, selector: #selector(stopTicking), name: UIApplication.didEnterBackgroundNotification, object: nil)
@@ -201,12 +202,14 @@ final class MiniPlayer: UIView {
         }
         play.isEnabled = now.song != nil
         skipButton.isEnabled = now.song != nil
-        // A jam's music is its host's to play and skip.
-        play.isHidden = now.jam
-        skipButton.isHidden = now.jam
+        // A jam guest plays and skips as its role lets it (the core's jam controls).
+        let jam = now.jam ? Core.shared.jam : nil
+        play.isHidden = now.jam && (jam?.play ?? 0) == 0
+        skipButton.isHidden = now.jam && (jam?.skip ?? 0) == 0
         paintHeart()
-        play.setImage(now.playing ? Glyph.pause : Glyph.play, for: .normal)
-        play.accessibilityLabel = now.playing ? Say.pause : Say.play
+        let playing = jam?.playing ?? now.playing
+        play.setImage(playing ? Glyph.pause : Glyph.play, for: .normal)
+        play.accessibilityLabel = playing ? Say.pause : Say.play
         paintProgress()
         let active = UIApplication.shared.applicationState == .active
         if now.playing && active {

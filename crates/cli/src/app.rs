@@ -9,7 +9,7 @@ use nori_core::browse::{LibrarySection, ProfileRules};
 use nori_core::client::Starrable;
 use nori_core::playlist::PlaylistView;
 use nori_core::remote::wire::Pending;
-use nori_core::remote::{JamView, Listening, RemoteDevice};
+use nori_core::remote::{Controls, JamControls, JamView, Listening, Reach, RemoteDevice};
 use nori_core::search::SearchView;
 use nori_core::settings::{EqLevel, SavedServer, SoundBand, StoredPrefs, TapAction};
 use nori_core::settings_store::SoundTool;
@@ -519,6 +519,8 @@ pub struct Devices {
     pub jam: Option<JamView>,
     /// Who asked for each song that came in through the jam, by song id.
     pub added: HashMap<String, String>,
+    /// A jam guest's controls by its role: what its keys reach, and what the player says.
+    pub controls: Option<JamControls>,
 }
 
 /// A row of the devices panel.
@@ -568,6 +570,9 @@ impl Devices {
     pub fn jam_strip(&self) -> Option<String> {
         let j = self.jam.as_ref()?;
         let n = self.listeners().len();
+        if self.controls.is_some_and(|c| c.paused_here) {
+            return Some(crate::text::JAM_PAUSED_HERE.to_string());
+        }
         Some(if j.hosting { crate::text::jam_strip(n) } else { crate::text::jam_guest_strip(self.host(), n) })
     }
 
@@ -919,10 +924,16 @@ impl App {
     }
 
 
-    /// A jam guest's: its picks are asked of the host, and the player shows the jam, which it controls
-    /// none of.
+    /// A jam guest's: its picks are asked of the host, and the player shows the jam, which it controls by
+    /// its role ([`App::offers`]).
     pub fn guest(&self) -> bool {
         self.rules.asks
+    }
+
+    /// Whether the player offers `control`: a jam guest's by its role (the core's jam controls), this
+    /// computer's own player all of them.
+    pub fn offers(&self, control: impl Fn(&Controls) -> Reach) -> bool {
+        !self.guest() || self.devices.controls.is_some_and(|c| control(&c.controls) != Reach::Nowhere)
     }
 
     /// Opens a root view, closing any opened pages, and requests its data if needed.
@@ -1201,7 +1212,8 @@ impl App {
             Event::Title(t) => self.say(format!("On air: {t}"), false),
             Event::Bridge { .. } => self.say("The network is gone", true),
             Event::Mixing(on) => self.now.mixing = on,
-            Event::Position { .. } | Event::Placed { .. } | Event::Awake(_) => {}
+            // How a jam's host is followed is the core's jam controls' to show.
+            Event::Position { .. } | Event::Placed { .. } | Event::Awake(_) | Event::Following(_) => {}
         }
     }
 
@@ -1601,9 +1613,14 @@ impl App {
             }
             Action::Help => self.overlay = Some(Overlay::Help { scroll: 0 }),
             Action::Join => self.join(),
-            // The jam's playback is its host's.
-            Action::TogglePlay | Action::Next | Action::Previous | Action::SeekBack | Action::SeekForward | Action::SeekBackLong | Action::SeekForwardLong | Action::Shuffle | Action::Repeat if self.guest() => self.dirty = false,
-            Action::Remove | Action::Undo | Action::MoveUp | Action::MoveDown if self.guest() && self.queue_in_focus() => self.dirty = false,
+            // A jam guest's keys reach what its role does (Spotify's Jam): an admin's the host's playback, a
+            // guest's play and pause its own listening; shuffle, repeat and removals are the host's.
+            Action::TogglePlay if !self.offers(|c| c.play_pause) => self.dirty = false,
+            Action::Next | Action::Previous if !self.offers(|c| c.skip) => self.dirty = false,
+            Action::SeekBack | Action::SeekForward | Action::SeekBackLong | Action::SeekForwardLong if !self.offers(|c| c.seek) => self.dirty = false,
+            Action::Shuffle | Action::Repeat if self.guest() => self.dirty = false,
+            Action::MoveUp | Action::MoveDown if self.queue_in_focus() && !self.offers(|c| c.reorder) => self.dirty = false,
+            Action::Remove | Action::Undo if self.guest() && self.queue_in_focus() => self.dirty = false,
             Action::TogglePlay => self.cmds.push(Cmd::Toggle),
             Action::Next => self.cmds.push(Cmd::Next),
             Action::Previous => self.cmds.push(Cmd::Previous),

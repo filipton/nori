@@ -317,6 +317,8 @@ fn pack_event(p: &mut Packed, e: &Event) {
             p.kind = REPORT_AWAKE;
             p.flag = i32::from(*on);
         }
+        // Listening along paused or played here, or the host did: the jam's controls are read again.
+        Event::Following(_) => p.kind = REPORT_REMOTE,
     }
 }
 

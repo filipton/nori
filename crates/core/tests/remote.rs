@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use nori_core::client::{Client, NetProfile, Starrable};
 use nori_core::library::StarsShown;
-use nori_core::remote::{jam_join, Discovery, Follower, Lead, Listening, Playing, RelaySupport, Remote, RemoteMe, RemotePlayer, RemoteShown, Sight};
+use nori_core::remote::{jam_join, Controls, Discovery, Follower, JamControls, Lead, Listening, Playing, Reach, RelaySupport, Remote, RemoteMe, RemotePlayer, RemoteShown, Sight};
 use nori_core::transport::{block_on, Exchange, FailureKind, Transport, TransportError, TransportResponse};
 use nori_player::playlist::Hand;
 use nori_core::{Core, ServerConfig, Song};
@@ -1594,5 +1594,52 @@ fn a_guest_leaves_at_once_with_the_relay_down() {
     assert_eq!(leads.last(), Some(None), "its music stops here at once");
     gus.remote.clone().stop();
     assert!(gus.ended.lock().is_empty(), "left, not ended by the host");
+    relay.close();
+}
+
+/// As in Spotify's Jam: an admin's player controls reach the host's playback, every listener's; a plain
+/// guest's pause holds only its own listening (the platform's to carry out), and it skips nothing.
+#[test]
+fn jam_controls_reach_by_role() {
+    let relay = Relay::new();
+    let host = Device::account(&relay, DeviceKind::Phone, "Host");
+    host.playing(&["s1", "s2"], 0);
+    let link = block_on(host.remote.clone().jam_open()).unwrap();
+    host.remote.clone().jam_along(true);
+    let guest_of = |name: &str| {
+        let pass = block_on(jam_join(relay.clone(), link.clone(), name.into())).unwrap();
+        let d = Device::new(&relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, name);
+        d.remote.follow_with(Some(Arc::new(Leads::default())));
+        d.remote.clone().listen(true);
+        d.remote.clone().played(Playing { playing: true, position_ms: 30_000, index: Some(0), ..Default::default() });
+        d
+    };
+    let gus = guest_of("Gus");
+    let dee = guest_of("Dee");
+    host.remote.clone().played(Playing { playing: true, position_ms: 30_000, index: Some(0), ..Default::default() });
+    let dee_id = dee.until("the jam", |r| r.jam_view().filter(|v| v.members.len() == 3)).you;
+    host.remote.clone().jam_act(Op::Promote { member: dee_id, admin: true });
+    let admin = dee.until("Dee's role", |r| r.jam_controls().filter(|c| c.controls.skip == Reach::Jam));
+    assert_eq!(admin, JamControls { controls: Controls::of(Role::Admin, true), playing: true, paused_here: false });
+
+    // The guest's own pause: carried out here, nothing sent; the jam plays on.
+    assert_eq!(gus.remote.clone().jam_press(Op::Pause), Reach::Here);
+    gus.remote.clone().played(Playing { playing: false, position_ms: 31_000, index: Some(0), ..Default::default() });
+    let paused = gus.until("paused here", |r| r.jam_controls().filter(|c| c.paused_here));
+    assert_eq!(paused, JamControls { controls: Controls::of(Role::Guest, true), playing: false, paused_here: true });
+    for op in [Op::Next, Op::Seek { ms: 1_000 }, Op::Move { from: 0, to: 1, rev: 0 }] {
+        assert_eq!(gus.remote.clone().jam_press(op), Reach::Nowhere);
+    }
+    assert_eq!(gus.remote.clone().jam_press(Op::Play), Reach::Here, "play joins the jam again");
+    // A guest's control sent all the same (an older client) is refused.
+    gus.remote.clone().jam_act(Op::Next);
+    assert_eq!(gus.until("the refusal", |r| r.jam_view().and_then(|v| v.refused)), Refusal::NotAllowed);
+    assert!(host.ops.try_recv().is_err(), "nothing from the plain guest");
+
+    // The admin's pause and skip are the host's.
+    assert_eq!(dee.remote.clone().jam_press(Op::Pause), Reach::Jam);
+    assert_eq!(host.told(), Op::Pause);
+    assert_eq!(dee.remote.clone().jam_press(Op::Next), Reach::Jam);
+    assert_eq!(host.told(), Op::Next);
     relay.close();
 }

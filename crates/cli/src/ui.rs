@@ -1686,12 +1686,17 @@ fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
         ("⏭", Style::default().fg(t.text), Button::Next),
         (repeat, lit(app.repeat() != crate::app::REPEAT_OFF), Button::Repeat),
     ];
-    // The jam's playback is its host's: a guest has no controls.
-    let controls = if app.guest() { &controls[..0] } else { &controls[..] };
+    // A jam guest's are those its role offers: shuffle and repeat are the host's.
+    let offered = |b: Button| match b {
+        Button::Toggle => app.offers(|c| c.play_pause),
+        Button::Previous | Button::Next => app.offers(|c| c.skip),
+        _ => !app.guest(),
+    };
+    let controls: Vec<_> = controls.into_iter().filter(|c| offered(c.2)).collect();
     let gap = 3u16;
     let total: u16 = controls.iter().map(|c| c.0.width() as u16).sum::<u16>() + gap * 4;
     let mut x = mid.x + mid.width.saturating_sub(total) / 2;
-    for &(label, style, b) in controls {
+    for &(label, style, b) in &controls {
         let cw = label.width() as u16;
         if x + cw > mid.x + mid.width {
             break;
@@ -1725,7 +1730,7 @@ fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
         let r = Rect { x, width: bar_w, ..l2 };
         put(f, Paragraph::new(bar), r);
         app.seek_rect = r;
-        if !app.guest() {
+        if app.offers(|c| c.seek) {
             app.hits.push((r, Hit::Seek));
         }
         x += bar_w + 1;

@@ -329,6 +329,9 @@ pub const YOU_ASKED: &str = "You asked for";
 /// Beside a song a guest asked for, until the host takes it.
 pub const ASKED: &str = "Asked";
 
+/// Under a jam guest's player while it paused its own listening: play joins the jam again.
+pub const JAM_PAUSED_HERE: &str = "Paused here · Jam still playing";
+
 pub const JAM_OWN: &str = "That's your own jam";
 
 /// Why a jam was not joined.
