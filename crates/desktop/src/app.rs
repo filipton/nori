@@ -1607,8 +1607,9 @@ impl App {
         let listening = view.as_ref().filter(|_| guest).map_or(nori_core::remote::Listening::Watching, |v| v.listening);
         g.set_here(listening != nori_core::remote::Listening::Watching);
         g.set_along_note(words::jam_along(listening).into());
-        // A guest follows the host's playback.
-        self.jam_now = view.as_ref().filter(|_| guest).and_then(|v| v.queue.clone().map(|q| (q, Instant::now() - Duration::from_millis(v.age_ms.max(0) as u64))));
+        // A guest follows the host's playback, its place run on from when the host heard it.
+        let heard = remote.as_ref().and_then(|r| r.jam_playing()).map(|m| Instant::now() - Duration::from_millis(m.heard_ago_ms().max(0) as u64));
+        self.jam_now = view.as_ref().filter(|_| guest).and_then(|v| v.queue.clone().map(|q| (q, heard.unwrap_or_else(|| Instant::now() - Duration::from_millis(v.age_ms.max(0) as u64)))));
         let link = view.as_ref().and_then(|v| v.link.clone()).unwrap_or_default();
         if link != self.jam_link {
             g.set_qr(if link.is_empty() { Image::default() } else { crate::jam::qr(&link) });

@@ -419,7 +419,7 @@ impl Runner {
                 (false, Some(_)) => State::Paused,
                 (false, None) => State::Idle,
             };
-            app.follow_now(Now { state, position_ms: e.position_ms(), at: Instant::now(), speed: 1.0, mixing: false, buffering: m.buffering && m.playing });
+            app.follow_now(Now { state, position_ms: e.position_ms(), at: Instant::now(), speed: m.rate as f32, mixing: false, buffering: m.buffering && m.playing });
             let id = e.song().map(|s| s.id.clone());
             if id != self.heard {
                 self.heard = id;

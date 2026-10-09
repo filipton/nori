@@ -195,6 +195,11 @@ impl Mirror {
     pub fn position_now(&self) -> i64 {
         self.position_at(clock::now_us())
     }
+
+    /// How long ago the device's listener heard `position_ms`, ms.
+    pub fn heard_ago_ms(&self) -> i64 {
+        (clock::now_us() - self.at_us) / 1000
+    }
 }
 
 /// A song of a mirrored queue, and the list index commands name it by.
