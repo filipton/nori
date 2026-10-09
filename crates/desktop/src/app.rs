@@ -1531,7 +1531,10 @@ impl App {
         let Some(r) = remote.filter(|_| ui.get_inspector() == 3) else { return };
         let active = self.elsewhere.as_ref().map(|e| e.mirror.id.as_str());
         let here = std::iter::once(words::device_row(None, active.is_none()));
-        let rows: Vec<crate::DeviceRow> = here.chain(r.devices().iter().map(|d| words::device_row(Some(d), active == Some(d.id.as_str())))).collect();
+        let mut devices = r.devices();
+        let names = nori_core::remote::device_names(devices.clone(), r.me(), words::kind_words());
+        devices.iter_mut().zip(names).for_each(|(d, name)| d.name = name);
+        let rows: Vec<crate::DeviceRow> = here.chain(devices.iter().map(|d| words::device_row(Some(d), active == Some(d.id.as_str())))).collect();
         ui.set_devices(ModelRc::new(VecModel::from(rows)));
     }
 

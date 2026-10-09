@@ -88,6 +88,10 @@ struct Relay {
     lagged: AtomicU64,
     /// A door's poll answers come back 250 ms late.
     door_late: std::sync::atomic::AtomicBool,
+    /// A device's poll saying it no longer serves reaches the relay 250 ms late.
+    leave_late: std::sync::atomic::AtomicBool,
+    /// The server cannot be reached; held polls fail once woken.
+    down: std::sync::atomic::AtomicBool,
 }
 
 fn decode(v: &str) -> String {
@@ -119,7 +123,7 @@ const GUEST_ENDPOINTS: &[&str] = &["ping", "search3", "getCoverArt", "getSong", 
 
 impl Relay {
     fn new() -> Arc<Relay> {
-        Arc::new(Relay { hub: Mutex::default(), waiting: Mutex::default(), next: AtomicU64::new(1), absent: false, lagging: Mutex::new(None), lagged: AtomicU64::new(0), door_late: Default::default() })
+        Arc::new(Relay { hub: Mutex::default(), waiting: Mutex::default(), next: AtomicU64::new(1), absent: false, lagging: Mutex::new(None), lagged: AtomicU64::new(0), door_late: Default::default(), leave_late: Default::default(), down: Default::default() })
     }
 
     fn absent() -> Arc<Relay> {
@@ -163,6 +167,13 @@ impl Relay {
         self.wake();
     }
 
+    /// The server cannot be reached (`down`), or can again.
+    fn go_down(&self, down: bool) {
+        let _hub = self.hub.lock();
+        self.down.store(down, Ordering::Relaxed);
+        self.wake();
+    }
+
     /// Wakes the held polls; called with the hub locked.
     fn wake(&self) {
         self.waiting.lock().drain(..).for_each(Waker::wake);
@@ -191,11 +202,12 @@ impl Relay {
         self.wake();
     }
 
-    /// A held poll's wait: until there is news after `since` in one of `rooms`, or the relay closed.
+    /// A held poll's wait: until there is news after `since` in one of `rooms`, or the relay closed or
+    /// went down.
     async fn news(&self, since: u64, rooms: &[String]) {
         std::future::poll_fn(|cx| {
             let hub = self.hub.lock();
-            if rooms.iter().any(|r| hub.rooms.get(r).is_some_and(|s| s.touched > since)) || hub.closed {
+            if rooms.iter().any(|r| hub.rooms.get(r).is_some_and(|s| s.touched > since)) || hub.closed || self.down.load(Ordering::Relaxed) {
                 return Poll::Ready(());
             }
             self.waiting.lock().push(cx.waker().clone());
@@ -332,17 +344,24 @@ impl Transport for Relay {
             })
             .await;
         }
-        let Some(rest) = request.url.strip_prefix(&format!("{SERVER}/rest/")) else {
-            return Err(TransportError::Failed { kind: FailureKind::Connect, detail: Some("unreachable".into()) });
+        let unreachable = || Err(TransportError::Failed { kind: FailureKind::Connect, detail: Some("unreachable".into()) });
+        let Some(rest) = request.url.strip_prefix(&format!("{SERVER}/rest/")).filter(|_| !self.down.load(Ordering::Relaxed)) else {
+            return unreachable();
         };
         let (endpoint, query) = rest.split_once('?').unwrap_or((rest, ""));
         let params: HashMap<String, String> = query.split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), decode(v))).collect();
         if endpoint == "noriRemote.poll" {
+            if self.leave_late.load(Ordering::Relaxed) && params.get("serve").map(String::as_str) == Some("0") {
+                std::thread::sleep(Duration::from_millis(250));
+            }
             self.arrived(&params);
             if let (Some(since), Some("1")) = (params.get("since").and_then(|s| s.parse().ok()), params.get("hold").map(String::as_str)) {
                 // The rooms it listens to as it arrives: a jam opened meanwhile is not one of them.
                 let rooms = self.caller(endpoint, &params).map(|c| listened(&self.hub.lock(), &c, params.get("dev").map_or("", String::as_str))).unwrap_or_default();
                 self.news(since, &rooms).await;
+                if self.down.load(Ordering::Relaxed) {
+                    return unreachable();
+                }
             }
         }
         let json = match endpoint {
@@ -991,6 +1010,50 @@ fn a_stopped_remote_lets_go_of_everything() {
     phone.remote.clone().played(Playing { playing: false, position_ms: 20_000, index: None, volume: None, ..Default::default() });
     tablet.until("the phone's news", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state).filter(|s| s.position_ms == 20_000));
     assert_eq!(asked(), before, "no poll or time exchange after the stop");
+    relay.close();
+}
+
+#[test]
+fn a_stopped_device_leaves_the_lists_at_once() {
+    let relay = Relay::new();
+    let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    phone.playing(&["s1"], 0);
+    phone.remote.clone().serve(true);
+    let phone_id = phone.remote.id();
+    desk.remote.clone().watch(true);
+    desk.until("the phone", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state));
+
+    // Its leaving reaches the relay late: stopping waits for it, as a client quits right after.
+    relay.leave_late.store(true, Ordering::Relaxed);
+    phone.remote.clone().stop();
+    let listed = relay.hub.lock().rooms["u:ann"].members.iter().any(|m| m.id == phone_id);
+    assert!(!listed, "the relay was told before the stop returned");
+    desk.until("the phone gone", |r| r.devices().is_empty().then_some(()));
+    relay.close();
+}
+
+#[test]
+fn far_devices_are_hidden_while_the_relay_cannot_be_reached() {
+    let relay = Relay::new();
+    let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    phone.playing(&["s1"], 0);
+    phone.remote.clone().serve(true);
+    let phone_id = phone.remote.id();
+    desk.remote.clone().watch(true);
+    let listed = |r: &Remote| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state);
+    desk.until("the phone", listed);
+
+    // What the relay last said is not shown once it no longer answers: the phone may have gone since.
+    relay.go_down(true);
+    desk.until("the phone hidden", |r| r.devices().is_empty().then_some(()));
+
+    // Back as soon as the relay answers, without waiting for news.
+    relay.go_down(false);
+    desk.remote.clone().watch(false);
+    desk.remote.clone().watch(true);
+    desk.until("the phone again", listed);
     relay.close();
 }
 

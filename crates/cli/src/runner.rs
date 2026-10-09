@@ -341,6 +341,10 @@ impl Runner {
         d.jams = jams && d.on && !unsupported;
         d.jams_unsupported = jams && unsupported;
         d.list = remote.as_ref().map(|r| r.devices()).unwrap_or_default();
+        if let Some(r) = &remote {
+            let names = nori_core::remote::device_names(d.list.clone(), r.me(), crate::text::kind_words());
+            d.list.iter_mut().zip(names).for_each(|(x, name)| x.name = name);
+        }
         let jam = remote.as_ref().filter(|_| jams).and_then(|r| r.jam_view().filter(|v| v.hosting).map(|v| (v, r.jam_added())));
         (d.jam, d.added) = jam.map_or_else(Default::default, |(v, added)| (Some(v), added));
         let e = s.elsewhere();

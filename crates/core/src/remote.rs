@@ -51,6 +51,9 @@ const PREVIOUS_RESTARTS_MS: i64 = 3_000;
 /// After a failed poll, the relay is asked again this much later (or when something changes here).
 const RETRY_MS: u64 = 30_000;
 
+/// The longest [`Remote::stop`] waits for the sends queued before it (leaving the relay among them).
+const SENT_WAIT_MS: u64 = 3_000;
+
 /// A held poll's own timeout: the hold plus the way there and back.
 const POLL_TIMEOUT_MS: u32 = HOLD_MS + 15_000;
 
@@ -460,6 +463,8 @@ struct Inner {
     /// Bumped to end the running relay poller (each runs while its generation is current).
     generation: u64,
     relay_polling: bool,
+    /// The last relay poll failed: the devices it listed may have gone since, and are not shown.
+    relay_down: bool,
     /// Bumped to end the nearby doors' pollers.
     lan_generation: u64,
     since: Option<u64>,
@@ -593,6 +598,8 @@ pub struct Remote {
     timing: Condvar,
     /// None once stopped: the sender ends with what was queued.
     out: Mutex<Option<mpsc::Sender<Out>>>,
+    /// Disconnected once the sender ended.
+    out_ended: Mutex<mpsc::Receiver<()>>,
     /// The pollers, the time keeper and the probe, joined when the remote stops.
     threads: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -611,10 +618,12 @@ impl Remote {
             id
         });
         let (out, rx) = mpsc::channel();
-        let remote = Arc::new(Remote { client, id, me, player, shown, discovery, inner: Mutex::default(), retry: Condvar::new(), timing: Condvar::new(), out: Mutex::new(Some(out)), threads: Mutex::default() });
+        let (ending, out_ended) = mpsc::channel::<()>();
+        let remote = Arc::new(Remote { client, id, me, player, shown, discovery, inner: Mutex::default(), retry: Condvar::new(), timing: Condvar::new(), out: Mutex::new(Some(out)), out_ended: Mutex::new(out_ended), threads: Mutex::default() });
         let (client, who) = (remote.client.clone(), remote.who());
         // Sends one at a time, in order; it ends once the remote stops or goes.
         let _ = std::thread::Builder::new().name("nori-remote-out".into()).spawn(move || {
+            let _ending = ending;
             for o in rx {
                 deliver(&client, &who, o);
             }
@@ -622,7 +631,7 @@ impl Remote {
         // Whether the server relays, asked once: one poll that is not held.
         let me = remote.clone();
         remote.spawn("nori-remote-probe", move || {
-            let Some(got) = me.get(me.poll_url(None, false), 0) else { return };
+            let Some(got) = me.get(me.poll_url(None, false, false), 0) else { return };
             let serving = {
                 let mut i = me.inner.lock();
                 if let Some(found) = support(&got) {
@@ -655,6 +664,11 @@ impl Remote {
         self.id.clone()
     }
 
+    /// This device as others list it.
+    pub fn me(&self) -> RemoteMe {
+        self.me.clone()
+    }
+
     /// Makes this device controllable (its playback service is up) or not.
     pub fn serve(self: Arc<Self>, on: bool) {
         let announce = {
@@ -676,7 +690,7 @@ impl Remote {
         if on {
             self.publish();
         } else if self.relay() != RelaySupport::Unsupported {
-            self.out(Out::Get(self.poll_url(None, false)));
+            self.out(Out::Get(self.poll_url(None, false, false)));
         }
         self.keep_polling();
     }
@@ -776,12 +790,12 @@ impl Remote {
         }
     }
 
-    /// The account's other devices, nearby ones first.
+    /// The account's other devices, nearby ones first; through the relay only while it answers.
     pub fn devices(&self) -> Vec<RemoteDevice> {
         let i = self.inner.lock();
         let seen = |m: &Member, age_ms: i64, nearby: bool| RemoteDevice { id: m.id.clone(), name: m.name.clone(), kind: m.kind, state: m.state.clone(), age_ms, nearby, refused: i.refused.get(&m.id).copied() };
         let mut out: Vec<RemoteDevice> = i.peers.iter().filter(|p| p.member.state.is_some()).map(|p| seen(&p.member, (clock::now_us() - p.received) / 1000, true)).collect();
-        for room in i.rooms.iter().filter(|r| !r.jam) {
+        for room in i.rooms.iter().filter(|r| !r.jam && !i.relay_down) {
             for m in room.members.iter().filter(|m| m.id != self.id && m.state.is_some()) {
                 if !out.iter().any(|d| d.id == m.id) {
                     out.push(seen(m, i.age(&m.id), false));
@@ -966,7 +980,8 @@ impl Remote {
     }
 
     /// Ends remote control here for good: leaves the relay, withdraws the door, ends a hosted jam, stops
-    /// mirroring, and ends every thread this remote started, a held poll at once. Queued sends still go.
+    /// mirroring, and ends every thread this remote started, a held poll at once. Queued sends still go,
+    /// waited for up to [`SENT_WAIT_MS`]: a client quitting next leaves the device lists at once.
     pub fn stop(self: Arc<Self>) {
         self.clone().serve(false);
         self.clone().watch(false);
@@ -991,6 +1006,7 @@ impl Remote {
                 let _ = t.join();
             }
         }
+        let _ = self.out_ended.lock().recv_timeout(Duration::from_millis(SENT_WAIT_MS));
         self.shown.changed();
     }
 
@@ -1018,6 +1034,52 @@ pub async fn jam_join(transport: Arc<dyn Transport>, link: String, name: String)
     let body = transport::get(&*transport, url, 0).await?;
     let joined: Joined = serde_json::from_slice(&body).map_err(|e| NetError::Parse { reason: e.to_string() })?;
     Ok(JamPass { url: server, api_key: nori_remote::guest_key(&joined.key) })
+}
+
+/// What a client calls each kind of device, for [`device_names`].
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct KindWords {
+    pub phone: String,
+    pub desktop: String,
+    pub terminal: String,
+    pub guest: String,
+}
+
+impl KindWords {
+    fn of(&self, kind: DeviceKind) -> &str {
+        match kind {
+            DeviceKind::Phone => &self.phone,
+            DeviceKind::Desktop => &self.desktop,
+            DeviceKind::Terminal => &self.terminal,
+            DeviceKind::Guest => &self.guest,
+        }
+    }
+}
+
+/// Characters of a device id that tell apart devices of one name and kind.
+const SHORT_ID: usize = 4;
+
+/// The names to list `devices` by, told apart from each other and from this device (`me`): a name
+/// another one has too gets the device's kind in brackets ("Mac (terminal)"), or a short id when one of
+/// those is of its kind too ("Mac (3fa2)").
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn device_names(devices: Vec<RemoteDevice>, me: RemoteMe, words: KindWords) -> Vec<String> {
+    let all: Vec<(&str, DeviceKind)> = std::iter::once((me.name.as_str(), me.kind)).chain(devices.iter().map(|d| (d.name.as_str(), d.kind))).collect();
+    devices
+        .iter()
+        .enumerate()
+        .map(|(k, d)| {
+            let others: Vec<DeviceKind> = all.iter().enumerate().filter(|&(j, &(name, _))| j != k + 1 && name == d.name).map(|(_, &(_, kind))| kind).collect();
+            if others.is_empty() {
+                d.name.clone()
+            } else if !others.contains(&d.kind) {
+                format!("{} ({})", d.name, words.of(d.kind))
+            } else {
+                format!("{} ({})", d.name, d.id.chars().take(SHORT_ID).collect::<String>())
+            }
+        })
+        .collect()
 }
 
 /// An answer from the relay; None when the server has no relay (a Subsonic error for an unknown endpoint).
@@ -1107,12 +1169,15 @@ impl Remote {
         vec![("dev".into(), self.id.clone()), ("name".into(), self.me.name.clone()), ("kind".into(), kind)]
     }
 
-    fn poll_url(&self, since: Option<u64>, serve: bool) -> String {
+    /// A poll for the events after `since`, held until there are some if `hold`.
+    fn poll_url(&self, since: Option<u64>, hold: bool, serve: bool) -> String {
         let mut p = self.who();
         p.push(("serve".into(), (serve as u8).to_string()));
         if let Some(s) = since {
             p.push(("since".into(), s.to_string()));
-            p.push(("hold".into(), "1".into()));
+            if hold {
+                p.push(("hold".into(), "1".into()));
+            }
         }
         self.client.core.server.read().url("noriRemote.poll", &p)
     }
@@ -1185,7 +1250,7 @@ impl Remote {
                 if i.generation != generation || !i.wants_relay() {
                     return;
                 }
-                self.poll_url(i.since, i.serving)
+                self.poll_url(i.since, !i.relay_down, i.serving)
             };
             let Some(got) = self.get(url, POLL_TIMEOUT_MS) else { return };
             let received = clock::now_us();
@@ -1200,6 +1265,9 @@ impl Remote {
                 }
                 (Some(_), _) => return self.no_relay(generation),
                 (None, _) => {
+                    if !std::mem::replace(&mut self.inner.lock().relay_down, true) {
+                        self.shown.changed();
+                    }
                     let mut i = self.inner.lock();
                     if i.generation == generation {
                         self.retry.wait_for(&mut i, Duration::from_millis(RETRY_MS));
@@ -1306,6 +1374,7 @@ impl Remote {
                 republish = true;
             }
             i.since = Some(a.seq);
+            i.relay_down = false;
             i.you = a.you;
             for m in a.rooms.iter().flat_map(|r| &r.members).filter(|m| m.id != self.id) {
                 let before = i.rooms.iter().flat_map(|r| &r.members).find(|o| o.id == m.id).map(|o| &o.state);
@@ -1701,6 +1770,26 @@ mod tests {
         // A command foreseen here runs on from when it was sent.
         m.foresee(&Op::Pause);
         assert!(!view(&m).playing && view(&m).position_at(900_000_000) == view(&m).position_ms);
+    }
+
+    #[test]
+    fn devices_of_one_name_are_told_apart() {
+        use DeviceKind::*;
+        let words = KindWords { phone: "phone".into(), desktop: "computer".into(), terminal: "terminal".into(), guest: "guest".into() };
+        let me = RemoteMe { name: "Mac".into(), kind: Desktop };
+        /// (name, kind, id) of each device.
+        type Listed = &'static [(&'static str, DeviceKind, &'static str)];
+        let cases: &[(Listed, &[&str])] = &[
+            (&[("Pixel", Phone, "aa11")], &["Pixel"]),
+            (&[("Mac", Terminal, "bb22")], &["Mac (terminal)"]),
+            (&[("Mac", Desktop, "3fa29c01")], &["Mac (3fa2)"]),
+            (&[("Pixel", Phone, "aa11"), ("Pixel", Terminal, "bb22"), ("Desk", Desktop, "cc33")], &["Pixel (phone)", "Pixel (terminal)", "Desk"]),
+            (&[("Mac", Terminal, "1111ab"), ("Mac", Terminal, "2222cd")], &["Mac (1111)", "Mac (2222)"]),
+        ];
+        for (devices, want) in cases {
+            let devices = devices.iter().map(|&(name, kind, id)| RemoteDevice { id: id.into(), name: name.into(), kind, state: None, age_ms: 0, nearby: false, refused: None }).collect();
+            assert_eq!(device_names(devices, me.clone(), words.clone()), *want);
+        }
     }
 
     #[test]

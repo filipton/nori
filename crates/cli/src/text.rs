@@ -5,7 +5,7 @@ use nori_core::lyrics_sources::LyricsOrigin;
 use nori_core::settings::{BandMark, EqBypass};
 use nori_core::transport::{FailureKind, NetError};
 use nori_core::remote::wire::{DeviceKind, Refusal, Role};
-use nori_core::remote::RemoteDevice;
+use nori_core::remote::{KindWords, RemoteDevice};
 use nori_core::{AlbumDetail, PlaylistDetail, PresetKind, Song};
 
 /// "3:07", or "1:02:03" from an hour.
@@ -266,6 +266,12 @@ pub fn device_kind(kind: DeviceKind) -> &'static str {
         DeviceKind::Terminal => "terminal",
         DeviceKind::Guest => "guest",
     }
+}
+
+/// The kinds' words, for telling devices of one name apart.
+pub fn kind_words() -> KindWords {
+    let word = |k| device_kind(k).to_string();
+    KindWords { phone: word(DeviceKind::Phone), desktop: word(DeviceKind::Desktop), terminal: word(DeviceKind::Terminal), guest: word(DeviceKind::Guest) }
 }
 
 /// What a device of the account plays, or its answer to the last command when it said no.

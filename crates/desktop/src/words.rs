@@ -101,6 +101,11 @@ pub fn mix_caption(favourites: bool) -> &'static str {
 /// The devices panel's first row, which brings the music back.
 pub const THIS_COMPUTER: &str = "This computer";
 
+/// The kinds' words, for telling devices of one name apart.
+pub fn kind_words() -> nori_core::remote::KindWords {
+    nori_core::remote::KindWords { phone: "phone".into(), desktop: "computer".into(), terminal: "terminal".into(), guest: "guest".into() }
+}
+
 /// The player's strip while another device plays.
 pub fn playing_on(device: &str) -> String {
     format!("Playing on {device}")
