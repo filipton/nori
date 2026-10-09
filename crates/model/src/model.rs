@@ -420,6 +420,8 @@ pub enum OriginKind {
     ShuffleSongs,
     /// "Shuffle albums": refills with random whole albums.
     ShuffleAlbums,
+    /// A jam's host's queue, played along with it: the host's to fill, never refilled here.
+    Jam,
 }
 
 /// The page a queue was started from. A page is "playing" only when this matches it (nori-queue `playlist_from`).

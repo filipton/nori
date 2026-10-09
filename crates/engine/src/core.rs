@@ -1250,7 +1250,8 @@ pub fn queued_for(session: &Session, l: &nori_core::remote::Lead) -> (usize, boo
         Some(k) => (k, false),
         None => {
             session.register(l.songs.clone());
-            session.set(ids, Some(l.index as u32), false, None);
+            // The host's queue, the host's to fill: never refilled here.
+            session.set(ids, Some(l.index as u32), false, Some(nori_core::PageOrigin::new(nori_core::OriginKind::Jam, "")));
             (l.index, true)
         }
     }
