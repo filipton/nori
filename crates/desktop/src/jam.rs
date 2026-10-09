@@ -101,6 +101,7 @@ mod tests {
             refused: None,
             along: true,
             listening: nori_core::remote::Listening::Watching,
+            ended: false,
         };
         let s = shown(&v);
         let people: Vec<(&str, &str, bool)> = s.people.iter().map(|p| (p.name.as_str(), p.initial.as_str(), p.admin)).collect();
@@ -133,6 +134,7 @@ mod tests {
             refused: None,
             along: false,
             listening: nori_core::remote::Listening::Watching,
+            ended: false,
         };
         let s = shown(&v);
         assert_eq!((s.host.as_str(), s.strip.as_str()), ("Desk", "Jam · Desk · 2 listening"));

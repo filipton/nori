@@ -233,6 +233,8 @@ pub struct JamView {
     pub along: bool,
     /// This guest's listening along.
     pub listening: Listening,
+    /// The jam is over for this guest: the host closed it or sent it out, and its pass no longer works.
+    pub ended: bool,
 }
 
 impl JamView {
@@ -653,6 +655,8 @@ struct Inner {
     relay_polling: bool,
     /// The last relay poll failed: the devices it listed may have gone since, and are not shown.
     relay_down: bool,
+    /// This guest's pass was refused: its jam is over.
+    jam_over: bool,
     /// Bumped to end the nearby doors' pollers.
     lan_generation: u64,
     since: Option<u64>,
@@ -708,7 +712,7 @@ impl Peer {
 
 impl Inner {
     fn wants_relay(&self) -> bool {
-        self.relay != RelaySupport::Unsupported && (self.serving || self.watching || self.follows_mirror() || self.hosted.is_some() || self.listen.is_some())
+        !self.jam_over && self.relay != RelaySupport::Unsupported && (self.serving || self.watching || self.follows_mirror() || self.hosted.is_some() || self.listen.is_some())
     }
 
     /// Whether the mirrored device is followed: while something here shows it, or it plays.
@@ -1295,7 +1299,10 @@ impl Remote {
             let st = h.jam.state();
             let queue = i.published.as_ref().map(|(s, _)| DeviceState { jam: None, ..s.clone() });
             let age_ms = i.published.as_ref().map_or(0, |(_, at)| at.elapsed().as_millis() as i64);
-            return Some(JamView { hosting: true, link: Some(h.link.clone()), you: self.id.clone(), members: st.members, pending: st.pending, queue, age_ms, refused: None, along: h.along, listening: Listening::Watching });
+            return Some(JamView { hosting: true, link: Some(h.link.clone()), you: self.id.clone(), members: st.members, pending: st.pending, queue, age_ms, refused: None, along: h.along, listening: Listening::Watching, ended: false });
+        }
+        if i.jam_over {
+            return Some(JamView { hosting: false, link: None, you: i.you.clone(), members: Vec::new(), pending: Vec::new(), queue: None, age_ms: 0, refused: None, along: false, listening: Listening::Watching, ended: true });
         }
         let (_, host) = i.joined()?;
         let state = host.and_then(|h| h.state.clone());
@@ -1311,6 +1318,7 @@ impl Remote {
             age_ms: host.map_or(0, |h| i.age(&h.id)),
             refused: host.and_then(|h| i.refused.get(&h.id).copied()),
             queue: state.map(|s| DeviceState { jam: None, ..s }),
+            ended: false,
         })
     }
 
@@ -1673,8 +1681,14 @@ impl Remote {
             let Some(got) = me.get(me.poll_url(None, false, false), 0, |_| true) else { return };
             let serving = {
                 let mut i = me.inner.lock();
-                if let Some(found) = support(&got) {
-                    i.relay = found;
+                match support(&got) {
+                    Some(RelaySupport::Unsupported) if me.is_guest() => {
+                        drop(i);
+                        me.jam_over();
+                        return;
+                    }
+                    Some(found) => i.relay = found,
+                    None => {}
                 }
                 // The probe says this device does not serve, and may have reached the relay after its
                 // first state did: serving by now, it says its state again.
@@ -1748,6 +1762,7 @@ impl Remote {
                     self.inner.lock().relay = RelaySupport::Supported;
                     self.took(answer(&body).unwrap_or_default(), received);
                 }
+                (Some(RelaySupport::Unsupported), _) if self.is_guest() => return self.jam_over(),
                 (Some(_), _) => return self.no_relay(generation),
                 (None, _) => {
                     if !std::mem::replace(&mut self.inner.lock().relay_down, true) {
@@ -1760,6 +1775,23 @@ impl Remote {
                 }
             }
         }
+    }
+
+    /// This device is a jam guest: its profile holds a pass, not an account.
+    fn is_guest(&self) -> bool {
+        self.client.core.rules.read().asks
+    }
+
+    /// The guest's pass is refused: the host closed the jam or sent this guest out. Nothing is polled or
+    /// followed from here.
+    fn jam_over(&self) {
+        {
+            let mut i = self.inner.lock();
+            i.jam_over = true;
+            i.end_relay_poll();
+        }
+        self.unfollow();
+        self.shown.changed();
     }
 
     fn no_relay(&self, generation: u64) {

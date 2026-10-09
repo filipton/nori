@@ -42,12 +42,13 @@ fn listening_code(l: Listening) -> u8 {
 
 /// A guest's jam `v` for the app: `{"host", "listeners": [names], "asked": [song ids], "asks": [{"t", "s",
 /// "c"}], "listening": 0 only shown, 1 playing here, 2 asked but the host lets no one, 3 asked but the
-/// server lets no guest}`. Its asks and asked songs are its own requests the host has yet to take.
+/// server lets no guest, "ended": the host closed the jam or sent this guest out}`. Its asks and asked songs
+/// are its own requests the host has yet to take.
 fn jam_json(v: &JamView) -> Value {
     let listeners: Vec<&str> = v.listeners().map(|m| m.name.as_str()).collect();
     let asks: Vec<Value> = v.asks().map(|p| json!({ "t": p.song.title, "s": p.song.artist, "c": p.song.cover_art.as_deref().unwrap_or("") })).collect();
     let asked: Vec<&str> = v.asks().map(|p| p.song.id.as_str()).collect();
-    json!({ "host": v.host(), "listeners": listeners, "asked": asked, "asks": asks, "listening": listening_code(v.listening) })
+    json!({ "host": v.host(), "listeners": listeners, "asked": asked, "asks": asks, "listening": listening_code(v.listening), "ended": v.ended })
 }
 
 /// The jam this iPod is a guest in, as JSON to free ([`jam_json`]); NULL in none.
@@ -133,10 +134,11 @@ mod tests {
             refused: None,
             along: false,
             listening: Listening::HostOff,
+            ended: false,
         };
         assert_eq!(
             jam_json(&v),
-            json!({ "host": "Desk", "listeners": ["iPod", "Dee"], "asked": ["x"], "asks": [{ "t": "X", "s": "Band", "c": "al-x" }], "listening": 2 })
+            json!({ "host": "Desk", "listeners": ["iPod", "Dee"], "asked": ["x"], "asks": [{ "t": "X", "s": "Band", "c": "al-x" }], "listening": 2, "ended": false })
         );
     }
 }

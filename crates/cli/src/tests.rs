@@ -910,6 +910,7 @@ fn jam() -> nori_core::remote::JamView {
         refused: None,
         along: true,
         listening: nori_core::remote::Listening::Watching,
+        ended: false,
     }
 }
 
@@ -1138,6 +1139,7 @@ fn guest_jam() -> nori_core::remote::JamView {
         refused: None,
         along: true,
         listening: nori_core::remote::Listening::Watching,
+        ended: false,
     }
 }
 

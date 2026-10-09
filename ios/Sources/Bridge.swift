@@ -143,6 +143,8 @@ struct Jam {
     let asks: [Item]
     /// 0 only shown, 1 playing here, 2 asked but the host lets no one, 3 asked but the server lets no guest.
     let listening: Int
+    /// The host closed the jam or sent this guest out: its pass no longer works.
+    let ended: Bool
 
     init(_ d: [String: Any]) {
         host = d["host"] as? String ?? ""
@@ -150,6 +152,7 @@ struct Jam {
         asked = Set(d["asked"] as? [String] ?? [])
         asks = (d["asks"] as? [[String: Any]] ?? []).map { Item($0.merging(["k": "song"]) { a, _ in a }) }
         listening = d["listening"] as? Int ?? 0
+        ended = d["ended"] as? Bool ?? false
     }
 
     var strip: String { Say.jamStrip(host, listeners.count) }
@@ -213,7 +216,16 @@ final class Core {
     private func readJam() {
         jam = (takenJSON(nori_ios_jam()) as? [String: Any]).map(Jam.init)
         NotificationCenter.default.post(name: .noriJam, object: nil)
+        // A jam that is over leaves the guest profile, whose pass is refused by every request now: the
+        // profile before it opens again.
+        if jam?.ended == true, !leavingEndedJam {
+            leavingEndedJam = true
+            nori_ios_jam_leave()
+        }
     }
+
+    /// The guest profile of an ended jam is being left; its leaving says the jam ended.
+    private var leavingEndedJam = false
 
     /// Hearts changed in this session, by item id, until a page read brings the server's word.
     private var marks: [String: Bool] = [:]
@@ -380,7 +392,8 @@ final class Core {
         case 20:
             Toast.show(Say.jamJoinFailed(Say.failure(count, text)))
         case 21:
-            switchProfile(Say.jamLeft)
+            switchProfile(leavingEndedJam ? Say.jamEnded : Say.jamLeft)
+            leavingEndedJam = false
         case 19:
             SystemVolume.set(Float(ms) / 1000)
         case 5:

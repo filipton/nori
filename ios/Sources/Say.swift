@@ -369,6 +369,7 @@ enum Say {
     static func jamJoinFailed(_ why: String) -> String { "Couldn't join the jam (\(why))" }
     static let leaveJam = "Leave"
     static let jamLeft = "You left the jam"
+    static let jamEnded = "The jam ended"
     static let listenHere = "Listen Here"
     static let playingHere = "Playing Here"
     static let youAskedFor = "You Asked For"

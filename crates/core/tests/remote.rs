@@ -72,6 +72,8 @@ struct Hub {
     /// Every endpoint asked, with its id parameter.
     asked: Vec<String>,
     closed: bool,
+    /// Jams their host ended.
+    ended: std::collections::HashSet<String>,
 }
 
 /// The relay in front of a server whose library is a few songs.
@@ -233,7 +235,7 @@ impl Relay {
     async fn news(&self, since: u64, rooms: &[String]) {
         std::future::poll_fn(|cx| {
             let hub = self.hub.lock();
-            if rooms.iter().any(|r| hub.rooms.get(r).is_some_and(|s| s.touched > since)) || hub.closed || self.down.load(Ordering::Relaxed) {
+            if rooms.iter().any(|r| hub.rooms.get(r).is_some_and(|s| s.touched > since) || hub.ended.contains(r)) || hub.closed || self.down.load(Ordering::Relaxed) {
                 return Poll::Ready(());
             }
             self.waiting.lock().push(cx.waker().clone());
@@ -347,6 +349,15 @@ impl Relay {
                 bump(&mut hub, &room);
                 json(serde_json::json!({}))
             }
+            ("noriRemote.close", Caller::Account(_)) => {
+                let room = p["room"].clone();
+                hub.keys.retain(|_, (r, _)| *r != room);
+                hub.rooms.remove(&room);
+                hub.ended.insert(room);
+                hub.seq += 1;
+                self.wake();
+                json(serde_json::json!({}))
+            }
             ("ping" | "star" | "unstar", _) => br#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.to_vec(),
             _ => subsonic_error("not here"),
         }
@@ -392,7 +403,10 @@ impl Transport for Relay {
             if let (Some(since), Some("1")) = (params.get("since").and_then(|s| s.parse().ok()), params.get("hold").map(String::as_str)) {
                 // The rooms it listens to as it arrives: a jam opened meanwhile is not one of them.
                 let rooms = self.caller(endpoint, &params).map(|c| listened(&self.hub.lock(), &c, params.get("dev").map_or("", String::as_str))).unwrap_or_default();
-                self.news(since, &rooms).await;
+                // A pass the relay no longer knows has no rooms: answered at once, refused.
+                if !rooms.is_empty() {
+                    self.news(since, &rooms).await;
+                }
                 if self.down.load(Ordering::Relaxed) {
                     return unreachable();
                 }
@@ -1478,4 +1492,27 @@ fn a_guest_leaving_its_jam_stops_playing_along_at_once() {
     gus.remote.clone().stop();
     assert_eq!(leads.0.lock().len(), given, "the host is followed no more");
     relay.close();
+}
+
+#[test]
+fn a_guest_sees_its_jam_end_when_the_host_closes_it_or_kicks_it() {
+    for kicked in [false, true] {
+        let relay = Relay::new();
+        let host = Device::account(&relay, DeviceKind::Phone, "Host");
+        host.playing(&["s1", "s2"], 0);
+        let link = block_on(host.remote.clone().jam_open()).unwrap();
+        let pass = block_on(jam_join(relay.clone(), link, "Gus".into())).unwrap();
+        let gus = Device::new(&relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, "Gus");
+        gus.remote.clone().watch(true);
+        let view = gus.until("the jam", |r| r.jam_view().filter(|v| !v.members.is_empty()));
+        assert!(!view.ended, "a jam that goes on has not ended");
+        host.until("its guest", |r| r.jam_view().filter(|v| v.members.iter().any(|m| m.id == view.you)));
+        if kicked {
+            host.remote.clone().jam_act(Op::Kick { member: view.you.clone() });
+        } else {
+            host.remote.clone().jam_close();
+        }
+        gus.until(&format!("the jam ending (kicked {kicked})"), |r| r.jam_view().filter(|v| v.ended));
+        relay.close();
+    }
 }
