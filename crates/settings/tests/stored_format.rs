@@ -153,7 +153,6 @@ fn sample() -> StoredPrefs {
         accent: 0xFF1E88E5,
         cover_colors: false,
         reduce_motion: true,
-        scroll_titles: false,
         ignore_system_motion: false,
         ui_scale: 1.1,
         tap_action: TapAction::PlayNext,
@@ -228,6 +227,10 @@ fn sample_round_trips_and_differs() {
     let p = sample();
     let raw: HashMap<String, PrefValue> = save(&p);
     assert_eq!(load(&raw), p);
+    // A key no setting reads any more (a removed one) is ignored.
+    let mut old = raw.clone();
+    old.insert("scrollTitles".into(), PrefValue::Flag { v: false });
+    assert_eq!(load(&old), p);
     // The defaults write every key too, except the pre-amp, stored only when manual.
     let defaults = save(&StoredPrefs::default());
     let mut keys: Vec<&String> = raw.keys().collect();
