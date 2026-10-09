@@ -116,6 +116,7 @@ fun DevicesSheet(open: Boolean, onDismiss: () -> Unit, onOutput: () -> Unit, jam
             }
             Hairline(startIndent = Space.gutter)
             val hosted = jam?.takeIf { it.hosting }
+            val start by vm.jamStarting.collectAsStateWithLifecycle()
             when {
                 !jams -> {}
                 hosted != null -> YourJam(hosted.members.count { it.role != Role.HOST }, { onDismiss(); nav.player(Panel.QUEUE) }, vm::jamEnd)
@@ -123,7 +124,12 @@ fun DevicesSheet(open: Boolean, onDismiss: () -> Unit, onOutput: () -> Unit, jam
                     words(R.string.jam_unsupported), Modifier.padding(horizontal = Space.gutter, vertical = 12.dp),
                     style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                else -> ActionRow(words(R.string.jam_start), Icons.Filled.Groups, { onDismiss(); vm.jamStart(); nav.player(Panel.QUEUE) }, divider = false)
+                start == dev.nori.music.ffi.JamStart.STARTING -> Text(
+                    words(R.string.jam_starting), Modifier.padding(horizontal = Space.gutter, vertical = 12.dp),
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                start == dev.nori.music.ffi.JamStart.OFFERED ->
+                    ActionRow(words(R.string.jam_start), Icons.Filled.Groups, { onDismiss(); vm.jamStart(); nav.player(Panel.QUEUE) }, divider = false)
             }
         }
     }

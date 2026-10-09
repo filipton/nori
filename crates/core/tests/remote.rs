@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use nori_core::client::{Client, NetProfile, Starrable};
 use nori_core::library::StarsShown;
-use nori_core::remote::{jam_join, Controls, Discovery, Follower, JamControls, Lead, Listening, Playing, Reach, RelaySupport, Remote, RemoteMe, RemotePlayer, RemoteShown, Sight};
+use nori_core::remote::{jam_join, Controls, JamStart, Discovery, Follower, JamControls, Lead, Listening, Playing, Reach, RelaySupport, Remote, RemoteMe, RemotePlayer, RemoteShown, Sight};
 use nori_core::transport::{block_on, Exchange, FailureKind, Transport, TransportError, TransportResponse};
 use nori_player::playlist::Hand;
 use nori_core::{Core, ServerConfig, Song};
@@ -99,6 +99,10 @@ struct Relay {
     time: std::sync::atomic::AtomicBool,
     /// The lagging device's answers to time exchanges reach the relay this late, ms (0: as its other sends).
     answers_late: AtomicU64,
+    /// Opening a jam takes a while, each one asked a little less than the one before, so their answers
+    /// come back in the reverse order.
+    opens_late: std::sync::atomic::AtomicBool,
+    opens: AtomicU64,
 }
 
 const SERVER_SKEW_US: i64 = 9_000_000;
@@ -132,7 +136,7 @@ const GUEST_ENDPOINTS: &[&str] = &["ping", "search3", "getCoverArt", "getSong", 
 
 impl Relay {
     fn new() -> Arc<Relay> {
-        Arc::new(Relay { hub: Mutex::default(), waiting: Mutex::default(), next: AtomicU64::new(1), absent: Default::default(), lagging: Mutex::new(None), lagged: AtomicU64::new(0), door_late: Default::default(), leave_late: Default::default(), down: Default::default(), along: std::sync::atomic::AtomicBool::new(true), time: Default::default(), answers_late: AtomicU64::new(0) })
+        Arc::new(Relay { hub: Mutex::default(), waiting: Mutex::default(), next: AtomicU64::new(1), absent: Default::default(), lagging: Mutex::new(None), lagged: AtomicU64::new(0), door_late: Default::default(), leave_late: Default::default(), down: Default::default(), along: std::sync::atomic::AtomicBool::new(true), time: Default::default(), answers_late: AtomicU64::new(0), opens_late: Default::default(), opens: AtomicU64::new(0) })
     }
 
     fn absent() -> Arc<Relay> {
@@ -186,6 +190,17 @@ impl Relay {
     fn asked(&self) -> Vec<String> {
         self.hub.lock().asked.clone()
     }
+
+    /// How many times `endpoint` was asked.
+    fn asked_for(&self, endpoint: &str) -> usize {
+        self.hub.lock().asked.iter().filter(|a| a.split(' ').next() == Some(endpoint)).count()
+    }
+
+    /// The jams it keeps open.
+    fn jams(&self) -> usize {
+        self.hub.lock().rooms.values().filter(|r| r.jam).count()
+    }
+
 
     fn close(&self) {
         let mut hub = self.hub.lock();
@@ -406,6 +421,11 @@ impl Transport for Relay {
         };
         let (endpoint, query) = rest.split_once('?').unwrap_or((rest, ""));
         let params: HashMap<String, String> = query.split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), decode(v))).collect();
+        if endpoint == "noriRemote.open" && self.opens_late.load(Ordering::Relaxed) {
+            let k = self.opens.fetch_add(1, Ordering::Relaxed);
+            self.hub.lock().asked.push("open waits".into());
+            std::thread::sleep(Duration::from_millis(300 - 50 * k.min(5)));
+        }
         if endpoint == "noriRemote.poll" {
             if self.leave_late.load(Ordering::Relaxed) && params.get("serve").map(String::as_str) == Some("0") {
                 std::thread::sleep(Duration::from_millis(250));
@@ -533,6 +553,24 @@ impl RemoteShown for Shown {
     }
 }
 
+fn ann() -> ServerConfig {
+    ServerConfig { url: SERVER.into(), user: "ann".into(), password: "pw".into(), ..Default::default() }
+}
+
+/// Opens a jam on `d`; its invite.
+fn opened(d: &Device) -> String {
+    block_on(d.remote.clone().jam_open()).unwrap().expect("a jam opened")
+}
+
+/// Waits for `ready`, for what does not tell a device's change notices (the relay's own state).
+fn eventually(what: &str, ready: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ready() {
+        assert!(Instant::now() < deadline, "waited for {what}");
+        std::thread::yield_now();
+    }
+}
+
 struct Device {
     core: Arc<Core>,
     client: Arc<Client>,
@@ -548,7 +586,11 @@ impl Device {
     }
 
     fn found(relay: &Arc<Relay>, config: ServerConfig, kind: DeviceKind, name: &str, discovery: Option<Arc<dyn Discovery>>) -> Device {
-        let core = Core::new(String::new(), "remote".into(), Default::default()).unwrap();
+        Device::with(relay, config, kind, name, discovery, Default::default())
+    }
+
+    fn with(relay: &Arc<Relay>, config: ServerConfig, kind: DeviceKind, name: &str, discovery: Option<Arc<dyn Discovery>>, session: Arc<nori_queue::Session>) -> Device {
+        let core = Core::new(String::new(), "remote".into(), session).unwrap();
         core.configure(config).unwrap();
         let client = Client::new(core.clone(), relay.clone(), Default::default());
         client.set_profile(NetProfile { url: SERVER.into(), ..Default::default() });
@@ -560,7 +602,17 @@ impl Device {
     }
 
     fn account(relay: &Arc<Relay>, kind: DeviceKind, name: &str) -> Device {
-        Device::new(relay, ServerConfig { url: SERVER.into(), user: "ann".into(), password: "pw".into(), ..Default::default() }, kind, name)
+        Device::new(relay, ann(), kind, name)
+    }
+
+    /// An account's device whose app keeps its settings in `dir`, jams on; made again from the same
+    /// `dir`, it is the same device after the app started again.
+    fn kept(relay: &Arc<Relay>, dir: &nori_testdir::TempDir, kind: DeviceKind, name: &str) -> Device {
+        let settings = nori_core::settings_store::Settings::new();
+        let mut prefs = settings.open(&dir.path().join("app.db").to_string_lossy()).unwrap();
+        prefs.jam = true;
+        settings.put(prefs);
+        Device::with(relay, ann(), kind, name, None, Arc::new(nori_queue::Session::new(settings)))
     }
 
     /// Waits for `ready` to hold, rechecking at each change notice.
@@ -649,7 +701,7 @@ fn a_jam_takes_requests_through_its_host() {
     let relay = Relay::new();
     let host = Device::account(&relay, DeviceKind::Phone, "Host");
     host.playing(&["s1", "s2"], 0);
-    let link = block_on(host.remote.clone().jam_open()).unwrap();
+    let link = opened(&host);
     assert!(link.starts_with("http://octo:5274/nori/jam#s=http%3A%2F%2Focto%3A5274&k="), "{link}");
 
     let guest_of = |name: &str| {
@@ -730,7 +782,7 @@ fn a_jam_opened_while_a_poll_is_held_hears_its_first_request() {
         assert!(Instant::now() < deadline, "the held poll");
         std::thread::yield_now();
     }
-    let link = block_on(host.remote.clone().jam_open()).unwrap();
+    let link = opened(&host);
 
     // A guest asks at once, before anything else happens in the account's room.
     let pass = block_on(jam_join(relay.clone(), link, "Gus".into())).unwrap();
@@ -1383,7 +1435,7 @@ fn jam_guests_listen_along_by_the_relays_clock() {
     relay.lag(&host.remote.id(), -4_000_000);
     relay.answers_late.store(200, Ordering::Relaxed);
     host.playing(&["s1", "s2"], 0);
-    let link = block_on(host.remote.clone().jam_open()).unwrap();
+    let link = opened(&host);
     host.remote.clone().jam_along(true);
     let pass = block_on(jam_join(relay.clone(), link, "Gus".into())).unwrap();
     let gus = Device::new(&relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, "Gus");
@@ -1451,7 +1503,7 @@ fn jam_guests_listen_along_where_the_host_is_heard() {
     // nori-remote's clock.rs and the engine's along.rs.)
     relay.skew(&host.remote.id(), -4_000_000);
     host.playing(&["s1", "s2"], 0);
-    let link = block_on(host.remote.clone().jam_open()).unwrap();
+    let link = opened(&host);
     host.remote.clone().jam_along(true);
     let guest_of = |name: &str| {
         let pass = block_on(jam_join(relay.clone(), link.clone(), name.into())).unwrap();
@@ -1520,7 +1572,7 @@ fn a_guest_leaving_its_jam_stops_playing_along_at_once() {
     let relay = Relay::new();
     let host = Device::account(&relay, DeviceKind::Phone, "Host");
     host.playing(&["s1", "s2"], 0);
-    let link = block_on(host.remote.clone().jam_open()).unwrap();
+    let link = opened(&host);
     host.remote.clone().jam_along(true);
     let pass = block_on(jam_join(relay.clone(), link, "Gus".into())).unwrap();
     let gus = Device::new(&relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, "Gus");
@@ -1544,14 +1596,62 @@ fn a_device_knows_its_own_jams_invite() {
     let relay = Relay::new();
     let host = Device::account(&relay, DeviceKind::Phone, "Host");
     let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
-    let link = block_on(host.remote.clone().jam_open()).unwrap();
+    let link = opened(&host);
     let app_link = link.replacen("http://octo:5274/nori/jam#", "nori://jam?", 1);
     assert!(host.remote.hosts_invite(link.clone()) && host.remote.hosts_invite(app_link));
     assert!(!desk.remote.hosts_invite(link.clone()), "another device of the account may join");
-    let desks = block_on(desk.remote.clone().jam_open()).unwrap();
+    let desks = opened(&desk);
     assert!(!host.remote.hosts_invite(desks));
     host.remote.clone().jam_close();
     assert!(!host.remote.hosts_invite(link));
+    relay.close();
+}
+
+/// Start pressed again and again while the relay is slow to open: one jam is asked for, and once it is
+/// ended none comes back.
+#[test]
+fn a_jam_is_started_once_and_stays_ended() {
+    let dir = nori_testdir::TempDir::new("remote-starts");
+    let relay = Relay::new();
+    let host = Device::kept(&relay, &dir, DeviceKind::Phone, "Host");
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    host.playing(&["s1"], 0);
+    host.remote.clone().watch(true);
+    eventually("the held poll", || !relay.waiting.lock().is_empty());
+    relay.opens_late.store(true, Ordering::Relaxed);
+    let starts: Vec<_> = (0..5).map(|_| {
+        let r = host.remote.clone();
+        std::thread::spawn(move || block_on(r.jam_open()))
+    }).collect();
+    eventually("the start asked", || relay.asked().iter().any(|a| a == "open waits"));
+    assert_eq!(host.remote.jam_start(), JamStart::Starting);
+    let links: Vec<_> = starts.into_iter().map(|s| s.join().unwrap().unwrap()).collect();
+    assert_eq!(links.iter().flatten().count(), 1, "{links:?}");
+    assert_eq!(relay.asked_for("noriRemote.open"), 1);
+    assert_eq!(host.remote.jam_start(), JamStart::Hosting);
+
+    host.remote.clone().jam_close();
+    desk.remote.clone().serve(true);
+    host.until("the desk", |r| r.devices().into_iter().find(|d| d.name == "Desk"));
+    eventually("no jam at the relay", || relay.jams() == 0);
+    assert!(host.remote.jam_view().is_none());
+    assert_eq!(host.remote.jam_start(), JamStart::Offered);
+    relay.close();
+}
+
+/// Ended while the relay was still opening it: the jam it opens is closed again, and none is hosted.
+#[test]
+fn ending_a_jam_being_started_cancels_it() {
+    let relay = Relay::new();
+    let host = Device::account(&relay, DeviceKind::Phone, "Host");
+    relay.opens_late.store(true, Ordering::Relaxed);
+    let r = host.remote.clone();
+    let start = std::thread::spawn(move || block_on(r.jam_open()));
+    eventually("the start asked", || relay.asked().iter().any(|a| a == "open waits"));
+    host.remote.clone().jam_close();
+    assert_eq!(start.join().unwrap().unwrap(), None);
+    assert!(host.remote.jam_view().is_none());
+    eventually("its jam closed at the relay", || relay.jams() == 0);
     relay.close();
 }
 
@@ -1575,7 +1675,7 @@ fn a_guest_hears_its_jam_end_and_stops_playing_along() {
         let relay = Relay::new();
         let host = Device::account(&relay, DeviceKind::Phone, "Host");
         host.playing(&["s1", "s2"], 0);
-        let link = block_on(host.remote.clone().jam_open()).unwrap();
+        let link = opened(&host);
         let (gus, leads) = listening_guest(&relay, &host, link);
         match how {
             "closed" => host.remote.clone().jam_close(),
@@ -1601,7 +1701,7 @@ fn a_guest_hears_its_jam_end_and_stops_playing_along() {
 fn a_guest_profile_opened_after_its_jam_ended_hears_so_at_once() {
     let relay = Relay::new();
     let host = Device::account(&relay, DeviceKind::Phone, "Host");
-    let link = block_on(host.remote.clone().jam_open()).unwrap();
+    let link = opened(&host);
     let pass = block_on(jam_join(relay.clone(), link, "Gus".into())).unwrap();
     host.remote.clone().jam_close();
     // The app opens again on the guest profile: its first look at the jam finds it gone.
@@ -1617,7 +1717,7 @@ fn a_guest_leaves_at_once_with_the_relay_down() {
     let relay = Relay::new();
     let host = Device::account(&relay, DeviceKind::Phone, "Host");
     host.playing(&["s1", "s2"], 0);
-    let link = block_on(host.remote.clone().jam_open()).unwrap();
+    let link = opened(&host);
     let (gus, leads) = listening_guest(&relay, &host, link);
     relay.go_down(true);
     gus.remote.clone().jam_leave();
@@ -1634,7 +1734,7 @@ fn jam_controls_reach_by_role() {
     let relay = Relay::new();
     let host = Device::account(&relay, DeviceKind::Phone, "Host");
     host.playing(&["s1", "s2"], 0);
-    let link = block_on(host.remote.clone().jam_open()).unwrap();
+    let link = opened(&host);
     host.remote.clone().jam_along(true);
     let guest_of = |name: &str| {
         let pass = block_on(jam_join(relay.clone(), link.clone(), name.into())).unwrap();
@@ -1653,6 +1753,7 @@ fn jam_controls_reach_by_role() {
     assert_eq!(admin, JamControls { controls: Controls::of(Role::Admin, true), playing: true, paused_here: false });
 
     // The guest's own pause: carried out here, nothing sent; the jam plays on.
+    gus.until("Gus's controls", |r| r.jam_controls().filter(|c| c.playing));
     assert_eq!(gus.remote.clone().jam_press(Op::Pause), Reach::Here);
     gus.remote.clone().played(Playing { playing: false, position_ms: 31_000, index: Some(0), ..Default::default() });
     let paused = gus.until("paused here", |r| r.jam_controls().filter(|c| c.paused_here));

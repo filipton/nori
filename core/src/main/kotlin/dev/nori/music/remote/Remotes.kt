@@ -70,6 +70,11 @@ class Remotes(private val context: Context, private val nori: Nori) {
      */
     val jamPlaying: StateFlow<Mirror?> = _jamPlaying.asStateFlow()
 
+    private val _jamStart = MutableStateFlow(dev.nori.music.ffi.JamStart.UNAVAILABLE)
+
+    /** Where starting a jam here stands (the core's `jam_start`): every screen that offers it reads this. */
+    val jamStart: StateFlow<dev.nori.music.ffi.JamStart> = _jamStart.asStateFlow()
+
     private val _relay = MutableStateFlow(RelaySupport.UNKNOWN)
 
     /** Whether the server relays: jams and devices elsewhere only then. */
@@ -155,7 +160,8 @@ class Remotes(private val context: Context, private val nori: Nori) {
         val playing = if (j?.hosting == false) r.jamPlaying() else null
         val controls = if (j?.hosting == false) r.jamControls() else null
         val relay = r?.relay() ?: RelaySupport.UNKNOWN
-        main.post { _jam.value = j; _jamAdded.value = added; _jamPlaying.value = playing; _jamControls.value = controls; _relay.value = relay }
+        val start = r?.jamStart() ?: dev.nori.music.ffi.JamStart.UNAVAILABLE
+        main.post { _jam.value = j; _jamAdded.value = added; _jamPlaying.value = playing; _jamControls.value = controls; _relay.value = relay; _jamStart.value = start }
         if (j?.listening == dev.nori.music.ffi.Listening.PLAYING) {
             // The queue as the follower set it in the session, not as last saved.
             val ids = nori.session.playlistNow().songs.map { it.id }
@@ -225,7 +231,7 @@ class Remotes(private val context: Context, private val nori: Nori) {
         remote?.stop()
         remote = null
         client = null
-        main.post { _mirror.value = null; _jam.value = null; _jamAdded.value = emptyMap(); _jamPlaying.value = null; _relay.value = RelaySupport.UNKNOWN }
+        main.post { _mirror.value = null; _jam.value = null; _jamAdded.value = emptyMap(); _jamPlaying.value = null; _relay.value = RelaySupport.UNKNOWN; _jamStart.value = dev.nori.music.ffi.JamStart.UNAVAILABLE }
     }
 
     /** Whether the playback service is up: the device is controllable then, while remote control is on. */
@@ -357,8 +363,8 @@ class Remotes(private val context: Context, private val nori: Nori) {
     /** What the screens read: the remote if there is one, without building it. */
     fun peek(): Remote? = remote
 
-    /** Opens a jam; its invite link. */
-    suspend fun jamOpen(): String = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+    /** Opens a jam; its invite link, or null when one is open or being opened already, or it was ended first. */
+    suspend fun jamOpen(): String? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         val r = synchronized(this@Remotes) { current() } ?: error("jams are off")
         dev.nori.music.net.lifted { r.jamOpen() }
     }
@@ -367,10 +373,11 @@ class Remotes(private val context: Context, private val nori: Nori) {
     fun leave() = work { remote?.jamLeave() }
 
     /**
-     * The profile in use changed: the remote of the one before goes (a jam guest's with its jam, so the
-     * player is this phone's own again), and one is built for this one if it asks for it.
+     * The remote for the profile in use as it asks now: one of a profile no longer in use goes (a jam
+     * guest's with its jam, so the player is this phone's own again), and one is built if asked for. Called
+     * when the profile changes, and by the screens that offer jams, so what the core offers is known.
      */
-    fun profileChanged() = work { current() }
+    fun refresh() = work { current() }
 
     companion object {
         fun deviceName(context: Context): String =

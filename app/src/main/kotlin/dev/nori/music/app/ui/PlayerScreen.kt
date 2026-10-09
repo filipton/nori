@@ -2692,10 +2692,14 @@ private fun Queue(vm: PlayerViewModel) {
     // away (the list opens at the playing row, which used to hide them).
     Column(Modifier.fillMaxSize()) {
         val j = jam
+        val start by remote.jamStarting.collectAsStateWithLifecycle()
         if (j?.hosting == true) JamHeader(j) { vm.cover(it, CoverSize.ROW) }
         else if (state.jamGuest) {
             if (j != null) GuestJamHeader(j) { vm.cover(it, CoverSize.ROW) } else GuestLeaveHeader()
-        }
+        } else if (start == dev.nori.music.ffi.JamStart.STARTING) Text(
+            words(dev.nori.music.app.R.string.jam_starting), Modifier.padding(vertical = 8.dp),
+            color = look.color(CoverLook.ON_VARIANT), style = MaterialTheme.typography.bodyMedium,
+        )
         // A jam guest's queue is the host's to change: it only shows it.
         val edits = !state.jamGuest
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {

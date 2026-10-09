@@ -222,7 +222,7 @@ class Nori private constructor(private val context: Context) {
         http.configure(profile)
         library.onServerChanged()
         library.onProfileChanged()
-        remotes.profileChanged()
+        remotes.refresh()
         leftJam?.let { removeServer(it.id) }
     }
 
@@ -244,7 +244,7 @@ class Nori private constructor(private val context: Context) {
         // Its rows in the app's database; a whole library is a lot of rows, so not on this thread.
         val db = File(context.filesDir, dev.nori.music.ffi.db.dbFileName()).path
         Thread({ runCatching { dev.nori.music.ffi.db.dbForgetServer(db, id) } }, "nori-forget").start()
-        if (wasActive) { http.configure(settings.value.server); library.onServerChanged(); remotes.profileChanged() }
+        if (wasActive) { http.configure(settings.value.server); library.onServerChanged(); remotes.refresh() }
     }
 
     fun logout() = settings.value.server?.let { removeServer(it.id) }
