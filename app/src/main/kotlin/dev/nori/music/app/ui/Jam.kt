@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -62,6 +63,7 @@ import dev.nori.music.app.R
 import dev.nori.music.app.vm.PlayerViewModel
 import dev.nori.music.app.vm.RemoteViewModel
 import dev.nori.music.ffi.JamView
+import dev.nori.music.ffi.Listening
 import dev.nori.music.ffi.remote.JamMember
 import dev.nori.music.ffi.remote.Pending
 import dev.nori.music.ffi.remote.Role
@@ -227,13 +229,20 @@ internal fun GuestJamHeader(j: JamView, cover: (String?) -> String?) {
     val listeners = remember(j.members) { j.members.filter { it.role != Role.HOST } }
     val mine = remember(j.pending, j.you) { j.pending.filter { it.from == j.you } }
     Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
-        // The host's Invite stands at this row's end; a guest's "Listen here" will.
+        // Where the host has Invite: playing the jam on this phone too, or only watching it.
         Row(Modifier.fillMaxWidth().padding(top = 2.dp).heightIn(min = 40.dp), verticalAlignment = Alignment.CenterVertically) {
             LookIcon(Icons.Filled.Groups, null, Modifier.size(22.dp), accent)
             LookText(
                 host?.let { words(R.string.jam_of, it.name) } ?: words(R.string.jam_title), ink, Modifier.weight(1f).padding(start = 8.dp),
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
+            if (j.along || j.listening != Listening.WATCHING) {
+                val here = j.listening == Listening.PLAYING
+                PillButton(
+                    words(if (here) R.string.jam_playing_here else R.string.jam_listen_here), Icons.Filled.Speaker,
+                    { vm.listen(j.listening == Listening.WATCHING) }, prominent = here,
+                )
+            }
         }
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Row(
@@ -250,6 +259,11 @@ internal fun GuestJamHeader(j: JamView, cover: (String?) -> String?) {
                 style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold), maxLines = 1,
             )
         }
+        when (j.listening) {
+            Listening.HOST_OFF -> R.string.jam_along_host_off
+            Listening.SERVER_OFF -> R.string.jam_along_server_off
+            else -> null
+        }?.let { LookText(words(it), quiet, Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodyMedium) }
         j.refused?.let { r ->
             Text(refusal(r), Modifier.padding(top = 8.dp), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
         }
@@ -379,6 +393,15 @@ private fun PeopleSheet(open: Boolean, j: JamView, onInvite: () -> Unit, onDismi
             val vm: RemoteViewModel = viewModel()
             val guests = j.members.filter { it.role != Role.HOST }
             Column(Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding().padding(bottom = 16.dp)) {
+                if (j.hosting) {
+                    Row(Modifier.fillMaxWidth().padding(start = Space.gutter, end = Space.gutter, top = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text(words(R.string.jam_let_listen), style = MaterialTheme.typography.bodyLarge)
+                            Text(words(R.string.jam_let_listen_line), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        NoriSwitch(j.along, { vm.jamAlong(it) })
+                    }
+                }
                 SectionTitle(words(R.string.jam_people))
                 j.members.firstOrNull { it.role == Role.HOST }?.let { h -> Person(h, if (j.hosting) words(R.string.jam_you_host) else roleName(Role.HOST)) {} }
                 guests.forEach { m ->

@@ -569,4 +569,7 @@
     <string name="settings_jam">Jams</string>
     <string name="settings_jam_detail">Start a Jam from the devices button or a song’s, album’s or playlist’s menu: others join with a link or QR code and ask for songs, and this phone plays them. Needs octo-fiesta.</string>
     <string name="settings_hint_jam">Group session, party, friends ask for songs</string>
+    <string name="settings_jam_along">Let guests listen along</string>
+    <string name="settings_jam_along_detail">A Jam’s guests can play its music on their own phones, in step with this one. Each Jam can change it.</string>
+    <string name="settings_hint_jam_along">Listen together, sync, play on every phone</string>
 </resources>

@@ -102,6 +102,12 @@ class RemoteViewModel(app: Application) : NoriViewModel(app) {
 
     fun jamEnd() = remotes.ask({ it.jamClose() })
 
+    /** Plays the jam this phone is a guest in here, in step with its host, or only shows it. */
+    fun listen(on: Boolean) = remotes.listen(on)
+
+    /** Lets the hosted jam's guests listen along, or not. */
+    fun jamAlong(on: Boolean) = remotes.jamAlong(on)
+
     /** A jam op from here: the host's own, or a guest's sent to the host. */
     fun jamAct(op: Op) = remotes.ask({ it.jamAct(op) })
 

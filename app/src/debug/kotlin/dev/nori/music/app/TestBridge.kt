@@ -115,7 +115,7 @@ private fun remoteCheck(nori: dev.nori.music.Nori, arg: String, value: String): 
         }?.ifEmpty { "none" } ?: "no remote"
         "jam" -> kotlinx.coroutines.runBlocking { nori.remotes.jamOpen() }
         "view" -> r()?.jamView()?.let { v ->
-            "hosting=${v.hosting} members=${v.members.joinToString(",") { "${it.name}:${it.role}" }} pending=${v.pending.joinToString(",") { it.song.title }} next=${v.queue?.entries?.joinToString(",") { it.title }}"
+            "hosting=${v.hosting} members=${v.members.joinToString(",") { "${it.name}:${it.role}" }} pending=${v.pending.joinToString(",") { it.song.title }} next=${v.queue?.entries?.joinToString(",") { it.title }} along=${v.along} listening=${v.listening}"
         } ?: "no jam"
         "accept" -> r()?.jamView()?.pending?.firstOrNull()?.let { p -> r()?.jamAct(dev.nori.music.ffi.remote.Op.Decide(p.request, true)); "accepted ${p.song.title}" } ?: "nothing waiting"
         // "ask <query>": a guest asks for the first song found.
