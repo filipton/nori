@@ -1407,18 +1407,26 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             }
         }
         let len = self.p.queue.read(|q| q.len());
+        self.following.as_mut().expect("following").look_at.take_if(|at| *at <= now_us + 500);
         // The leader's place run on past the end of its song (its word on the next one not here yet) is
-        // in the next one, as it is heard there.
+        // in the next one, as it is heard there; past the end of the last, there is nothing to play until
+        // its word that it stopped.
         loop {
             let led = &self.following.as_ref().expect("following").led;
-            let length = (led.index + 1 < len).then(|| self.p.tracks.about(&self.p.id_at(led.index)).duration_ms).filter(|&l| l > 0);
-            let Some(length) = length.filter(|&l| led.playing && led.place_at(now_us) >= l as f64) else { break };
+            let length = (led.index < len).then(|| self.p.tracks.about(&self.p.id_at(led.index)).duration_ms).filter(|&l| l > 0);
+            let Some(length) = length.filter(|_| led.playing) else { break };
+            // Over by when a start would be heard: nothing to start.
+            if led.index + 1 >= len && led.place_at(now_us + follow::START_LEAD_US) >= length as f64 {
+                return;
+            }
+            if led.place_at(now_us) < length as f64 {
+                break;
+            }
             let led = &mut self.following.as_mut().expect("following").led;
             led.index += 1;
             led.ms -= length as f64;
         }
         let f = self.following.as_mut().expect("following");
-        f.look_at.take_if(|at| *at <= now_us + 500);
         if f.led.index >= len {
             return;
         }
@@ -1428,7 +1436,9 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             // To the µs where the player's own place is the one heard.
             let audible = self.p.heard().id.is_none() && !s.mixing && s.index == self.p.current();
             let ms = if audible { self.p.position_us() as f64 / 1000.0 } else { s.position_ms as f64 };
-            Here { playing, at: s.index.map(|i| (i, ms)), mixing: s.mixing, slipped: self.p.sink.track.slipped(), held_ms: self.p.sink.track.latency_us() as f64 / 1000.0 }
+            let length = s.index.map_or(0, |i| self.p.tracks.about(&self.p.id_at(i)).duration_ms);
+            let left_ms = if length > 0 { length as f64 - ms } else { f64::INFINITY };
+            Here { playing, at: s.index.map(|i| (i, ms)), mixing: s.mixing, left_ms, slipped: self.p.sink.track.slipped(), held_ms: self.p.sink.track.latency_us() as f64 / 1000.0 }
         };
         let step = f.step(now_us, here);
         if step != follow::Step::Stay {

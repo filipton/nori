@@ -347,6 +347,42 @@ impl Card {
     }
 }
 
+impl Card {
+    /// The `n` frames of the left channel the card played up to `ns`; None before it played that much.
+    fn left_before(&self, ns: i64, n: usize) -> Option<Vec<f32>> {
+        let p = self.0.lock();
+        let at = p.pulls.partition_point(|&(t, _)| t <= ns).checked_sub(1)?;
+        let (t, first) = p.pulls[at];
+        let end = first + ((ns - t) as f64 * RATE as f64 * (1.0 + p.ppm / 1e6) / 1e9) as usize;
+        (end.checked_sub(n)?..end).map(|f| p.heard.get(f * 2).copied()).collect()
+    }
+}
+
+/// How far the guest's card played behind the host's 20 ms before `ns` (ahead when below zero), ms, read
+/// off what both play whatever it is (through a mix too): the lag of the guest's 30 ms that matches the
+/// host's best, within 20 ms either way. None while either is silent or they do not match.
+fn behind_ms(host: &Card, guest: &Card, ns: i64) -> Option<f64> {
+    const WINDOW: usize = 1_323;
+    const REACH: i64 = 882;
+    let ns = ns - REACH * 1_000_000_000 / RATE as i64;
+    let h = host.left_before(ns, WINDOW)?;
+    let power = |v: &[f32]| v.iter().map(|x| (*x as f64).powi(2)).sum::<f64>();
+    let hp = power(&h);
+    if hp < 1e-3 {
+        return None;
+    }
+    let all = guest.left_before(ns + REACH * 1_000_000_000 / RATE as i64, WINDOW + 2 * REACH as usize)?;
+    let mut best = (f64::MIN, 0);
+    for lag in -REACH..=REACH {
+        let g = &all[(REACH + lag) as usize..][..WINDOW];
+        let c = h.iter().zip(g).map(|(a, b)| *a as f64 * *b as f64).sum::<f64>() / (hp * power(g)).sqrt().max(1e-9);
+        if c > best.0 {
+            best = (c, lag);
+        }
+    }
+    (best.0 > 0.9).then(|| best.1 as f64 * 1000.0 / RATE as f64)
+}
+
 /// A place said: (ns, song, ms, pace).
 type Said = (i64, usize, i64, f64);
 
@@ -548,6 +584,8 @@ struct Jam {
     /// The host's words said so far.
     told: usize,
     exchanges: u64,
+    /// The host's words carry its plan from then on (ns): before, it had not reached the guests.
+    plan_from_ns: i64,
 }
 
 /// What a test sets for a guest.
@@ -565,7 +603,7 @@ impl Jam {
             .iter()
             .map(|w| Guest { rig: Rig::new(songs, None, Settings::default()), skew_us: w.skew_us, floor_ms: w.floor_ms, word_ms: w.word_ms, sync: Default::default(), inbox: VecDeque::new(), listening: false })
             .collect();
-        Jam { host, host_skew_us: 4_000_000, mix, speed, guests, told: 0, exchanges: 0 }
+        Jam { host, host_skew_us: 4_000_000, mix, speed, guests, told: 0, exchanges: 0, plan_from_ns: 0 }
     }
 
     fn now_ns(&self) -> i64 {
@@ -618,7 +656,9 @@ impl Jam {
             }
             let now = self.now_ns();
             let said = self.host.said.lock().len();
-            for k in self.told..said {
+            // The plan reaching the guests is a word of its own, with the host's place as last said.
+            let planned = (self.plan_from_ns > 0 && self.plan_from_ns <= now && self.plan_from_ns > now - 5_000_000).then(|| said.checked_sub(1)).flatten();
+            for k in (self.told..said).chain(planned) {
                 let w = self.word(Some(k)).expect("said");
                 for g in self.guests.iter_mut().filter(|g| g.listening) {
                     g.inbox.push_back((now + g.word_ms * 1_000_000, w.clone()));
@@ -636,7 +676,7 @@ impl Jam {
                     let here_us = now / 1000 + g.skew_us;
                     // The host's clock minus this one's.
                     let off = g.sync.offset_at(here_us).expect("the clock learned");
-                    let mix = self.mix.clone().map(|p| ("a".to_string(), p));
+                    let mix = self.mix.clone().filter(|_| now >= self.plan_from_ns + g.word_ms * 1_000_000).map(|p| ("a".to_string(), p));
                     g.rig.engine.follow(Some(Lead { index: w.index, ms: w.ms, ago_us: here_us - (w.at_us - off), there_us: w.at_us, rate: w.rate, playing: w.playing, speed: w.speed, pitch: 1.0, mix }));
                 }
             }
@@ -739,14 +779,56 @@ fn guests_play_the_host_mix() {
         jam.join(0);
         jam.join(1);
         in_step(&mut jam, 2_000, 4_000, 2.5, 5.0);
-        // Through the mix and, in b, the tempo's ramp back.
-        jam.run(4_000);
+        // Through the mix each guest's card plays what the host's does, read off the music itself.
+        let mut through = [Vec::new(), Vec::new()];
+        for _ in 0..50 {
+            jam.run(100);
+            let ns = jam.now_ns();
+            if jam.host.engine.status().mixing {
+                for (g, d) in through.iter_mut().enumerate() {
+                    d.extend(behind_ms(&jam.host.card, &jam.guests[g].rig.card, ns));
+                }
+            }
+        }
+        for (g, d) in through.iter().enumerate() {
+            let worst = d.iter().fold(0.0f64, |w, d| w.max(d.abs()));
+            eprintln!("{what}: guest {g} through the mix: {} readings, {worst:.2} ms off at most", d.len());
+            assert!(d.len() >= 8 && worst <= 3.0, "{what}: guest {g} through the mix: {d:?}");
+        }
         let into_b = |j: &Jam| j.guests.iter().all(|g| g.rig.engine.status().index == Some(1)) && j.host.engine.status().index == Some(1);
         assert!(into_b(&jam), "{what}: all in b");
         let starts = |j: &Jam| j.guests.iter().map(|g| g.rig.events.lock().iter().filter(|(_, e)| matches!(e, Event::Song { index: 1, .. })).count()).collect::<Vec<_>>();
         assert_eq!(starts(&jam), [1, 1], "{what}: each guest went into b once, by its own mix");
         in_step(&mut jam, 3_000, 6_000, 3.0, 5.0);
     }
+}
+
+/// The host's plan reaching a guest only once its music passed the plan's start (a slow relay): the guest
+/// does not mix from somewhere in it, plays on, and changes song cleanly as soon as the host's word says
+/// it did; then plays in step.
+#[test]
+fn a_late_plan_is_not_mixed_from_its_middle() {
+    let (a, b) = (song(30.0, 1, None), song(40.0, 2, None));
+    let mut jam = Jam::new(&[("a", &a), ("b", &b)], Some(mix(20_000, 4.0, 1.0, 0.0)), Settings::default(), &two_ways()[..1]);
+    jam.host.engine.play_at(0, 14_000);
+    jam.run(1_000);
+    // The plan reaches the guest as the host is 300 ms into its mix.
+    jam.plan_from_ns = jam.now_ns() + 5_300_000_000;
+    jam.join(0);
+    in_step(&mut jam, 2_000, 2_000, 2.5, 5.0);
+    let (mut host_in_b, mut guest_in_b, mut mixed) = (None, None, false);
+    for _ in 0..200 {
+        jam.run(50);
+        let ns = jam.now_ns();
+        let g = jam.guests[0].rig.engine.status();
+        mixed |= g.mixing;
+        host_in_b = host_in_b.or((jam.host.engine.status().index == Some(1)).then_some(ns));
+        guest_in_b = guest_in_b.or((g.index == Some(1)).then_some(ns));
+    }
+    assert!(!mixed, "not mixed from its middle");
+    let (h, g) = (host_in_b.expect("the host in b"), guest_in_b.expect("the guest in b"));
+    assert!((0..1_000_000_000).contains(&(g - h)), "into b {} ms after the host", (g - h) / 1_000_000);
+    in_step(&mut jam, 1_000, 4_000, 2.5, 5.0);
 }
 
 #[test]
@@ -923,4 +1005,17 @@ fn a_guest_follows_its_host_past_the_end_of_a_song() {
         assert_eq!(guest.engine.status().index, Some(1), "on b, past a's end");
     }
     assert_eq!(starts(), before, "not started again: {:?}", guest.logs.lock().iter().filter(|l| l.starts_with("following")).collect::<Vec<_>>());
+}
+
+/// The same past the end of the host's last song: the guest's queue ends with the host's, and it waits
+/// for the host's word rather than starting the end again and again.
+#[test]
+fn a_guest_ends_with_its_hosts_queue() {
+    let (a, b) = (song(10.0, 1, None), song(10.0, 2, None));
+    let guest = Rig::new(&[("a", &a), ("b", &b)], None, Settings::default());
+    guest.engine.follow(Some(Lead { index: 1, ms: 6_000.0, ago_us: 0, there_us: 0, rate: 1.0, playing: true, speed: 1.0, pitch: 1.0, mix: None }));
+    guest.run(20_000);
+    let starts = guest.logs.lock().iter().filter(|l| l.starts_with("following: Start")).count();
+    assert_eq!(starts, 1, "started once: {:?}", guest.logs.lock().iter().filter(|l| l.starts_with("following")).collect::<Vec<_>>());
+    assert_ne!(guest.engine.status().state, nori_engine::State::Playing, "the music is over");
 }

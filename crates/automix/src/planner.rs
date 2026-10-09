@@ -33,13 +33,14 @@ struct State {
     none: Option<(String, u64, Option<Skip>)>,
     /// The last few plans, newest last.
     notes: Vec<TransitionNote>,
-    /// The last plan made, out of which song (None: gapless).
-    made: Option<(String, Option<Plan>)>,
+    /// The last few plans made, newest last, out of which song (None: gapless): a jam's guests still
+    /// learn the plan out of the song heard once the host's decoder has planned the next one.
+    made: Vec<(String, Option<Plan>)>,
 }
 
 impl State {
     const fn new() -> Self {
-        State { prefs: None, transitions_off: false, window: Vec::new(), shuffling: false, generation: 0, none: None, notes: Vec::new(), made: None }
+        State { prefs: None, transitions_off: false, window: Vec::new(), shuffling: false, generation: 0, none: None, notes: Vec::new(), made: Vec::new() }
     }
 
     fn take_prefs(&mut self, prefs: TransitionPrefs) {
@@ -51,6 +52,14 @@ impl State {
 
     fn duration_of(&self, song_id: &str) -> i64 {
         self.window.iter().find(|s| s.id == song_id).map_or(0, |s| s.duration_ms)
+    }
+
+    fn keep_made(&mut self, outgoing_id: &str, plan: Option<Plan>) {
+        self.made.retain(|(id, _)| id != outgoing_id);
+        if self.made.len() >= NOTES_KEPT {
+            self.made.remove(0);
+        }
+        self.made.push((outgoing_id.to_string(), plan));
     }
 
     fn note(&mut self, n: TransitionNote) {
@@ -158,7 +167,7 @@ impl Planner {
             let mut p = self.state.lock();
             p.none = plan.is_none().then(|| (outgoing_id.to_string(), generation, None));
             p.note(note);
-            p.made = Some((outgoing_id.to_string(), plan.clone()));
+            p.keep_made(outgoing_id, plan.clone());
         }
         if let Some(told) = &*self.planned.lock() {
             told();
@@ -181,7 +190,7 @@ impl Planner {
 
     /// The plan last made out of `outgoing_id`: None while none was, Some(None) when gapless.
     pub fn made(&self, outgoing_id: &str) -> Option<Option<Plan>> {
-        self.state.lock().made.as_ref().filter(|(id, _)| id == outgoing_id).map(|(_, p)| p.clone())
+        self.state.lock().made.iter().rev().find(|(id, _)| id == outgoing_id).map(|(_, p)| p.clone())
     }
 
     /// Tells `told` after each plan made, from the thread that asked for it; None stops.
@@ -376,6 +385,21 @@ mod tests {
         *crossfade.lock() = 4;
         assert!(planner.plan_for("a").is_some(), "crossfade on again");
         assert_eq!(planner.transition_note("a").unwrap().duration_ms, 4000);
+    }
+
+    /// The engine's decoder asks for the plan out of the next song while the song heard still plays to its
+    /// own mix (seconds ahead with a deep buffer): the plan out of the song heard stays known, for a jam's
+    /// guests to play it.
+    #[test]
+    fn the_plan_out_of_the_song_heard_outlives_the_next_ones() {
+        let (planner, _, _db) = crossfading();
+        planner.transition_window(vec![song("a", 200_000), song("b", 200_000), song("c", 200_000)], false);
+        let a = planner.plan_for("a").expect("a plan out of a");
+        planner.transition_window(vec![song("a", 200_000), song("b", 200_000), song("c", 200_000)], false);
+        assert!(planner.plan_for("b").is_some());
+        assert_eq!(planner.made("a"), Some(Some(a)), "still known");
+        assert!(planner.made("b").is_some_and(|p| p.is_some_and(|p| p.incoming_id == "c")));
+        assert_eq!(planner.made("c"), None, "not planned");
     }
 
     #[test]

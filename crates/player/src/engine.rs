@@ -731,6 +731,14 @@ impl TransitionEngine {
         }
         let p = self.plan().cloned().expect("a plan exists past this point");
         let late = start_frame < 0;
+        // A leader's plan come after the music here passed its start: not mixed from somewhere in it; the
+        // leader's change of song is followed instead. Landed in it (started there), what is left mixes,
+        // as there.
+        if late && !landed && matches!(self.plans, Plans::Led(_)) {
+            host.log(&format!("transition: the leader's plan came {} ms after its start: not mixed", -start_frame * 1000 / out.rate as i64));
+            self.ending = Ending::LetGo;
+            return Some(self.pass(down, buf, whole, pts_us, gain));
+        }
         let before = start_frame.max(0) as usize * fb;
         if before > 0 {
             let head = self.copy_of(&buf[..before]);

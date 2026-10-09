@@ -53,8 +53,8 @@ const LEAP_QUIET_US: i64 = 1_500_000;
 /// twice as long after each start whose music was not ready in time, up to [`START_LEAD_MAX_US`].
 pub(super) const START_LEAD_US: i64 = 300_000;
 const START_LEAD_MAX_US: i64 = 4_800_000;
-/// On another song than the leader's for this long (its word on a song change comes late), µs, this
-/// one starts on the leader's.
+/// On another song than the leader's for this long while its own change of song is under way (its word
+/// on the change comes late), µs, this one starts on the leader's.
 const ELSEWHERE_US: i64 = 600_000;
 
 /// The leader's playback: song `index` (in this engine's queue) was at `ms` at `at_us` on the engine's
@@ -88,6 +88,8 @@ pub(super) struct Here {
     pub at: Option<(usize, f64)>,
     /// A mix is heard.
     pub mixing: bool,
+    /// What is left of the song heard, ms (infinite when its length is not known).
+    pub left_ms: f64,
     /// Time the output slipped in (less what it left out) since the last start: heard, and written but
     /// not heard yet; and how long until what is written now is heard, ms.
     pub slipped: Slipped,
@@ -255,9 +257,12 @@ impl Following {
             return self.start(now_us);
         }
         if index != self.led.index {
-            // Mixing into the leader's song, or about to: its word on the change may be on its way.
+            // Mixing into the leader's song, or at the end of this one: this one's own change of song is
+            // under way, and the leader's word on it may be on its way. Else the leader moved on another
+            // way (a skip, a mix this one did not make, its plan come too late): followed at once.
             let since = *self.elsewhere.get_or_insert(now_us);
-            if now_us - since >= ELSEWHERE_US && !here.mixing {
+            let changing = here.mixing || here.left_ms * 1000.0 < ELSEWHERE_US as f64;
+            if !here.mixing && (!changing || now_us - since >= ELSEWHERE_US) {
                 return self.start(now_us);
             }
             self.look_at = Some(since + ELSEWHERE_US);
@@ -394,7 +399,7 @@ mod tests {
     }
 
     fn here(at: Option<(usize, f64)>) -> Here {
-        Here { playing: at.is_some(), at, mixing: false, slipped: Slipped::default(), held_ms: 0.0 }
+        Here { playing: at.is_some(), at, mixing: false, left_ms: f64::INFINITY, slipped: Slipped::default(), held_ms: 0.0 }
     }
 
     #[test]
@@ -466,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn a_leap_is_followed_at_once_and_a_song_change_after_a_grace() {
+    fn leaps_and_song_changes_are_followed() {
         let mut f = Following::new(led(10_000.0, 0));
         f.leapt = false;
         // Its clock read 40 ms better here: the same word, timed anew. Not a jump.
@@ -474,9 +479,22 @@ mod tests {
         assert!(!matches!(f.step(1_000_000, here(Some((2, 11_250.0)))), Step::Start { .. }), "not a jump");
         f.lead(led(10_040.0, 0), 1_000_000);
         assert!(matches!(f.step(1_000_000, here(Some((2, 11_250.0)))), Step::Start { .. }), "the leader jumped 40 ms");
+        // The leader on the next song: this one's own change is under way while it mixes, or at the end of
+        // its song; else the leader went there another way.
+        let mixing = Here { mixing: true, ..here(Some((2, 13_000.0))) };
+        let ending = Here { left_ms: 300.0, ..here(Some((2, 13_000.0))) };
+        for (what, at) in [("mixing", mixing), ("at its end", ending)] {
+            let mut f = Following::new(led(10_000.0, 0));
+            f.leapt = false;
+            f.lead(Led { index: 3, ..led(0.0, 2_000_000) }, 2_000_000);
+            assert_eq!(f.step(2_100_000, at), Step::Stay, "{what}: its own change may still be coming");
+            let after = f.step(2_100_000 + ELSEWHERE_US, Here { mixing: false, ..at });
+            assert!(matches!(after, Step::Start { index: 3, .. }), "{what}: then follows: {after:?}");
+        }
+        let mut f = Following::new(led(10_000.0, 0));
+        f.leapt = false;
         f.lead(Led { index: 3, ..led(0.0, 2_000_000) }, 2_000_000);
-        assert_eq!(f.step(2_100_000, here(Some((2, 13_000.0)))), Step::Stay, "its own mix may still be coming");
-        assert!(matches!(f.step(2_100_000 + ELSEWHERE_US, here(Some((2, 13_700.0)))), Step::Start { index: 3, .. }));
+        assert!(matches!(f.step(2_100_000, here(Some((2, 13_000.0)))), Step::Start { index: 3, .. }), "a skip there: at once");
     }
 
     #[test]
