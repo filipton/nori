@@ -291,7 +291,10 @@ private fun LyricsBody(vm: PlayerViewModel, found: dev.nori.music.data.FoundLyri
     val hasBacking = remember(lyrics) { lyrics.lines.any { it.backing.isNotEmpty() } }
     // Words rise and glow as they are sung unless movement is reduced; then there is only the fill.
     val lively = !reduceMotion()
-    LaunchedEffect(playing, live, sweep, lively, clock, following) {
+    // An e-ink screen lights the line where the song is on play, pause and a seek, and does not step on its own.
+    val eink = LocalEinkScreen.current
+    val seeking = if (eink) vm.pendingSeek.collectAsStateWithLifecycle().value else null
+    LaunchedEffect(playing, live, sweep, lively, clock, following, eink, seeking) {
         if (!following) return@LaunchedEffect
         // Only this song's playhead: the player moves on a frame before the page does, and the next
         // song's first second read here put these words back before their first line - scrolled to
@@ -303,7 +306,7 @@ private fun LyricsBody(vm: PlayerViewModel, found: dev.nori.music.data.FoundLyri
         lastMs[0] = shownMs
         if (hasBacking) backingSung = clock.atBackingSung
         var drawnAt = 0L
-        while (playing && live && isActive) {
+        while (playing && live && !eink && isActive) {
             val wait = LyricsClock.wait(step)
             if (wait == 0) break
             // Display frames while the fill moves; asleep between words and after a line is sung, when

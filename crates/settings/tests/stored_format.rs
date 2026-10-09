@@ -153,6 +153,7 @@ fn sample() -> StoredPrefs {
         accent: 0xFF1E88E5,
         cover_colors: false,
         reduce_motion: true,
+        eink_screen: true,
         ignore_system_motion: false,
         ui_scale: 1.1,
         tap_action: TapAction::PlayNext,

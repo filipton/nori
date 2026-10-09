@@ -2460,8 +2460,11 @@ private fun SeekBar(vm: PlayerViewModel, playing: Boolean, durationMs: Long, see
     // twice, as it is asked and as it lands, mid-glide: a loop stepped a moment ago steps on from that
     // step in its first frame (waiting a frame for a time to count from held the bar still for it).
     val stepped = remember { longArrayOf(0L) }
-    LaunchedEffect(free, live, playing, state.current?.id, state.index, durationMs, watched) {
+    // An e-ink screen sets the bar and times where the song is on each of those, and nothing runs between.
+    val eink = LocalEinkScreen.current
+    LaunchedEffect(free, live, playing, state.current?.id, state.index, durationMs, watched, eink) {
         if (!free || !live) return@LaunchedEffect
+        if (eink) { pace.sync(vm.positionMs, length); publish(); return@LaunchedEffect }
         var last = stepped[0]
         var now = androidx.compose.runtime.withFrameNanos { it }
         if (now - last >= 100_000_000L) { last = now; now = androidx.compose.runtime.withFrameNanos { it } }

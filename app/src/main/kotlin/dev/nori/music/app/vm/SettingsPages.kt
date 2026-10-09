@@ -229,6 +229,7 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("look", R.string.settings_confirm_favourites, R.string.settings_hint_confirm_favourites),
     Triple("look", R.string.settings_ui_scale, 0),
     Triple("look", R.string.settings_less_movement, R.string.settings_hint_less_movement),
+    Triple("look", R.string.settings_eink_screen, R.string.settings_hint_eink_screen),
     Triple("look", R.string.settings_hide_status_bar, R.string.settings_hint_hide_status_bar),
     Triple("look", R.string.settings_keep_awake, R.string.settings_hint_keep_awake),
     Triple("look", R.string.settings_controls_side, R.string.settings_hint_controls_side),
@@ -695,7 +696,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
         if (f.coverBlur) cover += toggle("softSleeve", R.string.settings_blur, R.string.settings_blur_detail)
         // Under the switch for looking things up at all (Library), and turns it on with it.
         val moving = on("motionArtwork")
-        cover += toggle("motionArtwork", R.string.settings_moving_covers, str(if (moving && p.reduceMotion) R.string.settings_moving_covers_still else R.string.settings_moving_covers_detail))
+        cover += toggle("motionArtwork", R.string.settings_moving_covers, str(if (moving && (p.reduceMotion || p.einkScreen)) R.string.settings_moving_covers_still else R.string.settings_moving_covers_detail))
         if (moving) cover += toggle("motionArtworkMobile", R.string.settings_moving_covers_mobile, R.string.settings_moving_covers_mobile_detail)
         val messages = listOf(toggle("favouriteNotice", R.string.settings_confirm_favourites, R.string.settings_confirm_favourites_detail))
         val size = mutableListOf<SettingRow>(
@@ -709,8 +710,9 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
                 }
             },
             toggle("reduceMotion", R.string.settings_less_movement, R.string.settings_less_movement_detail),
+            toggle("einkScreen", R.string.settings_eink_screen, R.string.settings_eink_screen_detail),
         )
-        if (!p.reduceMotion) size += toggle("ignoreSystemMotion", R.string.settings_animate_anyway, R.string.settings_animate_anyway_detail)
+        if (!p.reduceMotion && !p.einkScreen) size += toggle("ignoreSystemMotion", R.string.settings_animate_anyway, R.string.settings_animate_anyway_detail)
         val screen = listOf(
             chips(
                 "hideStatusBar", R.string.settings_hide_status_bar, R.string.settings_hide_status_bar_detail,

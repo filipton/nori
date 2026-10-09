@@ -187,7 +187,7 @@ private val guestTabs = tabs.filter { it.route == "search" }
 fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
     val settings: SettingsViewModel = viewModel()
     val prefs by settings.prefs.collectAsStateWithLifecycle()
-    androidx.compose.runtime.SideEffect { AppMotion.force = prefs.ignoreSystemMotion; AppMotion.reduce = prefs.reduceMotion }
+    androidx.compose.runtime.SideEffect { AppMotion.force = prefs.ignoreSystemMotion; AppMotion.reduce = prefs.reduceMotion || prefs.einkScreen }
     NoriTheme(prefs) {
         // Sign-in used to cut straight to the app. One short fade is enough: the screens are different
         // enough that a direction would invent a relationship they do not have.
@@ -314,6 +314,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             LocalDevices provides { devicesOpen = true },
             LocalJamGuest provides guest,
             LocalAsked provides asked,
+            LocalEinkScreen provides prefs.einkScreen,
         ) {
             val route = controller.currentBackStackEntryAsState().value?.destination?.route
             // The tab the page on screen belongs to, which is the one that stays lit, as Apple's does: a

@@ -478,6 +478,10 @@ pub struct StoredPrefs {
     pub ui_scale: f32,
     #[setting("reduceMotion", FLAG, default = false, show = K::Switch)]
     pub reduce_motion: bool,
+    /// The player redraws only when something changes: no ticking seek bar or stepping lyrics, and
+    /// everything reduce_motion holds still.
+    #[setting("einkScreen", FLAG, default = false, show = K::Switch)]
+    pub eink_screen: bool,
     /// Animate even with Android's animations off. Stored under a new key so the old key's stored
     /// `false` does not apply.
     #[setting("animateAnyway", FLAG, default = true, name = "ignoreSystemMotion", show = K::Switch)]

@@ -880,9 +880,9 @@ fun MoreCircle(items: List<Pair<String, () -> Unit>>, modifier: Modifier = Modif
 
 
 /**
- * Whether movement should be kept to a minimum: the app's own switch, or the system's animations being
- * turned off (Developer options, or the accessibility setting some people rely on). Read it rather than
- * hard-coding durations, so "reduce motion" means the same thing everywhere.
+ * Whether movement should be kept to a minimum: the app's own switch (or its e-ink one), or the system's
+ * animations being turned off (Developer options, or the accessibility setting some people rely on). Read
+ * it rather than hard-coding durations, so "reduce motion" means the same thing everywhere.
  */
 @Composable
 fun reduceMotion(): Boolean {
@@ -892,10 +892,17 @@ fun reduceMotion(): Boolean {
         android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
     }
     // The rule is the core's; asked only when one of its three answers changes.
-    return androidx.compose.runtime.remember(prefs.reduceMotion, prefs.ignoreSystemMotion, systemOff) {
-        dev.nori.music.ffi.motionReduced(prefs.reduceMotion, prefs.ignoreSystemMotion, systemOff)
+    val reduce = prefs.reduceMotion || prefs.einkScreen
+    return androidx.compose.runtime.remember(reduce, prefs.ignoreSystemMotion, systemOff) {
+        dev.nori.music.ffi.motionReduced(reduce, prefs.ignoreSystemMotion, systemOff)
     }
 }
+
+/**
+ * Prefs.einkScreen, provided once by App: the player redraws only when something changes (a song, play
+ * or pause, a seek, a touch), so its seek bar and lyrics are set on those and do not run on their own.
+ */
+val LocalEinkScreen = androidx.compose.runtime.compositionLocalOf { false }
 
 /**
  * How fast every animation in the app runs. Compose scales each one by whatever MotionDurationScale is

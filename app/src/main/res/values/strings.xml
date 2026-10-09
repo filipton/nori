@@ -279,6 +279,8 @@
     <string name="settings_ui_scale_larger">Larger</string>
     <string name="settings_less_movement">Less movement</string>
     <string name="settings_less_movement_detail">Shorter, simpler animations; long titles stay still.</string>
+    <string name="settings_eink_screen">E-ink screen</string>
+    <string name="settings_eink_screen_detail">Redraws the player only when something changes, for e-ink displays.</string>
     <string name="settings_animate_anyway">Animate anyway</string>
     <string name="settings_animate_anyway_detail">Keeps animations on even when the system\'s are off.</string>
 
@@ -517,6 +519,7 @@
     <string name="settings_hint_moving_covers_mobile">Each one is a few megabytes</string>
     <string name="settings_hint_confirm_favourites">A short message when you favorite or unfavorite something</string>
     <string name="settings_hint_less_movement">Shorter, simpler animations. Marquee, long titles stay still</string>
+    <string name="settings_hint_eink_screen">E-ink. Still player, no ticking seek bar</string>
     <string name="settings_hint_keep_awake">Screen timeout. Stay awake while sideways or charging</string>
     <string name="settings_hint_controls_side">Car. Left or right hand drive, steering wheel</string>
     <string name="settings_hint_hide_status_bar">Full screen. Hides the clock and battery bar at the top</string>
