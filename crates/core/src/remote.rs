@@ -456,20 +456,31 @@ enum Change {
     Star { id: String, on: bool },
 }
 
+impl Change {
+    /// Whether the device's `state` shows what this changed. A device says it carried a command out in
+    /// the next state it publishes, which may be before its player has played or paused.
+    fn shown_in(&self, state: &DeviceState) -> bool {
+        match *self {
+            Change::Playing { playing, .. } => state.playing == playing,
+            _ => true,
+        }
+    }
+}
+
 impl Mirrored {
     fn new(id: String) -> Mirrored {
         Mirrored { id, heard: None, arrived: 0, shown: None, at: clock::now_us(), device_at: None, clock: ClockSync::default(), pages: Vec::new(), asking: None, taken: Vec::new(), foreseen: Vec::new() }
     }
 
     /// A state arrived from the device (`at`: when, on this device's clock). It ends the foresight of
-    /// every command of this device's (`me`) it says it carried out; the rest still shows over it. False
+    /// every command of this device's (`me`) it says it carried out and shows; the rest still shows over it. False
     /// when it is the one already heard.
     fn heard(&mut self, state: &DeviceState, at: i64, me: &str) -> bool {
         if self.heard.as_ref() == Some(state) {
             return false;
         }
         if let Some(done) = state.obeyed.iter().find(|o| o.from == me) {
-            self.foreseen.retain(|f| f.id > done.id);
+            self.foreseen.retain(|f| f.id > done.id || !f.change.shown_in(state));
         }
         let rev = self.shown.as_ref().map(|s| (s.rev, s.len));
         if rev != Some((state.rev, state.len)) {

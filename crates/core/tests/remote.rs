@@ -1116,6 +1116,32 @@ fn a_command_shows_until_the_device_says_it_carried_it_out() {
     relay.close();
 }
 
+/// The device says it carried a pause out in a state published before its player has paused (the player
+/// takes a moment): the controller goes on showing the pause until the player's own word.
+#[test]
+fn a_pause_stays_shown_through_the_devices_word_that_it_got_it() {
+    let relay = Relay::new();
+    let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    phone.playing(&["s1", "s2"], 0);
+    phone.remote.clone().serve(true);
+    let phone_id = phone.remote.id();
+    desk.remote.clone().watch(true);
+    desk.until("the phone", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state));
+    desk.remote.clone().pick(Some(phone_id.clone()));
+    desk.until("the phone mirrored", |r| r.active().filter(|m| m.playing));
+
+    desk.remote.clone().send(phone_id.clone(), Op::Pause);
+    assert_eq!(phone.told(), Op::Pause);
+    // The phone's next state carries the answer, its player still playing.
+    phone.remote.clone().volume_changed(Some(41));
+    let m = desk.until("the phone's answer", |r| r.active().filter(|m| m.volume == Some(41)));
+    assert!(!m.playing, "the pause is still shown");
+    phone.remote.clone().played(Playing { playing: false, position_ms: 5_400, index: None, volume: Some(41), ..Default::default() });
+    desk.until("the phone paused", |r| r.active().filter(|m| !m.playing && m.position_ms == 5_400));
+    relay.close();
+}
+
 /// Where the device's listener is at `now_us`, playing on from `position_ms` said at `said_us`.
 fn heard_at(position_ms: i64, said_us: i64, now_us: i64) -> i64 {
     position_ms + (now_us - said_us) / 1000
