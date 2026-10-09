@@ -21,7 +21,6 @@ use std::time::{Duration, Instant};
 
 use nori_remote::clock::{self, ClockSync};
 use nori_remote::device::{admit, is_jam, Sender};
-pub use nori_remote::device::{Controls, Reach};
 use nori_remote::jam::{By, Jam};
 use nori_remote::lan::{self, Door};
 use nori_player::engine::Plan;
@@ -34,7 +33,6 @@ use serde::Deserialize;
 use crate::client::Client;
 use crate::transport::{self, block_on, Exchange, NetError, Transport};
 use crate::{api, db, Param, Song};
-use nori_settings::settings_store::Settings;
 
 /// The frames, for clients that speak them (the terminal and desktop host).
 pub use nori_remote::wire;
@@ -88,9 +86,6 @@ pub trait RemotePlayer: Send + Sync {
 #[cfg_attr(feature = "ffi", uniffi::export(with_foreign))]
 pub trait RemoteShown: Send + Sync {
     fn changed(&self);
-    /// The jam this guest was in ended (its host ended it, or the relay no longer knows it), once: the
-    /// platform leaves it as after [`Remote::jam_leave`]. `host`: its host's name, if seen.
-    fn jam_ended(&self, host: Option<String>);
 }
 
 /// The platform's mDNS (NsdManager on Android, mdns-sd on the desktop).
@@ -238,6 +233,8 @@ pub struct JamView {
     pub along: bool,
     /// This guest's listening along.
     pub listening: Listening,
+    /// The jam is over for this guest: the host closed it or sent it out, and its pass no longer works.
+    pub ended: bool,
 }
 
 impl JamView {
@@ -272,32 +269,6 @@ pub enum Listening {
     ServerOff,
 }
 
-/// Where starting a jam on this device stands ([`Remote::jam_start`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
-pub enum JamStart {
-    /// It can be started.
-    Offered,
-    /// Asked of the relay, not open yet.
-    Starting,
-    /// This device hosts one.
-    Hosting,
-    /// Jams are off, the server has no relay, or this is a guest's profile.
-    Unavailable,
-}
-
-/// A jam guest's player controls: what each reaches by its role, and what its play button shows.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
-pub struct JamControls {
-    pub controls: Controls,
-    /// The play button shows playing: the jam's playback where play and pause reach the jam, else this
-    /// device's.
-    pub playing: bool,
-    /// This guest paused its own listening while the jam plays on; play joins it again where it is.
-    pub paused_here: bool,
-}
-
 /// The host's playback as a guest listening along plays it: the host's queue around its song, the place
 /// heard there (`ms` at `at_us`, this device's clock) moving at `rate`, its speed and pitch, and the
 /// transition out of the song playing as the host planned it.
@@ -307,9 +278,6 @@ pub struct Lead {
     pub index: usize,
     pub ms: f64,
     pub at_us: i64,
-    /// The same moment on the host's own clock: it moves only with the host's words, not as its clock
-    /// is learned here, so a jump there is told apart from a better reading of its clock.
-    pub there_us: i64,
     pub rate: f64,
     pub playing: bool,
     pub speed: f32,
@@ -488,31 +456,20 @@ enum Change {
     Star { id: String, on: bool },
 }
 
-impl Change {
-    /// Whether the device's `state` shows what this changed. A device says it carried a command out in
-    /// the next state it publishes, which may be before its player has played or paused.
-    fn shown_in(&self, state: &DeviceState) -> bool {
-        match *self {
-            Change::Playing { playing, .. } => state.playing == playing,
-            _ => true,
-        }
-    }
-}
-
 impl Mirrored {
     fn new(id: String) -> Mirrored {
         Mirrored { id, heard: None, arrived: 0, shown: None, at: clock::now_us(), device_at: None, clock: ClockSync::default(), pages: Vec::new(), asking: None, taken: Vec::new(), foreseen: Vec::new() }
     }
 
     /// A state arrived from the device (`at`: when, on this device's clock). It ends the foresight of
-    /// every command of this device's (`me`) it says it carried out and shows; the rest still shows over it. False
+    /// every command of this device's (`me`) it says it carried out; the rest still shows over it. False
     /// when it is the one already heard.
     fn heard(&mut self, state: &DeviceState, at: i64, me: &str) -> bool {
         if self.heard.as_ref() == Some(state) {
             return false;
         }
         if let Some(done) = state.obeyed.iter().find(|o| o.from == me) {
-            self.foreseen.retain(|f| f.id > done.id || !f.change.shown_in(state));
+            self.foreseen.retain(|f| f.id > done.id);
         }
         let rev = self.shown.as_ref().map(|s| (s.rev, s.len));
         if rev != Some((state.rev, state.len)) {
@@ -698,8 +655,8 @@ struct Inner {
     relay_polling: bool,
     /// The last relay poll failed: the devices it listed may have gone since, and are not shown.
     relay_down: bool,
-    /// What the relay's last answer said of it, as logged.
-    relay_said: Option<String>,
+    /// This guest's pass was refused: its jam is over.
+    jam_over: bool,
     /// Bumped to end the nearby doors' pollers.
     lan_generation: u64,
     since: Option<u64>,
@@ -745,13 +702,6 @@ struct Inner {
     server_clock: ClockSync,
     /// This guest listens along.
     listen: Option<Listen>,
-    /// The name of the host of the jam this guest is in, as last seen.
-    jam_host: Option<String>,
-    /// This guest's jam ended or was left: the relay is asked nothing more.
-    jam_over: bool,
-    /// A jam asked of the relay and not opened yet, by its attempt ([`Remote::jam_open`]); ending the jam
-    /// takes it, and the jam it opens is closed again.
-    opening: Option<u64>,
 }
 
 impl Peer {
@@ -762,7 +712,7 @@ impl Peer {
 
 impl Inner {
     fn wants_relay(&self) -> bool {
-        self.relay != RelaySupport::Unsupported && !self.jam_over && (self.serving || self.watching || self.follows_mirror() || self.hosted.is_some() || self.listen.is_some())
+        self.relay != RelaySupport::Unsupported && (self.serving || self.watching || self.follows_mirror() || self.hosted.is_some() || self.listen.is_some())
     }
 
     /// Whether the mirrored device is followed: while something here shows it, or it plays.
@@ -853,11 +803,6 @@ impl Inner {
         self.listen.is_some() || (self.sight == Sight::Screen && self.mirror.as_ref().is_some_and(Mirrored::playing)) || (self.hosts_along() && self.relay_time)
     }
 
-    /// A jam is hosted here or being started: it plays on this device only.
-    fn jams(&self) -> bool {
-        self.hosted.is_some() || self.opening.is_some()
-    }
-
     /// This device hosts a jam whose guests may listen along.
     fn hosts_along(&self) -> bool {
         self.hosted.as_ref().is_some_and(|h| h.along)
@@ -872,21 +817,6 @@ impl Inner {
             Some(_) if !host_lets => Listening::HostOff,
             Some(_) => Listening::Playing,
         }
-    }
-
-    /// This guest's player controls by its role in the jam it is in; None while hosting or in no jam.
-    fn jam_controls(&self) -> Option<JamControls> {
-        if self.hosted.is_some() {
-            return None;
-        }
-        let st = self.joined()?.1?.state.as_ref()?;
-        let role = st.jam.as_ref()?.members.iter().find(|m| m.id == self.you).map_or(Role::Guest, |m| m.role);
-        let listening = self.listening() == Listening::Playing;
-        let controls = Controls::of(role, listening);
-        let (there, here) = (st.playing, self.playing.playing);
-        let paused_here = listening && there && !here;
-        let playing = !paused_here && if controls.play_pause == Reach::Jam { there } else { here };
-        Some(JamControls { controls, playing, paused_here })
     }
 
     /// When the jam's host heard `st`'s place, on this device's clock, once its clock is known here
@@ -913,7 +843,6 @@ impl Inner {
             index,
             ms: st.position_ms as f64,
             at_us: at,
-            there_us: st.at_us?,
             rate: nori_remote::rate(st),
             playing: st.playing && !st.buffering,
             speed: along.speed,
@@ -1075,11 +1004,9 @@ impl Remote {
     /// The platform's playback changed (play, pause, seek, another song, the queue, the volume). Music
     /// starting here makes this the active device again.
     pub fn played(self: Arc<Self>, playing: Playing) {
-        let (publish, started, shown) = {
+        let (publish, started) = {
             let mut i = self.inner.lock();
             let started = playing.playing && !i.playing.playing;
-            // A guest listening along paused or played here: its controls say so.
-            let shown = i.listen.is_some() && playing.playing != i.playing.playing;
             if started {
                 i.handed_to = None;
             }
@@ -1089,16 +1016,13 @@ impl Remote {
             }
             i.playing = playing;
             i.playing_at = Some(now);
-            (i.serving || i.hosted.is_some(), started && i.mirror.is_some(), shown)
+            (i.serving || i.hosted.is_some(), started && i.mirror.is_some())
         };
         if started {
             self.set_active(None);
         }
         if publish {
             self.publish();
-        }
-        if shown {
-            self.shown.changed();
         }
     }
 
@@ -1132,9 +1056,6 @@ impl Remote {
     pub fn pick(self: Arc<Self>, device: Option<String>) {
         let (active, idle, plays, leads) = {
             let i = self.inner.lock();
-            if device.is_some() && i.jams() {
-                return;
-            }
             let m = i.mirror.as_ref();
             let (plays, leads) = device.as_deref().map_or((false, false), |d| (i.plays(d), i.leads(d)));
             (m.map(|m| m.id.clone()), m.and_then(|m| m.shown.as_ref()).is_some_and(|s| s.index.is_none()), plays, leads)
@@ -1271,10 +1192,8 @@ impl Remote {
         self.shown.changed();
     }
 
-    /// Starts hosting a jam; its invite link. Needs the relay. None when there is nothing to start: a
-    /// jam is hosted or being started already, or it was ended before the relay opened it (that one is
-    /// closed again at once).
-    pub async fn jam_open(self: Arc<Self>) -> Result<Option<String>, NetError> {
+    /// Starts hosting a jam; its invite link. Needs the relay.
+    pub async fn jam_open(self: Arc<Self>) -> Result<String, NetError> {
         #[derive(Deserialize)]
         struct Opened {
             room: String,
@@ -1283,47 +1202,14 @@ impl Remote {
         if self.relay() == RelaySupport::Unsupported {
             return Err(NetError::Http { status: 404 });
         }
-        let attempt = {
-            let mut i = self.inner.lock();
-            if i.hosted.is_some() || i.opening.is_some() || self.me.kind == DeviceKind::Guest {
-                return Ok(None);
-            }
-            i.next_id += 1;
-            i.opening = Some(i.next_id);
-            i.next_id
-        };
-        // A jam plays here: what plays on another device comes back first.
-        self.clone().pick(None);
-        self.shown.changed();
         let url = self.relay_url("noriRemote.open", &[("dev", self.id.clone()), ("name", self.me.name.clone())]);
-        let opened = async {
-            let body = transport::get(&*self.client.transport, url, 0).await?;
-            serde_json::from_slice::<Opened>(&body).map_err(|e| NetError::Parse { reason: e.to_string() })
-        };
-        let opened = match opened.await {
-            Ok(o) => o,
-            Err(e) => {
-                let mut i = self.inner.lock();
-                if i.opening == Some(attempt) {
-                    i.opening = None;
-                }
-                drop(i);
-                self.shown.changed();
-                return Err(e);
-            }
-        };
+        let body = transport::get(&*self.client.transport, url, 0).await?;
+        let opened: Opened = serde_json::from_slice(&body).map_err(|e| NetError::Parse { reason: e.to_string() })?;
         let server = self.client.profile.read().url.clone();
         let link = nori_remote::invite_link(&server, &opened.invite);
         {
             let mut i = self.inner.lock();
-            if i.opening != Some(attempt) {
-                drop(i);
-                self.out(Out::Get(self.relay_url("noriRemote.close", &[("room", opened.room)])));
-                return Ok(None);
-            }
-            i.opening = None;
             i.relay = RelaySupport::Supported;
-            remember_hosted(&self.client.core.session.settings, &opened.invite);
             let along = self.client.core.session.settings.current().is_some_and(|p| p.jam_along);
             i.hosted = Some(Hosted { jam: Jam::new(opened.room, opened.invite, self.id.clone(), self.me.name.clone()), link: link.clone(), along });
             i.published = None;
@@ -1334,7 +1220,7 @@ impl Remote {
         self.publish();
         self.keep_polling();
         self.hear_plans();
-        Ok(Some(link))
+        Ok(link)
     }
 
     /// Lets the jam's guests listen along (play its music on their own devices, in step with this one), or not.
@@ -1363,18 +1249,11 @@ impl Remote {
         self.follow_lead();
     }
 
-    /// Ends the jam this device hosts, or the one it is starting.
+    /// Ends the jam this device hosts.
     pub fn jam_close(self: Arc<Self>) {
         let room = {
             let mut i = self.inner.lock();
-            let starting = i.opening.take().is_some();
-            let Some(h) = i.hosted.take() else {
-                drop(i);
-                if starting {
-                    self.shown.changed();
-                }
-                return;
-            };
+            let Some(h) = i.hosted.take() else { return };
             // Its room is no one's now; kept, it would read as a jam this device is a guest of.
             i.rooms.retain(|r| r.room != h.jam.room);
             h.jam.room
@@ -1420,7 +1299,10 @@ impl Remote {
             let st = h.jam.state();
             let queue = i.published.as_ref().map(|(s, _)| DeviceState { jam: None, ..s.clone() });
             let age_ms = i.published.as_ref().map_or(0, |(_, at)| at.elapsed().as_millis() as i64);
-            return Some(JamView { hosting: true, link: Some(h.link.clone()), you: self.id.clone(), members: st.members, pending: st.pending, queue, age_ms, refused: None, along: h.along, listening: Listening::Watching });
+            return Some(JamView { hosting: true, link: Some(h.link.clone()), you: self.id.clone(), members: st.members, pending: st.pending, queue, age_ms, refused: None, along: h.along, listening: Listening::Watching, ended: false });
+        }
+        if i.jam_over {
+            return Some(JamView { hosting: false, link: None, you: i.you.clone(), members: Vec::new(), pending: Vec::new(), queue: None, age_ms: 0, refused: None, along: false, listening: Listening::Watching, ended: true });
         }
         let (_, host) = i.joined()?;
         let state = host.and_then(|h| h.state.clone());
@@ -1436,55 +1318,8 @@ impl Remote {
             age_ms: host.map_or(0, |h| i.age(&h.id)),
             refused: host.and_then(|h| i.refused.get(&h.id).copied()),
             queue: state.map(|s| DeviceState { jam: None, ..s }),
+            ended: false,
         })
-    }
-
-    /// Where starting a jam here stands, as every screen that offers it shows it.
-    pub fn jam_start(&self) -> JamStart {
-        let i = self.inner.lock();
-        let on = self.client.core.session.settings.current().is_some_and(|p| p.jam);
-        if i.hosted.is_some() {
-            JamStart::Hosting
-        } else if i.opening.is_some() {
-            JamStart::Starting
-        } else if on && self.me.kind != DeviceKind::Guest && i.relay != RelaySupport::Unsupported {
-            JamStart::Offered
-        } else {
-            JamStart::Unavailable
-        }
-    }
-
-    /// This jam guest's player controls by its role (Spotify's Jam): what each reaches, and what the play
-    /// button shows. None while hosting or in no jam.
-    pub fn jam_controls(&self) -> Option<JamControls> {
-        self.inner.lock().jam_controls()
-    }
-
-    /// Carries out this jam guest's player control `op` by its role: sent to the host when it reaches the
-    /// jam. [`Reach::Here`]: the platform's player carries it out (a guest's pause holds its own listening,
-    /// and play joins the jam again where it is). [`Reach::Nowhere`]: nothing is done.
-    pub fn jam_press(self: Arc<Self>, op: Op) -> Reach {
-        let (reach, to) = {
-            let mut i = self.inner.lock();
-            let Some(c) = i.jam_controls() else { return Reach::Nowhere };
-            let reach = match op {
-                // Paused here while the jam plays on: play joins it again, whoever presses it.
-                Op::Play if c.paused_here => Reach::Here,
-                _ => c.controls.reach(&op),
-            };
-            let to = i.joined().and_then(|(room, host)| Some((room.room.clone(), host?.id.clone())));
-            if let Some((_, host)) = &to {
-                i.refused.remove(host);
-            }
-            (reach, to)
-        };
-        if reach != Reach::Jam {
-            return reach;
-        }
-        let Some((room, host)) = to else { return Reach::Nowhere };
-        let id = self.next_id();
-        self.out(Out::send(Link::Relay, Outgoing { room: Some(room), to: Some(host), body: Some(Body::Command { id, op: Box::new(op) }), state: None }));
-        reach
     }
 
     /// Ends remote control here for good: leaves the relay, withdraws the door, ends a hosted jam, stops
@@ -1562,84 +1397,25 @@ impl Remote {
     }
 
     /// Leaves the jam this guest profile is in, its music stopping here at once; the app then drops the
-    /// profile at once too. The relay is told on the way, as far as it can be before [`Remote::stop`]
-    /// gives up waiting.
-    pub fn jam_leave(self: Arc<Self>) {
-        self.inner.lock().jam_over = true;
+    /// profile.
+    pub async fn jam_leave(&self) -> Result<(), NetError> {
         self.unfollow();
-        self.out(Out::Get(self.relay_url("noriRemote.leave", &[])));
+        transport::get(&*self.client.transport, self.relay_url("noriRemote.leave", &[]), 0).await.map(|_| ())
     }
 }
 
-/// What joining a jam's invite came to.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
-pub enum JamJoin {
-    /// A guest now: what its profile signs in with.
-    Joined { pass: JamPass },
-    /// The invite is to the jam this device hosts: joining would make it a guest of itself.
-    Own,
-    /// The jam has ended: nothing changes.
-    Ended,
-}
-
-/// The app's key for the invites of the jams this device opened, newest last, one a line.
-const HOSTED_INVITES: &str = "remoteHostedInvites";
-
-/// Invites [`HOSTED_INVITES`] keeps.
-const HOSTED_KEPT: usize = 16;
-
-fn hosted_invites(settings: &Settings) -> Vec<String> {
-    settings.app_value(HOSTED_INVITES).map(|v| v.lines().map(str::to_string).collect()).unwrap_or_default()
-}
-
-/// Keeps `invite` among the jams this device opened, so it is known as its own once the jam ended too.
-fn remember_hosted(settings: &Settings, invite: &str) {
-    let mut kept = hosted_invites(settings);
-    kept.push(invite.to_string());
-    let from = kept.len().saturating_sub(HOSTED_KEPT);
-    let Some(db) = settings.app_db() else { return };
-    // Written here rather than on the settings' writer: an invite opened at once is to read it.
-    let written = db.lock().execute("INSERT OR REPLACE INTO app_kv(key, value) VALUES(?1, ?2)", rusqlite::params![HOSTED_INVITES, kept[from..].join("\n")]);
-    if let Err(e) = written {
-        crate::alog::info(&format!("{HOSTED_INVITES}: could not write: {e}"));
-    }
-}
-
-/// What joining `link` comes to without asking the server: [`JamJoin::Own`] for the jam this device
-/// (`remote`) hosts, [`JamJoin::Ended`] for another it opened; None for anyone else's.
+/// Joins the jam `link` invites to as `name`; what the guest's profile signs in with.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn own_invite(settings: Arc<Settings>, remote: Option<Arc<Remote>>, link: String) -> Option<JamJoin> {
-    let (_, invite) = nori_remote::parse_invite(&link)?;
-    if remote.is_some_and(|r| r.inner.lock().hosted.as_ref().is_some_and(|h| h.jam.invite == invite)) {
-        return Some(JamJoin::Own);
-    }
-    hosted_invites(&settings).contains(&invite).then_some(JamJoin::Ended)
-}
-
-/// Joins the jam `link` invites to as `name`, unless it is this device's own ([`own_invite`]) or the
-/// server no longer knows the invite.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub async fn jam_join(transport: Arc<dyn Transport>, settings: Arc<Settings>, remote: Option<Arc<Remote>>, link: String, name: String) -> Result<JamJoin, NetError> {
+pub async fn jam_join(transport: Arc<dyn Transport>, link: String, name: String) -> Result<JamPass, NetError> {
     #[derive(Deserialize)]
     struct Joined {
         key: String,
     }
-    if let Some(own) = own_invite(settings, remote, link.clone()) {
-        return Ok(own);
-    }
     let (server, invite) = nori_remote::parse_invite(&link).ok_or_else(|| NetError::Parse { reason: "not a jam invite".into() })?;
     let url = api::Server::with(&server, api::Auth::ApiKey(&nori_remote::guest_key(&invite))).url("noriRemote.join", &[("name".into(), name)]);
-    let body = match transport::get(&*transport, url, 0).await {
-        Err(NetError::Http { status: 401 }) => return Ok(JamJoin::Ended),
-        got => got?,
-    };
-    // The relay takes an invite only while its jam lasts.
-    if refusal_code(&body) == Some(40) {
-        return Ok(JamJoin::Ended);
-    }
+    let body = transport::get(&*transport, url, 0).await?;
     let joined: Joined = serde_json::from_slice(&body).map_err(|e| NetError::Parse { reason: e.to_string() })?;
-    Ok(JamJoin::Joined { pass: JamPass { url: server, api_key: nori_remote::guest_key(&joined.key) } })
+    Ok(JamPass { url: server, api_key: nori_remote::guest_key(&joined.key) })
 }
 
 /// What a client calls each kind of device, for [`device_names`].
@@ -1689,12 +1465,6 @@ pub fn device_names(devices: Vec<RemoteDevice>, me: RemoteMe, words: KindWords) 
 }
 
 /// An answer from the relay; None when the server has no relay (a Subsonic error for an unknown endpoint).
-/// The Subsonic error code a relay answers with instead of an [`Answer`].
-fn refusal_code(body: &[u8]) -> Option<i64> {
-    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
-    v.get("subsonic-response")?.get("error")?.get("code")?.as_i64()
-}
-
 fn answer(body: &[u8]) -> Option<Answer> {
     let v: serde_json::Value = serde_json::from_slice(body).ok()?;
     if v.get("subsonic-response").is_some() {
@@ -1908,12 +1678,7 @@ impl Remote {
     fn probe(self: &Arc<Self>) {
         let me = self.clone();
         self.spawn("nori-remote-probe", move || {
-            let generation = me.inner.lock().generation;
             let Some(got) = me.get(me.poll_url(None, false, false), 0, |_| true) else { return };
-            me.note_relay(support(&got), &got);
-            if me.jam_gone(&got) {
-                return me.jam_ended(generation);
-            }
             let serving = {
                 let mut i = me.inner.lock();
                 if let Some(found) = support(&got) {
@@ -1986,16 +1751,12 @@ impl Remote {
             if self.inner.lock().generation != generation {
                 return;
             }
-            let found = support(&got);
-            self.note_relay(found, &got);
-            if self.jam_gone(&got) {
-                return self.jam_ended(generation);
-            }
-            match (found, got) {
+            match (support(&got), got) {
                 (Some(RelaySupport::Supported), Ok(body)) => {
                     self.inner.lock().relay = RelaySupport::Supported;
                     self.took(answer(&body).unwrap_or_default(), received);
                 }
+                (Some(RelaySupport::Unsupported), _) if self.is_guest() => return self.jam_over(generation),
                 (Some(_), _) => return self.no_relay(generation),
                 (None, _) => {
                     if !std::mem::replace(&mut self.inner.lock().relay_down, true) {
@@ -2010,42 +1771,24 @@ impl Remote {
         }
     }
 
-    /// Whether a relay poll's answer says this guest's jam is gone: the relay no longer takes its key, or
-    /// no longer lists its jam's room (it lists it while the jam lasts).
-    fn jam_gone(&self, got: &Result<Vec<u8>, NetError>) -> bool {
-        let Ok(body) = got else { return false };
-        self.me.kind == DeviceKind::Guest && (refusal_code(body) == Some(40) || answer(body).is_some_and(|a| !a.rooms.iter().any(|r| r.jam)))
+    /// This device is a jam guest: its profile holds a pass, not an account.
+    fn is_guest(&self) -> bool {
+        self.client.core.rules.read().asks
     }
 
-    /// The jam this guest is in ended: nothing more is followed or asked, and the platform is told.
-    fn jam_ended(&self, generation: u64) {
-        let host = {
+    /// The guest's pass is refused: the host closed the jam or sent this guest out. Nothing is polled or
+    /// followed from here.
+    fn jam_over(self: &Arc<Self>, generation: u64) {
+        {
             let mut i = self.inner.lock();
-            if i.generation != generation || std::mem::replace(&mut i.jam_over, true) {
+            if i.generation != generation {
                 return;
             }
+            i.jam_over = true;
             i.relay_polling = false;
-            i.rooms.clear();
-            i.jam_host.clone()
-        };
-        self.unfollow();
-        self.shown.jam_ended(host);
-        self.shown.changed();
-    }
-
-    /// Logs what the relay's answer says of it when that differs from the last one: the relay answering,
-    /// the server answering something else, the network failing.
-    fn note_relay(&self, found: Option<RelaySupport>, got: &Result<Vec<u8>, NetError>) {
-        let said = match (found, got) {
-            (Some(RelaySupport::Supported), _) => "answers".to_string(),
-            (Some(_), Ok(body)) => format!("is not there, the server said {}", String::from_utf8_lossy(&body[..body.len().min(120)])),
-            (Some(_), Err(e)) => format!("is not there: {e}"),
-            (None, Ok(_)) => return,
-            (None, Err(e)) => format!("cannot be reached: {e}"),
-        };
-        if self.inner.lock().relay_said.replace(said.clone()).as_deref() != Some(&said) {
-            crate::alog::info(&format!("remote: the relay {said}"));
         }
+        self.unfollow();
+        self.shown.changed();
     }
 
     fn no_relay(&self, generation: u64) {
@@ -2140,21 +1883,8 @@ impl Remote {
         }
         let mut commands = Vec::new();
         let mut republish = false;
-        let mut lost = Vec::new();
         {
             let mut i = self.inner.lock();
-            // An account's device is listed only the jams it opened: one it does not host is one it ended
-            // or lost (its close or open went unanswered, the app started again). It is ended, not shown.
-            if self.me.kind != DeviceKind::Guest {
-                let hosted = i.jam_room().map(str::to_string);
-                let (keep, gone): (Vec<Room>, Vec<Room>) = std::mem::take(&mut a.rooms).into_iter().partition(|r| !r.jam || Some(&r.room) == hosted.as_ref());
-                a.rooms = keep;
-                a.events.retain(|e| !gone.iter().any(|r| r.room == e.room));
-                // One being opened may be listed before its answer arrives.
-                if i.opening.is_none() {
-                    lost = gone.into_iter().map(|r| r.room).collect();
-                }
-            }
             // Commands are heard from the first answer on: only then is this device's state said to the
             // relay, so no controller sends it one before it can hear it.
             if i.since.is_none() && i.serving {
@@ -2195,13 +1925,6 @@ impl Remote {
                 }
             }
             i.rooms = a.rooms;
-            if let Some((_, Some(host))) = i.joined() {
-                i.jam_host = Some(host.name.clone());
-            }
-        }
-        for room in lost {
-            crate::alog::info("remote: the relay still lists a jam this device ended: closed again");
-            self.out(Out::Get(self.relay_url("noriRemote.close", &[("room", room)])));
         }
         for (via, from, id, op) in commands {
             self.obey(via, from, id, op, received);
@@ -2218,7 +1941,7 @@ impl Remote {
     fn set_active(self: &Arc<Self>, to: Option<String>) {
         {
             let mut i = self.inner.lock();
-            if i.mirror.as_ref().map(|m| &m.id) == to.as_ref() || (to.is_some() && i.jams()) {
+            if i.mirror.as_ref().map(|m| &m.id) == to.as_ref() {
                 return;
             }
             i.mirror = to.map(Mirrored::new);
@@ -2409,12 +2132,7 @@ impl Remote {
             self.publish();
             return Ok(());
         }
-        let sender = if in_jam {
-            let role = self.inner.lock().hosted.as_ref().and_then(|h| h.jam.role(By::Member(from)));
-            Sender::Member(role.ok_or(Refusal::NotAllowed)?)
-        } else {
-            Sender::Owner
-        };
+        let sender = if in_jam { Sender::Member(Role::Guest) } else { Sender::Owner };
         let (rev, len) = self.client.core.session.playlist(|p| (p.rev(), p.len() as u32));
         admit(&op, sender, rev, len)?;
         // Said with the next state published, which shows what the player made of it.
@@ -2444,9 +2162,6 @@ impl Remote {
     /// Hands the queue, its play order, shuffle, repeat and the position to device `to`, then pauses here
     /// and follows `to`, the active device now.
     fn transfer(self: &Arc<Self>, via: &Via, from: &str, to: String) {
-        if to != self.id && self.inner.lock().jams() {
-            return;
-        }
         let session = &self.client.core.session;
         // A weighted shuffle's list is already in play order: shown shuffled, it goes as that order.
         let (ids, index, order, shuffle, repeat) = session.playlist(|p| (p.ids().to_vec(), p.current(), p.lit().then(|| p.play_order().map(|i| i as u32).collect()), p.lit(), p.repeat()));

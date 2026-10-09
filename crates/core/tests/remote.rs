@@ -1825,3 +1825,31 @@ fn jam_controls_reach_by_role() {
     relay.close();
 }
 
+
+/// A jam plays here and nowhere else: starting one brings the playback back to this device, and while it
+/// runs, the playback cannot be moved to another device.
+#[test]
+fn a_jam_and_playing_on_another_device_exclude_each_other() {
+    let relay = Relay::new();
+    let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    phone.playing(&["s1", "s2"], 0);
+    phone.remote.clone().serve(true);
+    let phone_id = phone.remote.id();
+    desk.remote.clone().watch(true);
+    desk.until("the phone", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state));
+    desk.remote.clone().pick(Some(phone_id.clone()));
+    desk.until("the phone mirrored", |r| r.active().filter(|m| m.id == phone_id));
+
+    block_on(desk.remote.clone().jam_open()).unwrap();
+    assert_eq!(phone.told(), Op::Pause);
+    assert!(matches!(desk.told(), Op::Replace { play: true, .. }));
+    desk.until("playing here", |r| r.active().is_none().then_some(()));
+
+    desk.remote.clone().pick(Some(phone_id.clone()));
+    assert!(desk.remote.active().is_none(), "no moving the playback while the jam runs");
+    desk.remote.clone().jam_close();
+    desk.remote.clone().pick(Some(phone_id.clone()));
+    assert!(desk.remote.active().is_some(), "free to move it again once the jam is over");
+    relay.close();
+}
