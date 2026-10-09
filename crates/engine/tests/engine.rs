@@ -1222,6 +1222,37 @@ fn moves_while_the_next_rate_waits() {
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
+/// Regression: the device was told the music ends where a song at another rate was read ahead (it plays
+/// out before opening again), and kept being told so when another song at its own rate came to follow
+/// instead: a starts-when-full AudioTrack was stopped whenever the ring ran empty between bursts.
+#[test]
+fn music_goes_on_where_the_next_rate_no_longer_follows() {
+    let (a, b, x) = (common::sine(48_000, 440.0, 30.0, 8_000.0), common::sine(RATE, 660.0, 30.0, 8_000.0), common::sine(48_000, 550.0, 30.0, 8_000.0));
+    let files = vec![("a".to_string(), wav_at(&a, 48_000), 30_000), ("b".to_string(), wav(&b), 30_000), ("x".to_string(), wav_at(&x, 48_000), 30_000)];
+    let rig = Rig::build(files, sim::App::new(), Settings::default(), Extra::default());
+    rig.queue.lock().set(vec!["a".into(), "b".into()], Some(0), false, 0);
+    rig.engine.queue_changed();
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(60, |r| r.card.lock().feed.as_ref().is_some_and(|f| f.ending())), "b is read ahead: the device plays a out");
+    rig.queue.lock().insert(1, vec!["x".into()], nori_player::playlist::Hand::No);
+    rig.engine.queue_changed();
+    rig.engine.replan();
+    rig.run(200);
+    let mut told_ending_ms = None;
+    assert!(rig.wait_for(60, |r| {
+        let s = r.engine.status();
+        if told_ending_ms.is_none() && s.index == Some(0) && r.card.lock().feed.as_ref().is_some_and(|f| f.ending()) {
+            told_ending_ms = Some(s.position_ms);
+        }
+        s.index == Some(1) && s.position_ms > 2_000
+    }), "{:?}", rig.engine.status());
+    assert_eq!(told_ending_ms, None, "the device was told the music ends in a, with x to follow");
+    assert_eq!(rig.card.lock().feed.as_ref().map(|f| f.format().rate), Some(48_000));
+    let left: Vec<f64> = rig.heard.lock().iter().step_by(2).map(|&v| v as f64).collect();
+    let ups = left[left.len() - 48_000..].windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+    assert!((ups as i64 - 550).abs() <= 2, "x at its pitch: {ups} Hz");
+}
+
 #[test]
 fn device_format_choices() {
     // A gapless join into another rate reopens the device at that rate instead of resampling.

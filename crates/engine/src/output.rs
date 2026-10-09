@@ -1088,12 +1088,10 @@ impl Track for RingTrack {
     }
 
     /// A stream needing a reopen waits for the device to play out: marked as the end, so it is played
-    /// whole with no underrun counted.
+    /// whole with no underrun counted. One that does not plays on from what is there.
     fn must_reopen(&mut self, format: Format) -> bool {
         let reopen = self.reopens(format);
-        if reopen {
-            self.set_ended(true);
-        }
+        self.set_ended(reopen);
         reopen
     }
 
