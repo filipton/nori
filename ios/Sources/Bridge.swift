@@ -24,8 +24,11 @@ struct Item {
     let letter: String
     /// A running download: whole percent (-1 unknown), bytes a second (0 unknown), seconds left (-1).
     let progress: (percent: Int, speed: Int, left: Int)?
+    /// In a jam's queue: who asked for the song, where someone did.
+    let by: String
 
     init(_ d: [String: Any]) {
+        by = d["by"] as? String ?? ""
         progress = (d["pct"] as? Int).map { ($0, d["bps"] as? Int ?? 0, d["eta"] as? Int ?? -1) }
         letter = d["l"] as? String ?? ""
         covers = d["covers"] as? [String] ?? []
@@ -102,6 +105,8 @@ struct Now {
     var device: String?
     /// Remote control is on: the music can move to the account's other devices.
     var remote = false
+    /// The jam's music, this iPod a guest in it: the host's, which nothing here controls.
+    var jam = false
 
     var playing: Bool { state == 1 }
 
@@ -110,6 +115,44 @@ struct Now {
         guard playing, !buffering else { return ms }
         return ms + Int(Date().timeIntervalSince(stamp) * 1000 * pace)
     }
+}
+
+/// What the open profile offers (`nori_ios_rules`): a jam guest's asks the host for what it plays, and has
+/// nothing of the account's (hearts, playlists, downloads, the settings).
+struct Rules {
+    var asks = false
+    var account = true
+    /// The library's sections, as the core's LibrarySection numbers.
+    var sections: Set<Int> = Set(0...11)
+
+    init() {}
+
+    init(_ d: [String: Any]) {
+        asks = d["asks"] as? Bool ?? false
+        account = d["account"] as? Bool ?? true
+        sections = Set(d["sections"] as? [Int] ?? [])
+    }
+}
+
+/// The jam this iPod is a guest in (`nori_ios_jam`).
+struct Jam {
+    let host: String
+    let listeners: [String]
+    /// The songs it asked for that wait for the host, by id.
+    let asked: Set<String>
+    let asks: [Item]
+    /// 0 only shown, 1 playing here, 2 asked but the host lets no one, 3 asked but the server lets no guest.
+    let listening: Int
+
+    init(_ d: [String: Any]) {
+        host = d["host"] as? String ?? ""
+        listeners = d["listeners"] as? [String] ?? []
+        asked = Set(d["asked"] as? [String] ?? [])
+        asks = (d["asks"] as? [[String: Any]] ?? []).map { Item($0.merging(["k": "song"]) { a, _ in a }) }
+        listening = d["listening"] as? Int ?? 0
+    }
+
+    var strip: String { Say.jamStrip(host, listeners.count) }
 }
 
 private func json(_ text: UnsafePointer<CChar>) -> [String: Any] {
@@ -143,6 +186,8 @@ extension Notification.Name {
     static let noriDevices = Notification.Name("noriDevices")
     /// Lyrics came for the song in `object`.
     static let noriLyrics = Notification.Name("noriLyrics")
+    /// The jam this iPod is a guest in changed: read `Core.shared.jam`.
+    static let noriJam = Notification.Name("noriJam")
 }
 
 /// The library's callbacks, delivered on the main thread, and the requests that wait for them.
@@ -156,6 +201,19 @@ final class Core {
     private let lock = NSLock()
 
     var isOpen: Bool { nori_ios_is_open() != 0 }
+
+    /// What the open profile offers, read as it opens.
+    private(set) var rules = Rules()
+    /// The jam this iPod is a guest in, read as it changes.
+    private(set) var jam: Jam?
+
+    /// Whether the song is one this guest asked for and the host has yet to take.
+    func isAsked(_ item: Item) -> Bool { item.kind == "song" && jam?.asked.contains(item.id) == true }
+
+    private func readJam() {
+        jam = (takenJSON(nori_ios_jam()) as? [String: Any]).map(Jam.init)
+        NotificationCenter.default.post(name: .noriJam, object: nil)
+    }
 
     /// Hearts changed in this session, by item id, until a page read brings the server's word.
     private var marks: [String: Bool] = [:]
@@ -255,7 +313,8 @@ final class Core {
         n.bits = d["bits"] as? Int ?? 0
         n.device = d["device"] as? String
         n.remote = d["remote"] as? Bool ?? false
-        if n.device != nil {
+        n.jam = d["jam"] as? Bool ?? false
+        if n.device != nil || n.jam {
             // The device says its own waits.
             n.buffering = d["buffering"] as? Bool ?? false
         } else {
@@ -287,8 +346,25 @@ final class Core {
     }
 
     func opened() {
+        rules = (takenJSON(nori_ios_rules()) as? [String: Any]).map(Rules.init) ?? Rules()
         refresh()
+        readJam()
         NotificationCenter.default.post(name: .noriOpened, object: nil)
+        if let link = JamJoin.waiting {
+            JamJoin.waiting = nil
+            JamJoin.join(link)
+        }
+    }
+
+    /// Opens the active profile in place of the open one, a jam joined or left, and says `note` once open.
+    private func switchProfile(_ note: String?) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let failed = Core.reopen()
+            DispatchQueue.main.async {
+                Core.shared.opened()
+                if let words = failed ?? note { Toast.show(words) }
+            }
+        }
     }
 
     private func reported(kind: Int32, id: String, text: String, flag: Int32, count: Int32, ms: Int64) {
@@ -297,7 +373,14 @@ final class Core {
             refresh()
         case 18:
             refresh()
+            readJam()
             NotificationCenter.default.post(name: .noriDevices, object: nil)
+        case 20 where flag != 0:
+            switchProfile(nil)
+        case 20:
+            Toast.show(Say.jamJoinFailed(Say.failure(count, text)))
+        case 21:
+            switchProfile(Say.jamLeft)
         case 19:
             SystemVolume.set(Float(ms) / 1000)
         case 5:

@@ -2,7 +2,8 @@ import MediaPlayer
 import UIKit
 
 /// "Play on", from the player: this iPod and the account's other devices with nori, each with what it
-/// plays, the one playing ticked. A tap moves the music there. Open, the other devices are followed.
+/// plays, the one playing ticked, then joining someone's jam. A tap moves the music there. Open, the
+/// other devices are followed.
 final class DevicesSheet: UIViewController, UITableViewDataSource, UITableViewDelegate {
     let transition = CardTransition()
     private var closer: DragToClose?
@@ -92,7 +93,7 @@ final class DevicesSheet: UIViewController, UITableViewDataSource, UITableViewDe
         table.reloadData()
     }
 
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { devices.count + 1 }
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { devices.count + 2 }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "device")
@@ -111,6 +112,12 @@ final class DevicesSheet: UIViewController, UITableViewDataSource, UITableViewDe
             cell.accessoryType = here ? .checkmark : .none
             return cell
         }
+        guard indexPath.row <= devices.count else {
+            cell.textLabel?.text = Say.joinJam
+            cell.detailTextLabel?.text = nil
+            cell.accessoryType = .disclosureIndicator
+            return cell
+        }
         let d = devices[indexPath.row - 1]
         cell.textLabel?.text = d["name"] as? String
         let song = [d["title"] as? String, d["artist"] as? String].compactMap { $0 }.filter { !$0.isEmpty }
@@ -123,9 +130,43 @@ final class DevicesSheet: UIViewController, UITableViewDataSource, UITableViewDe
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
+        guard indexPath.row <= devices.count else { return JamJoin.ask(from: self) }
         let id = indexPath.row == 0 ? "" : devices[indexPath.row - 1]["id"] as? String ?? ""
         id.withCString { nori_ios_remote_pick($0) }
         dismiss(animated: true)
+    }
+}
+
+/// Joining someone's jam with the invite link its host sent: the guest profile opens once joined
+/// (`Core`'s report 20).
+enum JamJoin {
+    static func ask(from host: UIViewController) {
+        let ask = UIAlertController(title: Say.joinJam, message: Say.joinJamHow, preferredStyle: .alert)
+        ask.view.tintColor = .black
+        ask.addTextField { field in
+            field.placeholder = Say.inviteLink
+            field.keyboardType = .URL
+            field.autocapitalizationType = .none
+            field.autocorrectionType = .no
+            field.returnKeyType = .join
+        }
+        ask.addAction(UIAlertAction(title: Say.cancel, style: .cancel))
+        ask.addAction(UIAlertAction(title: Say.join, style: .default) { _ in
+            join(ask.textFields?.first?.text ?? "")
+        })
+        host.present(ask, animated: true)
+    }
+
+    /// An invite opened before a session was: joined once one is.
+    static var waiting: String?
+
+    /// Joins the jam `link` invites to (an https invite, or the app's own nori:// one).
+    static func join(_ link: String) {
+        switch link.withCString({ l in Say.jamGuest.withCString { nori_ios_jam_join(l, $0) } }) {
+        case NORI_JOIN_STARTED: Toast.show(Say.joining)
+        case NORI_JOIN_NOT_AN_INVITE: Toast.show(Say.notAnInvite)
+        default: waiting = link
+        }
     }
 }
 

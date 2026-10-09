@@ -3,20 +3,30 @@ import UIKit
 /// Home, Library, Settings and Search, as on Android, with the mini player over the tab bar.
 final class ShellController: UITabBarController {
     private let mini = MiniPlayer()
+    private var tabs: [UINavigationController] = []
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = Theme.background
         Theme.apply(tab: tabBar)
-        viewControllers = [
+        tabs = [
             tab(Say.home, Glyph.home, PageController(kind: NORI_PAGE_HOME, title: Say.home)),
             tab(Say.library, Glyph.library, LibraryPage()),
             tab(Say.settingsTitle, Glyph.settings, SettingsPage()),
             tab(Say.search, Glyph.search, SearchPage()),
         ]
+        lay()
+        NotificationCenter.default.addObserver(self, selector: #selector(lay), name: .noriOpened, object: nil)
         mini.opened = { [weak self] in self?.openPlayer() }
         mini.dragged = { [weak self] in self?.dragPlayer($0) }
         view.addSubview(mini)
+    }
+
+    /// The tabs the open profile has: the settings are the account's, not a jam guest's.
+    @objc private func lay() {
+        let shown = tabs.filter { Core.shared.rules.account || !($0.viewControllers.first is SettingsPage) }
+        guard viewControllers?.count != shown.count else { return }
+        setViewControllers(shown, animated: false)
     }
 
     override func viewDidLayoutSubviews() {
@@ -191,6 +201,9 @@ final class MiniPlayer: UIView {
         }
         play.isEnabled = now.song != nil
         skipButton.isEnabled = now.song != nil
+        // A jam's music is its host's to play and skip.
+        play.isHidden = now.jam
+        skipButton.isHidden = now.jam
         paintHeart()
         play.setImage(now.playing ? Glyph.pause : Glyph.play, for: .normal)
         play.accessibilityLabel = now.playing ? Say.pause : Say.play
@@ -223,7 +236,7 @@ final class MiniPlayer: UIView {
     }
 
     @objc private func paintHeart() {
-        guard let song = Core.shared.now.song, !song.external else {
+        guard let song = Core.shared.now.song, !song.external, Core.shared.rules.account else {
             heart.isHidden = true
             return
         }
@@ -250,7 +263,7 @@ final class MiniPlayer: UIView {
     @objc private func panned(_ g: UIPanGestureRecognizer) {
         if g.state == .began {
             let v = g.velocity(in: self)
-            sideways = abs(v.x) > abs(v.y) && Core.shared.now.song != nil
+            sideways = abs(v.x) > abs(v.y) && Core.shared.now.song != nil && !Core.shared.now.jam
         }
         guard sideways else { return dragged?(g) ?? () }
         let dx = g.translation(in: self).x
@@ -283,16 +296,19 @@ final class MiniPlayer: UIView {
 }
 
 final class LibraryPage: UITableViewController {
-    private let rows: [(String, Int32)] = [
-        (Say.playlists, NORI_PAGE_PLAYLISTS),
-        (Say.artists, NORI_PAGE_ARTISTS),
-        (Say.albumsTitle, NORI_PAGE_ALBUMS),
-        (Say.songsTitle, NORI_PAGE_SONGS),
-        (Say.genres, NORI_PAGE_GENRES),
-        (Say.favorites, NORI_PAGE_STARRED),
-        (Say.smartPlaylists, NORI_PAGE_SMARTS),
-        (Say.downloaded, NORI_PAGE_DOWNLOADS),
+    /// Each row with the core's LibrarySection it is.
+    private static let all: [(String, Int32, Int)] = [
+        (Say.playlists, NORI_PAGE_PLAYLISTS, 4),
+        (Say.artists, NORI_PAGE_ARTISTS, 2),
+        (Say.albumsTitle, NORI_PAGE_ALBUMS, 0),
+        (Say.songsTitle, NORI_PAGE_SONGS, 3),
+        (Say.genres, NORI_PAGE_GENRES, 7),
+        (Say.favorites, NORI_PAGE_STARRED, 1),
+        (Say.smartPlaylists, NORI_PAGE_SMARTS, 5),
+        (Say.downloaded, NORI_PAGE_DOWNLOADS, 11),
     ]
+    /// The sections the open profile has (a jam guest's: the host's albums, artists, songs and genres).
+    private var rows: [(String, Int32)] = []
 
     init() { super.init(style: .grouped) }
     required init?(coder: NSCoder) { fatalError() }
@@ -300,6 +316,14 @@ final class LibraryPage: UITableViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         dress(tableView)
+        NotificationCenter.default.addObserver(self, selector: #selector(lay), name: .noriOpened, object: nil)
+        lay()
+    }
+
+    @objc private func lay() {
+        let sections = Core.shared.rules.sections
+        rows = LibraryPage.all.filter { sections.contains($0.2) }.map { ($0.0, $0.1) }
+        tableView.reloadData()
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { rows.count }
@@ -517,7 +541,7 @@ final class SettingsPage: UITableViewController {
         }
     }
 
-    // Section 0: server, equalizer, sound, sync. Then the curated settings. Last: about.
+    // Section 0: server, equalizer, sound, sync, joining a jam. Then the curated settings. Last: about.
     override func numberOfSections(in tableView: UITableView) -> Int { sections.count + 2 }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
@@ -527,7 +551,7 @@ final class SettingsPage: UITableViewController {
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        if section == 0 { return Core.shared.isOpen ? 4 : 1 }
+        if section == 0 { return Core.shared.isOpen ? 5 : 1 }
         if section == sections.count + 1 { return 5 }
         return sections[section - 1].rows.count
     }
@@ -549,6 +573,10 @@ final class SettingsPage: UITableViewController {
                 cell.accessoryType = .disclosureIndicator
             case 2:
                 cell.textLabel?.text = Say.sound
+                cell.detailTextLabel?.text = nil
+                cell.accessoryType = .disclosureIndicator
+            case 4:
+                cell.textLabel?.text = Say.joinJam
                 cell.detailTextLabel?.text = nil
                 cell.accessoryType = .disclosureIndicator
             default:
@@ -623,6 +651,7 @@ final class SettingsPage: UITableViewController {
             case 0: navigationController?.pushViewController(ServersPage(), animated: true)
             case 1: navigationController?.pushViewController(EqualizerPage(), animated: true)
             case 2: navigationController?.pushViewController(SoundPage(), animated: true)
+            case 4: JamJoin.ask(from: self)
             default: nori_ios_sync()
             }
             return

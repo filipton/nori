@@ -24,7 +24,8 @@ void nori_ios_free(char *s);
 /// One session report. `id` and `text` are valid only for the duration of the callback.
 /// `kind`: 1 state, 2 song, 3 looped, 4 position, 5 error, 6 output, 7 buffering, 8 stopped,
 /// 9 note, 10 reachable, 11 lyrics, 12 search, 13 title, 14 mixing, 15 bridge, 16 placed, 17 awake,
-/// 18 remote (the devices or the one playing changed), 19 volume (another device set it: `ms` thousandths).
+/// 18 remote (the devices, the one playing or the jam changed), 19 volume (another device set it: `ms`
+/// thousandths), 20 jam joined, 21 jam left (`nori_ios_jam_join`, `nori_ios_jam_leave`).
 /// `state`: 0 idle, 1 playing, 2 paused, 3 ended.
 typedef struct NoriReport {
     int32_t kind;
@@ -314,6 +315,27 @@ char *nori_ios_active(const char *data_dir);
 #define NORI_LOGIN_OTHER 11
 #define NORI_LOGIN_CLEARTEXT 12
 #define NORI_LOGIN_METERED 13
+
+/// What the open profile offers, as JSON to free, NULL with none: {asks, account, sections: [the library's
+/// sections, as the core's LibrarySection numbers, in order]}. A jam guest's asks the host for what it
+/// plays and has nothing of the account's.
+char *nori_ios_rules(void);
+/// The jam this iPod is a guest in, as JSON to free, NULL in none: {host, listeners: [names], asked: [song
+/// ids], asks: [{t, s, c}], listening: 0 only shown, 1 playing here, 2 the host lets no one, 3 the server
+/// lets no guest}. Its asks are its own requests the host has yet to take.
+char *nori_ios_jam(void);
+/// Joins the jam invite `link` is to, its guest profile named `name`. NORI_JOIN_STARTED: report 20 says
+/// how it went (flag 1 joined: open the active profile; flag 0: index a NORI_LOGIN_* code, text its
+/// detail).
+int32_t nori_ios_jam_join(const char *link, const char *name);
+#define NORI_JOIN_STARTED 0
+#define NORI_JOIN_NOT_AN_INVITE 1
+#define NORI_JOIN_CLOSED 2
+/// Leaves the jam; report 21 once the guest profile is dropped (flag 1: open the active profile, the
+/// user's own again; 0: none is saved).
+void nori_ios_jam_leave(void);
+/// Plays the jam here, in step with its host (1), or only shows it (0).
+void nori_ios_jam_listen(int32_t on);
 
 /// Pings the server and, when it answers, saves that profile as the active one. Does not open
 /// playback. `detail`, when not NULL, receives a string to free with `nori_ios_free`, or is set NULL.

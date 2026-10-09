@@ -358,6 +358,35 @@ enum Say {
     static let deviceIdle = "Not playing"
     static func playingOn(_ device: String) -> String { "Playing on \(device)" }
 
+    // Jams, from the desktop's words.rs (jam_*).
+    static let jamGuest = "Jam"
+    static let joinJam = "Join a Jam"
+    static let joinJamHow = "Paste the invite link the host sent you."
+    static let inviteLink = "Invite link"
+    static let join = "Join"
+    static let joining = "Joining…"
+    static let notAnInvite = "That is not a jam invite. Paste the whole link the host sent you."
+    static func jamJoinFailed(_ why: String) -> String { "Couldn't join the jam (\(why))" }
+    static let leaveJam = "Leave"
+    static let jamLeft = "You left the jam"
+    static let listenHere = "Listen Here"
+    static let playingHere = "Playing Here"
+    static let youAskedFor = "You Asked For"
+    static let asked = "Asked"
+    static func jamOf(_ host: String) -> String { "\(host)’s Jam" }
+    static func listening(_ n: Int) -> String { n == 0 ? "no one yet" : "\(n) listening" }
+    /// The jam on the player: "Jam · Desk · 2 listening".
+    static func jamStrip(_ host: String, _ n: Int) -> String { "Jam · \(host) · \(listening(n))" }
+    static func waitingFor(_ host: String) -> String { "Waiting for \(host)" }
+    /// Why a guest who asked to listen along does not, by `nori_ios_jam` listening code.
+    static func jamAlong(_ code: Int) -> String? {
+        switch code {
+        case 2: return "The host doesn't let guests listen along right now. You can still ask for songs."
+        case 3: return "This server doesn't let guests listen along. You can still ask for songs."
+        default: return nil
+        }
+    }
+
     /// A device's answer to the last thing asked of it, by `nori_ios_remote_devices` refusal code.
     static func refused(_ code: Int) -> String? {
         switch code {

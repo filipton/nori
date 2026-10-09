@@ -5,7 +5,9 @@ import UIKit
 
 /// The player card: cover, song, seek bar, previous / play / next, volume, then lyrics, output, devices
 /// (with remote control on) and queue. While another device plays, the card is that device's music and
-/// controls it, and "Playing on" its name stands where the volume was. Drag down to close.
+/// controls it, and "Playing on" its name stands where the volume was. A jam guest's is the jam's music,
+/// its host's to control: the jam's strip stands where the controls were and opens the queue, where the
+/// jam is. Drag down to close.
 final class PlayerCard: UIViewController {
     /// The cover's size on the card, which the lock screen's artwork shares.
     static let coverPoints: CGFloat = 272
@@ -26,6 +28,9 @@ final class PlayerCard: UIViewController {
     private let previous = UIButton(type: .system)
     private let play = UIButton(type: .system)
     private let nextButton = UIButton(type: .system)
+    private let transport = UIStackView()
+    /// A jam guest's: "Jam · Desk · 2 listening".
+    private let jamStrip = UIButton(type: .system)
     private let volume = MPVolumeView()
     private let playingOn = UIButton(type: .system)
     private let devices = UIButton(type: .system)
@@ -105,9 +110,15 @@ final class PlayerCard: UIViewController {
         play.addTarget(self, action: #selector(playTapped), for: .touchUpInside)
         nextButton.addTarget(self, action: #selector(nextTapped), for: .touchUpInside)
         // Three controls, as on Android: shuffle and repeat live in the queue.
-        let transport = UIStackView(arrangedSubviews: [previous, play, nextButton])
+        [previous, play, nextButton].forEach(transport.addArrangedSubview)
         transport.distribution = .equalSpacing
         transport.alignment = .center
+        jamStrip.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+        jamStrip.titleLabel?.adjustsFontSizeToFitWidth = true
+        jamStrip.tintColor = Theme.Card.label
+        jamStrip.addTarget(self, action: #selector(queueTapped), for: .touchUpInside)
+        let deck = UIStackView(arrangedSubviews: [transport, jamStrip])
+        deck.axis = .vertical
 
         volume.showsRouteButton = false
         volume.tintColor = Theme.Card.label
@@ -144,7 +155,7 @@ final class PlayerCard: UIViewController {
         // width (its 296 of 411 dp); the song and the seek bar run the full width.
         let block = min(230, UIScreen.main.bounds.width - 48)
         let column = UIStackView(arrangedSubviews: [songRow, seek, times,
-                                                    PlayerCard.centred(transport, block), PlayerCard.centred(level, block),
+                                                    PlayerCard.centred(deck, block), PlayerCard.centred(level, block),
                                                     PlayerCard.centred(bottom, block)])
         column.axis = .vertical
         column.spacing = 6
@@ -186,6 +197,7 @@ final class PlayerCard: UIViewController {
             heart.widthAnchor.constraint(equalToConstant: 36),
             more.widthAnchor.constraint(equalToConstant: 36),
             transport.heightAnchor.constraint(equalToConstant: 56),
+            jamStrip.heightAnchor.constraint(equalToConstant: 56),
             level.heightAnchor.constraint(equalToConstant: 30),
             route.widthAnchor.constraint(equalToConstant: 36),
             route.heightAnchor.constraint(equalToConstant: 36),
@@ -196,6 +208,7 @@ final class PlayerCard: UIViewController {
         closer = DragToClose(self, transition)
         NotificationCenter.default.addObserver(self, selector: #selector(changed), name: .noriNow, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(paintHeart), name: .noriFavorites, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(changed), name: .noriJam, object: nil)
         changed()
     }
 
@@ -219,6 +232,10 @@ final class PlayerCard: UIViewController {
         volume.isHidden = now.device != nil
         playingOn.isHidden = now.device == nil
         playingOn.setTitle(now.device.map(Say.playingOn), for: .normal)
+        transport.isHidden = now.jam
+        jamStrip.isHidden = !now.jam
+        jamStrip.setTitle(Core.shared.jam?.strip ?? Say.jamGuest, for: .normal)
+        seek.isUserInteractionEnabled = !now.jam
         guard let song = now.song else {
             songTitle.text = Say.nothingPlaying
             artist.text = ""
@@ -319,7 +336,7 @@ final class PlayerCard: UIViewController {
         heart.setImage(on ? Glyph.heartFilled : Glyph.heart, for: .normal)
         heart.accessibilityLabel = Say.favorite
         heart.accessibilityTraits = on ? [.button, .selected] : .button
-        heart.isHidden = song.external
+        heart.isHidden = song.external || !Core.shared.rules.account
     }
 
     @objc private func heartTapped() {

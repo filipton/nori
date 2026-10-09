@@ -23,6 +23,8 @@ serde_json = "1"
 
 [dev-dependencies]
 nori-testdir = { path = "../testdir" }
+# A jam guest's key, for a guest profile.
+nori-remote = { path = "../remote" }
 # The virtual clock the output's engine test runs on.
 nori-engine = { path = "../engine", features = ["core", "testing"] }
 nori-player = { path = "../player", features = ["synth"] }

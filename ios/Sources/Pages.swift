@@ -9,6 +9,8 @@ final class ItemCell: UITableViewCell {
     private let detail = UILabel()
     private let lit = UIView()
     private let mark = UIImageView(image: Glyph.smallHeart)
+    /// "Asked": a jam guest's request the host has yet to take.
+    private let asked = UILabel()
     private let bar = UIProgressView(progressViewStyle: .bar)
     private var coverWidth: NSLayoutConstraint!
 
@@ -34,9 +36,16 @@ final class ItemCell: UITableViewCell {
         text.spacing = 2
         mark.tintColor = Theme.secondary
         mark.setContentHuggingPriority(.required, for: .horizontal)
+        asked.text = Say.asked
+        asked.font = UIFont.preferredFont(forTextStyle: .caption1)
+        asked.adjustsFontForContentSizeCategory = true
+        asked.textColor = Theme.secondary
+        let trail = UIStackView(arrangedSubviews: [asked, mark])
+        trail.setContentHuggingPriority(.required, for: .horizontal)
+        trail.setContentCompressionResistancePriority(.required, for: .horizontal)
         bar.progressTintColor = Theme.label
         bar.trackTintColor = Theme.track
-        for v in [cover, number, text, lit, mark, bar] {
+        for v in [cover, number, text, lit, trail, bar] {
             v.translatesAutoresizingMaskIntoConstraints = false
             contentView.addSubview(v)
         }
@@ -50,14 +59,14 @@ final class ItemCell: UITableViewCell {
             number.widthAnchor.constraint(equalToConstant: 36),
             number.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             text.leadingAnchor.constraint(equalTo: cover.trailingAnchor, constant: 12),
-            text.trailingAnchor.constraint(equalTo: mark.leadingAnchor, constant: -8),
+            text.trailingAnchor.constraint(equalTo: trail.leadingAnchor, constant: -8),
             text.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             bar.leadingAnchor.constraint(equalTo: text.leadingAnchor),
             bar.trailingAnchor.constraint(equalTo: text.trailingAnchor),
             bar.topAnchor.constraint(equalTo: text.bottomAnchor, constant: 4),
             bar.heightAnchor.constraint(equalToConstant: 2),
-            mark.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
-            mark.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            trail.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
+            trail.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             lit.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 4),
             lit.widthAnchor.constraint(equalToConstant: 4),
             lit.heightAnchor.constraint(equalToConstant: 20),
@@ -97,7 +106,8 @@ final class ItemCell: UITableViewCell {
                                           colour: current ? Theme.accent : Theme.label)
         detail.attributedText = remoteText(line, remote: item.external && !line.isEmpty, font: detail.font, colour: Theme.secondary)
         lit.isHidden = !current
-        mark.isHidden = !(item.kind == "song" && Core.shared.isFavorite(item))
+        asked.isHidden = !Core.shared.isAsked(item)
+        mark.isHidden = !(item.kind == "song" && Core.shared.isFavorite(item)) || !asked.isHidden
         bar.isHidden = (item.progress?.percent ?? -1) < 0
         bar.progress = Float(max(0, item.progress?.percent ?? 0)) / 100
         detail.isHidden = line.isEmpty
@@ -564,7 +574,8 @@ final class PageHeader: UIView {
         let moreButton = PageHeader.circle(Glyph.more, Say.more)
         moreButton.addTarget(self, action: #selector(moreTapped), for: .touchUpInside)
         var row: [UIView] = [shuffleButton, playButton]
-        if (kind == "album" || kind == "artist") && !item.external {
+        // Hearts are the account's.
+        if (kind == "album" || kind == "artist") && !item.external && Core.shared.rules.account {
             PageHeader.round(heart)
             heart.accessibilityLabel = Say.favorite
             heart.addTarget(self, action: #selector(heartTapped), for: .touchUpInside)
@@ -735,6 +746,7 @@ class PageController: UITableViewController {
         NotificationCenter.default.addObserver(self, selector: #selector(reload), name: .noriOpened, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(nowChanged), name: .noriNow, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(paintVisibleRows), name: .noriFavorites, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(paintVisibleRows), name: .noriJam, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(reload), name: .noriDownloads, object: nil)
         tableView.sectionIndexColor = Theme.secondary
         tableView.sectionIndexBackgroundColor = .clear
@@ -986,8 +998,8 @@ class PageController: UITableViewController {
         paintVisibleRows()
     }
 
-    /// The visible song rows painted again in place (their playing mark and heart); a reload would close
-    /// a row swiped open.
+    /// The visible song rows painted again in place (their playing mark, heart and "Asked"); a reload would
+    /// close a row swiped open.
     @objc private func paintVisibleRows() {
         for path in tableView.indexPathsForVisibleRows ?? [] {
             guard rows.indices.contains(path.section), rows[path.section].layout == .list,
@@ -1191,7 +1203,7 @@ class PageController: UITableViewController {
                 PageController.add(entries, to: sheet) { act in
                     item.id.withCString { nori_ios_collection_download_act(kind, $0, act) }
                 }
-                if kind != NORI_PAGE_PLAYLIST && !item.external {
+                if kind != NORI_PAGE_PLAYLIST && !item.external && Core.shared.rules.account {
                     let on = Core.shared.isFavorite(item)
                     sheet.add(on ? Say.removeFromFavorites : Say.addToFavorites) {
                         Core.shared.favorite(item, !on)

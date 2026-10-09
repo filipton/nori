@@ -7,10 +7,11 @@
 //! `mod output` is the sound card. `mod session` is the one open `nori_host` session the controls call.
 //! `mod pages` reads pages, covers, lyrics and settings for the screens. `mod sound` is each output's
 //! sound and AutoEQ. `mod menu` is the song menu, playlists and the sleep timer. `mod remote` is remote
-//! control: Bonjour and the devices the music can move to. `mod account` saves
-//! servers.
+//! control: Bonjour and the devices the music can move to. `mod jam` is a jam this iPod is a guest
+//! in. `mod account` saves servers.
 
 mod account;
+mod jam;
 mod lyrics;
 mod menu;
 mod output;

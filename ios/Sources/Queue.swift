@@ -3,7 +3,9 @@ import UIKit
 /// The queue, from the player: the song playing at the top as it opens, what has played above it under
 /// "History", what plays next under "Playing next". Shuffle and repeat stay pinned beside the title.
 /// Hold a row and drag to move it (when the play order is the list's), swipe to remove, tap to play.
-/// The rows, their order and what may move or go are the core's (`queue_rows`).
+/// The rows, their order and what may move or go are the core's (`queue_rows`). A jam guest's is the
+/// host's queue, read only, under the jam: its host and listeners, Listen Here, Leave, and the songs it
+/// asked for.
 final class QueueSheet: UIViewController, UITableViewDataSource, UITableViewDelegate,
     UITableViewDragDelegate, UITableViewDropDelegate {
     let transition = CardTransition()
@@ -24,11 +26,16 @@ final class QueueSheet: UIViewController, UITableViewDataSource, UITableViewDele
     private var kept: Set<Int> = []
     /// Another device's queue, mirrored: a tap plays there, nothing is edited from here.
     private var mirrored = false
+    /// The jam this iPod is a guest in, over its host's queue.
+    private var jam: Jam?
     private var opened = false
     /// What the queue was when last read: a new read only when it changes, not at every position tick.
     private var seen = ""
 
-    private enum Part: Int, CaseIterable { case history, now, next }
+    private enum Part: Int, CaseIterable { case jam, asked, history, now, next }
+
+    /// The jam part's rows.
+    private enum JamRow: Int, CaseIterable { case people, listen, leave }
 
     init() {
         super.init(nibName: nil, bundle: nil)
@@ -131,7 +138,13 @@ final class QueueSheet: UIViewController, UITableViewDataSource, UITableViewDele
             return pan.location(in: self.view).y < self.table.frame.minY
         }
         NotificationCenter.default.addObserver(self, selector: #selector(changed), name: .noriNow, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(jamChanged), name: .noriJam, object: nil)
         paintToggles()
+        read()
+    }
+
+    /// The jam changed, and with what its host took, its queue.
+    @objc private func jamChanged() {
         read()
     }
 
@@ -155,6 +168,9 @@ final class QueueSheet: UIViewController, UITableViewDataSource, UITableViewDele
 
     private func paintToggles() {
         let n = Core.shared.now
+        // A jam's play order is its host's.
+        shuffle.isHidden = n.jam
+        repeatButton.isHidden = n.jam
         shuffle.tintColor = n.shuffle ? Theme.Card.label : Theme.Card.dim
         repeatButton.tintColor = n.repeatMode == 0 ? Theme.Card.dim : Theme.Card.label
         repeatButton.setImage(n.repeatMode == 1 ? Glyph.repeatOne : Glyph.repeatAll, for: .normal)
@@ -177,6 +193,7 @@ final class QueueSheet: UIViewController, UITableViewDataSource, UITableViewDele
         reorderable = a.head["reorderable"] as? Bool ?? false
         kept = Set(a.head["kept"] as? [Int] ?? [])
         mirrored = a.head["remote"] as? Bool ?? false
+        jam = a.head["jam"] as? Bool == true ? Core.shared.jam : nil
         table.reloadData()
         // Opens on the song playing, what has played above it out of sight.
         if !opened, !now.isEmpty {
@@ -187,6 +204,8 @@ final class QueueSheet: UIViewController, UITableViewDataSource, UITableViewDele
 
     private func items(_ section: Int) -> [Item] {
         switch Part(rawValue: section) {
+        case .jam: return []
+        case .asked: return jam?.asks ?? []
         case .history: return history
         case .now: return now
         default: return upcoming
@@ -213,10 +232,13 @@ final class QueueSheet: UIViewController, UITableViewDataSource, UITableViewDele
 
     func numberOfSections(in tableView: UITableView) -> Int { Part.allCases.count }
 
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { items(section).count }
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        Part(rawValue: section) == .jam ? (jam == nil ? 0 : JamRow.allCases.count) : items(section).count
+    }
 
     func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
         switch Part(rawValue: section) {
+        case .asked: return items(section).isEmpty ? 0 : 44
         case .history: return history.isEmpty ? 0 : 36
         case .next: return upcoming.isEmpty ? 0 : 44
         default: return 0
@@ -225,11 +247,11 @@ final class QueueSheet: UIViewController, UITableViewDataSource, UITableViewDele
 
     func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
         let part = Part(rawValue: section)
-        guard part != .now, !items(section).isEmpty else { return nil }
+        guard part != .now, part != .jam, !items(section).isEmpty else { return nil }
         let header = UIView()
         header.backgroundColor = Theme.Card.background
         let label = UILabel()
-        label.text = part == .history ? Say.history : Say.upNext
+        label.text = part == .asked ? Say.youAskedFor : part == .history ? Say.history : Say.upNext
         label.font = UIFont.systemFont(ofSize: 17, weight: .semibold)
         label.textColor = Theme.Card.label
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -254,19 +276,70 @@ final class QueueSheet: UIViewController, UITableViewDataSource, UITableViewDele
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: QueueCell.id, for: indexPath) as! QueueCell
         let part = Part(rawValue: indexPath.section)
-        cell.show(items(indexPath.section)[indexPath.row], played: part == .history, playing: part == .now,
-                  movable: part == .next && reorderable)
+        if part == .jam, let jam {
+            return jamCell(tableView, JamRow(rawValue: indexPath.row) ?? .people, jam)
+        }
+        let cell = tableView.dequeueReusableCell(withIdentifier: QueueCell.id, for: indexPath) as! QueueCell
+        let item = items(indexPath.section)[indexPath.row]
+        if part == .asked {
+            cell.show(item, played: false, playing: false, movable: false, note: Say.waitingFor(jam?.host ?? ""))
+        } else {
+            cell.show(item, played: part == .history, playing: part == .now, movable: part == .next && reorderable)
+        }
         return cell
+    }
+
+    /// The jam's rows: its host and who listens, Listen Here (and why it does not play), Leave.
+    private func jamCell(_ tableView: UITableView, _ row: JamRow, _ jam: Jam) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "jam") ?? UITableViewCell(style: .subtitle, reuseIdentifier: "jam")
+        cell.backgroundColor = Theme.Card.background
+        cell.selectionStyle = .none
+        cell.accessoryView = nil
+        cell.textLabel?.textColor = Theme.Card.label
+        cell.textLabel?.font = UIFont.systemFont(ofSize: 17, weight: .regular)
+        cell.detailTextLabel?.textColor = Theme.Card.secondary
+        cell.detailTextLabel?.font = UIFont.preferredFont(forTextStyle: .footnote)
+        cell.detailTextLabel?.numberOfLines = 0
+        switch row {
+        case .people:
+            cell.textLabel?.text = Say.jamOf(jam.host)
+            cell.textLabel?.font = UIFont.systemFont(ofSize: 17, weight: .semibold)
+            cell.detailTextLabel?.text = ([Say.listening(jam.listeners.count)] + jam.listeners).joined(separator: " · ")
+        case .listen:
+            cell.textLabel?.text = jam.listening == 1 ? Say.playingHere : Say.listenHere
+            cell.detailTextLabel?.text = Say.jamAlong(jam.listening)
+            let toggle = UISwitch()
+            toggle.isOn = jam.listening != 0
+            toggle.onTintColor = Theme.switchOn
+            toggle.addTarget(self, action: #selector(listenSwitched(_:)), for: .valueChanged)
+            cell.accessoryView = toggle
+        case .leave:
+            cell.textLabel?.text = Say.leaveJam
+            cell.textLabel?.textColor = .systemRed
+            cell.detailTextLabel?.text = nil
+            cell.selectionStyle = .default
+        }
+        return cell
+    }
+
+    @objc private func listenSwitched(_ s: UISwitch) {
+        nori_ios_jam_listen(s.isOn ? 1 : 0)
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
+        if Part(rawValue: indexPath.section) == .jam, JamRow(rawValue: indexPath.row) == .leave {
+            nori_ios_jam_leave()
+            return dismiss(animated: true)
+        }
+        // The jam's rows, its requests and its host's queue: nothing a guest plays.
+        guard jam == nil else { return }
         _ = nori_ios_play_at(Int32(items(indexPath.section)[indexPath.row].index), 0)
     }
 
     func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        guard let part = Part(rawValue: indexPath.section), [.history, .now, .next].contains(part), jam == nil else { return nil }
         let item = items(indexPath.section)[indexPath.row]
         guard !kept.contains(item.index) else { return nil }
         let remove = UIContextualAction(style: .destructive, title: Say.remove) { [weak self] _, _, done in
@@ -374,10 +447,11 @@ final class QueueCell: UITableViewCell {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func show(_ item: Item, played: Bool, playing: Bool, movable: Bool) {
+    /// `note` in place of the artist; who asked for a jam's song after it.
+    func show(_ item: Item, played: Bool, playing: Bool, movable: Bool, note: String? = nil) {
         cover.show(item.cover, points: 44)
         title.text = item.title.isEmpty ? item.id : item.title
-        detail.text = item.subtitle
+        detail.text = note ?? ([item.subtitle, item.by].filter { !$0.isEmpty }.joined(separator: " · "))
         title.font = UIFont.systemFont(ofSize: 17, weight: playing ? .semibold : .regular)
         title.textColor = Theme.Card.label.withAlphaComponent(played ? 0.45 : 1)
         detail.textColor = Theme.Card.secondary.withAlphaComponent(played ? 0.6 : 1)

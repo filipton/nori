@@ -261,9 +261,16 @@ the battery gauge before deciding (section 8); v1 ships without it.
   `outputLatency`. The remote clock is CLOCK_MONOTONIC_RAW (`mach_continuous_time`), which runs on while
   the iPod sleeps. A volume set from another device moves the system volume through an `MPVolumeView`
   slider; the system's own keys reach the other devices through `nori_ios_volume`. While another device
-  plays, the player, the queue sheet and the lock screen are its music and control it. The iPod is not a
-  jam host or guest. Paused in the background, iOS suspends the app and its door with it: another device
-  reaches it again once it plays or is opened.
+  plays, the player, the queue sheet and the lock screen are its music and control it. Paused in the
+  background, iOS suspends the app and its door with it: another device reaches it again once it plays or
+  is opened.
+- Jams: the iPod is a guest, not a host. "Join a Jam" (Settings, or the end of "Play on") takes the
+  invite link, as does a `nori://jam` link opened from the relay's invite page; the guest profile opens
+  in place of the user's own (`nori_host::jam_joined`), which Leave in the queue sheet opens again. A
+  guest's app is the normal one over the host's library as `ProfileRules` say (`nori_ios_rules`: no
+  settings tab, hearts, playlists or downloads); a tap or Play next asks the host, the song marked Asked
+  until it is taken. The player card is the jam's music, its strip where the controls were; Listen Here
+  in the queue sheet plays it along through the engine's follow path, on the same AURemoteIO.
 
 ### 5.5 What the engine already gives this device
 

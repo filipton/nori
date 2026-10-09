@@ -380,9 +380,12 @@ fn read(token: u64, kind: i32, arg: String) {
     };
     match kind {
         PAGE_HOME => {
+            // The mixes, the favourites and the playlists are the account's: a jam guest's Home is the
+            // host's album shelves.
+            let account = core.rules().account;
             let taste = core.session.settings.prefs(|p| p.taste_model);
             let mixes = |core: &nori_core::Core| {
-                section("mixes", true, core.mix_cards(taste).iter().map(mix_json).collect())
+                section("mixes", true, if account { core.mix_cards(taste).iter().map(mix_json).collect() } else { Vec::new() })
             };
             let mut rows: Vec<Value> = SHELVES
                 .iter()
@@ -392,6 +395,9 @@ fn read(token: u64, kind: i32, arg: String) {
             rows[0] = mixes(&core);
             let mut any = false;
             for (i, key) in SHELVES.iter().enumerate().skip(1) {
+                if !account && matches!(*key, "starred" | "playlists") {
+                    continue;
+                }
                 let read = match *key {
                     "starred" => Read::FavouriteAlbums { size: SHELF },
                     "playlists" => Read::PlaylistList,
@@ -422,8 +428,10 @@ fn read(token: u64, kind: i32, arg: String) {
                     }
                 }
             }
-            refresh_favourites(&client, stored);
-            nori_core::transport::block_on(client.mix_warm_all());
+            if account {
+                refresh_favourites(&client, stored);
+                nori_core::transport::block_on(client.mix_warm_all());
+            }
             if let Some(tiles) = tiles_again(&rows[0], mixes(&core), any) {
                 rows[0] = tiles;
                 send(token, &json!({ "sections": rows }));
@@ -540,7 +548,7 @@ fn read(token: u64, kind: i32, arg: String) {
         PAGE_SONGS => {
             let offset = arg.parse().unwrap_or(0);
             let sort = song_sort_saved(list_prefs());
-            match core.songs_page(sort.clone(), false, 0, 0, offset) {
+            match nori_core::transport::block_on(client.songs_listed(sort.clone(), false, 0, 0, offset)) {
                 Ok(p) => {
                     let mut songs = if offset == 0 {
                         Vec::new()
@@ -561,7 +569,7 @@ fn read(token: u64, kind: i32, arg: String) {
                     keep_list(token, songs, None);
                     send(token, &v);
                 }
-                Err(e) => send(token, &json!({ "error": crate::account::LOGIN_DATABASE, "detail": e.to_string() })),
+                Err(e) => send_error(token, &e),
             }
         }
         PAGE_DOWNLOADS => {
@@ -666,6 +674,9 @@ fn queue_json(s: &nori_host::session::Session) -> Value {
     if let Some(e) = s.elsewhere() {
         return mirrored_queue_json(&e.mirror);
     }
+    if s.guest {
+        return jam_queue_json(s);
+    }
     let q = &s.core.session;
     let (ids, current, repeat, lit) =
         q.playlist(|p| (p.ids().to_vec(), p.current(), p.repeat(), p.lit()));
@@ -727,11 +738,37 @@ fn mirrored_queue_json(m: &Mirror) -> Value {
     })
 }
 
-/// What plays now, for the mini player, the card and the lock screen: this iPod's, or the device's it
-/// mirrors (`device` its name). `remote`: remote control is on.
+/// A jam guest's queue: the host's, read only, each song with who asked for it (`by`) where someone did,
+/// and `jam` in its head.
+fn jam_queue_json(s: &nori_host::session::Session) -> Value {
+    let Some(e) = s.jam_playing() else {
+        return json!({ "head": { "cur": -1, "kept": [], "remote": true, "jam": true }, "sections": [] });
+    };
+    let added = s.remote().map(|r| r.jam_added()).unwrap_or_default();
+    let mut v = mirrored_queue_json(&e.mirror);
+    v["head"]["jam"] = json!(true);
+    for section in v["sections"].as_array_mut().into_iter().flatten() {
+        for row in section["items"].as_array_mut().into_iter().flatten() {
+            if let Some(by) = row["id"].as_str().and_then(|id| added.get(id)) {
+                row["by"] = json!(by);
+            }
+        }
+    }
+    v
+}
+
+/// What plays now, for the mini player, the card and the lock screen: this iPod's, the device's it
+/// mirrors (`device` its name), or for a jam guest the jam's (`jam`). `remote`: remote control is on.
 fn now_json(s: &nori_host::session::Session) -> Value {
     if let Some(e) = s.elsewhere() {
         return mirrored_now_json(&e);
+    }
+    if s.guest {
+        let mut v = s.jam_playing().map_or_else(|| json!({ "state": 0, "index": -1, "ms": 0 }), |e| mirrored_now_json(&e));
+        v["jam"] = json!(true);
+        v["remote"] = json!(false);
+        v.as_object_mut().map(|o| o.remove("device"));
+        return v;
     }
     let st = s.engine.status();
     let (repeat, lit, len) = s
@@ -869,8 +906,11 @@ fn download_states(s: &nori_host::session::Session, songs: &[Song]) -> Vec<(bool
 }
 
 /// `songs`' download entries (`menus::download_entries`): `[{act, n}]`, `act` 0 download all, 1 download
-/// the `n` missing, 2 remove the `n` downloaded.
+/// the `n` missing, 2 remove the `n` downloaded. None where downloads are not the profile's (a jam guest's).
 fn entries_of(s: &nori_host::session::Session, songs: &[Song]) -> Value {
+    if !s.rules.account {
+        return json!([]);
+    }
     let states = download_states(s, songs);
     let missing = states.iter().filter(|(here, _)| !here).count();
     let done = states.iter().filter(|(_, done)| *done).count();

@@ -54,6 +54,12 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         })
     }
 
+    /// A nori://jam invite opened from elsewhere (the relay's invite page): joins its jam.
+    func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
+        JamJoin.join(url.absoluteString)
+        return true
+    }
+
     func applicationDidEnterBackground(_ application: UIApplication) {
         nori_ios_background()
     }

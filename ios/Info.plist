@@ -25,6 +25,17 @@
 			</array>
 		</dict>
 	</dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>dev.nori.music.jam</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>nori</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleName</key>
 	<string>nori</string>
 	<key>CFBundlePackageType</key>

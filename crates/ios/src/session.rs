@@ -17,6 +17,9 @@ use nori_http::Http;
 /// How much decoded audio the engine may hold. The iPod has 1 GB.
 const MEMORY_MB: u32 = 96;
 
+/// This iPod, as the account's other devices and a jam list it.
+pub(crate) const DEVICE_NAME: &str = "iPod touch";
+
 /// [`Report::kind`]: the engine's state changed. [`Report::state`] is a [`STATE_IDLE`] value.
 pub const REPORT_STATE: i32 = 1;
 /// The audible song changed. [`Report::id`] is the song, [`Report::index`] its place, [`Report::jumps`]
@@ -56,6 +59,11 @@ pub const REPORT_AWAKE: i32 = 17;
 pub const REPORT_REMOTE: i32 = 18;
 /// Another device set the volume; the app sets the system's. [`Report::ms`] is it in thousandths.
 pub const REPORT_VOLUME: i32 = 19;
+/// A jam joined (`flag` 1: the guest profile is the active one, to open) or not (`flag` 0: [`Report::index`]
+/// is why, a `NORI_LOGIN_*` code, [`Report::text`] its detail).
+pub const REPORT_JAM_JOINED: i32 = 20;
+/// The jam left: `flag` 1 when the profile to go back to is the active one (to open), 0 when there is none.
+pub const REPORT_JAM_LEFT: i32 = 21;
 
 pub const STATE_IDLE: i32 = 0;
 pub const STATE_PLAYING: i32 = 1;
@@ -140,9 +148,18 @@ fn deliver_one(said: Said) {
 }
 
 fn emit(said: &Said) {
+    emit_packed(pack(said));
+}
+
+/// A report of the app's own (a jam joined or left), from any thread: `flag`, `index` and `text` as its
+/// kind says.
+pub(crate) fn report(kind: i32, flag: i32, index: i32, text: &str) {
+    emit_packed(Packed { kind, state: 0, index, ms: 0, jumps: 0, flag, id: c(""), text: c(text) });
+}
+
+fn emit_packed(packed: Packed) {
     let cb = *HOOK.lock().unwrap_or_else(|e| e.into_inner());
     let Some(cb) = cb else { return };
-    let packed = pack(said);
     let report = Report {
         kind: packed.kind,
         state: packed.state,
@@ -444,7 +461,7 @@ fn start_queue(
         covers: true,
         offline,
         mpris: None,
-        device: nori_core::remote::RemoteMe { name: "iPod touch".into(), kind: nori_core::remote::wire::DeviceKind::Phone },
+        device: nori_core::remote::RemoteMe { name: DEVICE_NAME.into(), kind: nori_core::remote::wire::DeviceKind::Phone },
         discovery,
         out,
     })?;
@@ -589,12 +606,14 @@ pub unsafe extern "C" fn nori_ios_reopen(data_dir: *const c_char) -> *mut c_char
 #[no_mangle]
 pub extern "C" fn nori_ios_play_at(index: i32, ms: i64) -> u64 {
     let index = index.max(0) as usize;
-    with_session(|s| match s.elsewhere() {
-        Some(_) => {
+    // A jam guest's queue is its host's, which it plays nothing of.
+    with_session(|s| {
+        if s.elsewhere().is_some() || s.guest {
             s.jump(index);
             0
+        } else {
+            s.engine.play_at(index, ms)
         }
-        None => s.engine.play_at(index, ms),
     })
     .unwrap_or(0)
 }
@@ -715,6 +734,7 @@ mod tests {
     struct Rec {
         kind: i32,
         state: i32,
+        flag: i32,
         index: i32,
         ms: i64,
         id: String,
@@ -728,6 +748,7 @@ mod tests {
         let rec = Rec {
             kind: r.kind,
             state: r.state,
+            flag: r.flag,
             index: r.index,
             ms: r.ms,
             id: copy_c(r.id),
@@ -1014,6 +1035,54 @@ mod tests {
         let reopened = super::held().unwrap();
         let s = reopened.session.lock().unwrap();
         assert_eq!(s.core.load_queue().unwrap().songs.len(), ids.len());
+    }
+
+    /// A jam guest's session: the host's library, nothing of the account's, a tap on the queue playing
+    /// nothing here; leaving drops the guest profile for the user's own, and a join that cannot reach the
+    /// server says why.
+    #[test]
+    fn a_jam_guest_plays_nothing_itself_and_leaves_for_its_own_profile() {
+        use super::{REPORT_JAM_JOINED, REPORT_JAM_LEFT};
+        let _one = one_session();
+        hear_reports();
+        let dir = nori_testdir::TempDir::new("ios-jam");
+        let _close = Close;
+        let queue = std::sync::Arc::new(nori_core::queue::Session::new(nori_core::settings_store::Settings::new()));
+        let mut prefs = queue.settings.open(&nori_host::db_path(dir.path())).unwrap();
+        prefs.servers = vec![profile()];
+        prefs.active_server_id = "test".into();
+        queue.settings.put(prefs);
+        let pass = nori_core::remote::JamPass { url: "http://127.0.0.1:9".into(), api_key: nori_remote::guest_key("k") };
+        let guest = nori_host::jam_joined(&queue.settings, pass, "Jam");
+        nori_core::background::flush();
+        super::start_queue(dir.path(), queue.clone(), guest, Box::new(WavOutput::new(dir.path().join("heard.wav"), 2.0)), true, None).unwrap();
+
+        let json = |p: *mut std::ffi::c_char| -> serde_json::Value {
+            let v = serde_json::from_str(unsafe { CStr::from_ptr(p) }.to_str().unwrap()).unwrap();
+            unsafe { crate::nori_ios_free(p) };
+            v
+        };
+        let rules = json(crate::jam::nori_ios_rules());
+        assert_eq!((rules["asks"].as_bool(), rules["account"].as_bool()), (Some(true), Some(false)));
+        let now = json(crate::pages::nori_ios_now());
+        assert_eq!((now["jam"].as_bool(), now["remote"].as_bool(), now.get("device")), (Some(true), Some(false), None), "{now}");
+        assert_eq!(super::nori_ios_play_at(0, 0), 0, "the host's queue plays nothing here");
+
+        let link = CString::new("http://127.0.0.1:9/nori/jam#s=http%3A%2F%2F127.0.0.1%3A9&k=abc").unwrap();
+        let name = CString::new("Jam").unwrap();
+        let nope = CString::new("hello").unwrap();
+        assert_eq!(unsafe { crate::jam::nori_ios_jam_join(nope.as_ptr(), name.as_ptr()) }, crate::jam::JOIN_NOT_AN_INVITE);
+        let at = mark();
+        assert_eq!(unsafe { crate::jam::nori_ios_jam_join(link.as_ptr(), name.as_ptr()) }, crate::jam::JOIN_STARTED);
+        let joined = wait_new(at, |r| r.kind == REPORT_JAM_JOINED);
+        assert_eq!((joined.flag, joined.index), (0, crate::account::LOGIN_UNREACHABLE), "{joined:?}");
+
+        let at = mark();
+        crate::jam::nori_ios_jam_leave();
+        assert_eq!(wait_new(at, |r| r.kind == REPORT_JAM_LEFT).flag, 1);
+        let p = queue.settings.current().unwrap();
+        let ids: Vec<&str> = p.servers.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!((ids, p.active_server_id.as_str()), (vec!["test"], "test"), "the user's own again");
     }
 
     /// What the iPod's remote asked Bonjour to announce.
