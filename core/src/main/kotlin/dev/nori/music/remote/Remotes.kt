@@ -78,9 +78,14 @@ class Remotes(private val context: Context, private val nori: Nori) {
 
     /**
      * The playback service's: the queue the core set for a jam guest listening along (its host's songs)
-     * becomes the player's.
+     * becomes the player's; `true` when the listening just began, and the player starts.
      */
-    @Volatile var onGuestQueue: (() -> Unit)? = null
+    @Volatile var onGuestQueue: ((Boolean) -> Unit)? = null
+        set(f) {
+            field = f
+            // A service come up after the listening began takes the queue now.
+            if (f != null) work { guestQueue = null; jamNow() }
+        }
     /** The queue's songs the player was last given for listening along. */
     private var guestQueue: List<String>? = null
 
@@ -141,8 +146,11 @@ class Remotes(private val context: Context, private val nori: Nori) {
         val relay = r?.relay() ?: RelaySupport.UNKNOWN
         main.post { _jam.value = j; _jamAdded.value = added; _jamPlaying.value = playing; _relay.value = relay }
         if (j?.listening == dev.nori.music.ffi.Listening.PLAYING) {
-            val ids = runCatching { nori.core.loadQueue()?.songs?.map { it.id } }.getOrNull()
-            if (ids != null && ids != guestQueue) { guestQueue = ids; main.post { onGuestQueue?.invoke() } }
+            // The queue as the follower set it in the session, not as last saved.
+            val ids = nori.session.playlistNow().songs.map { it.id }
+            val began = guestQueue == null
+            val take = onGuestQueue
+            if (ids.isNotEmpty() && ids != guestQueue && take != null) { guestQueue = ids; main.post { take(began) } }
         } else {
             guestQueue = null
         }
@@ -271,7 +279,8 @@ class Remotes(private val context: Context, private val nori: Nori) {
      * playback service starts for it.
      */
     fun listen(on: Boolean) {
-        if (on) main.post { nori.player.listenAlong() }
+        // The service up: it takes the host's songs as its player's and plays (onGuestQueue).
+        if (on) main.post { nori.player.connected {} }
         work { current()?.listen(on) }
     }
 

@@ -256,11 +256,7 @@ class PlaybackService : MediaLibraryService() {
             .apply { open?.let(::setSessionActivity) }.build()
         // The notification and the lock screen carry the app's own mark, not media3's stock play circle.
         // Its id stays media3's default (1001): the download notification lives on 2001 so the two never replace each other.
-        setMediaNotificationProvider(
-            androidx.media3.session.DefaultMediaNotificationProvider.Builder(this)
-                .setNotificationId(androidx.media3.session.DefaultMediaNotificationProvider.DEFAULT_NOTIFICATION_ID).build()
-                .apply { setSmallIcon(dev.nori.music.core.R.drawable.ic_notification) },
-        )
+        setMediaNotificationProvider(JamNotification(this).apply { setSmallIcon(dev.nori.music.core.R.drawable.ic_notification) })
         // A heart changed anywhere in the app (or by the notification itself) redraws the notification's heart.
         // A StateFlow: it emits only on a change, so this is idle while music plays untouched.
         scope.launch { nori.library.starMarks.collect { refreshButtons() } }
@@ -775,12 +771,21 @@ class PlaybackService : MediaLibraryService() {
         controls.setMediaItems(startedFrom(held(q.songs), q.origin), q.index.toInt(), q.positionMs.toLong())
     }
 
-    /** A jam guest listening along: the host's songs the core queued become the player's, which plays (the engine follows the host). */
-    private fun guestQueue() = scope.launch {
-        val q = withContext(Dispatchers.IO) { runCatching { nori.core.loadQueue() }.getOrNull() } ?: return@launch
-        controls.setMediaItems(held(q.songs), q.index.toInt(), q.positionMs.toLong())
-        if (controls.playbackState == Player.STATE_IDLE) controls.prepare()
-        controls.play()
+    /**
+     * A jam guest listening along: the host's songs its follower queued in the core become the player's
+     * (straight, not through [controls], whose controls the guest's role routes), each saying whose jam it
+     * is under the song. As the listening [began] the player plays: the engine follows the host, and the
+     * session, the notification and the lock screen show it as any music playing here.
+     */
+    private fun guestQueue(began: Boolean) {
+        val q = nori.session.playlistNow()
+        if (q.songs.isEmpty()) return
+        val host = nori.remotes.jam.value?.members?.firstOrNull { it.role == dev.nori.music.ffi.remote.Role.HOST }?.name
+        val jam = host?.let { getString(R.string.jam_sub, it) }
+        player.setMediaItems(held(q.songs).map { it.inJam(jam) }, q.index.toInt(), C.TIME_UNSET)
+        if (!began) return
+        if (player.playbackState == Player.STATE_IDLE) player.prepare()
+        player.play()
     }
 
     /** Songs as the player's items, handed to the core in one call (see MediaItems.toMediaItems). */
@@ -1088,4 +1093,19 @@ interface PlaybackObserver {
 internal object LongPause {
     fun arms(isPlaying: Boolean, playWhenReady: Boolean, state: Int): Boolean = !isPlaying && releases(playWhenReady, state)
     fun releases(playWhenReady: Boolean, state: Int): Boolean = !playWhenReady && state != Player.STATE_IDLE
+}
+
+/** media3's notification, a jam's song saying whose jam it is beside the app's name ([inJam]). */
+@UnstableApi
+private class JamNotification(context: android.content.Context) : androidx.media3.session.DefaultMediaNotificationProvider(
+    context, { androidx.media3.session.DefaultMediaNotificationProvider.DEFAULT_NOTIFICATION_ID },
+    androidx.media3.session.DefaultMediaNotificationProvider.DEFAULT_CHANNEL_ID, androidx.media3.session.DefaultMediaNotificationProvider.DEFAULT_CHANNEL_NAME_RESOURCE_ID,
+) {
+    override fun addNotificationActions(
+        mediaSession: MediaSession, mediaButtons: ImmutableList<CommandButton>, builder: androidx.core.app.NotificationCompat.Builder,
+        actionFactory: androidx.media3.session.MediaNotification.ActionFactory,
+    ): IntArray {
+        builder.setSubText(mediaSession.player.currentMediaItem?.mediaMetadata?.subtitle)
+        return super.addNotificationActions(mediaSession, mediaButtons, builder, actionFactory)
+    }
 }

@@ -60,6 +60,8 @@
     <string name="playback_error_output">The audio output would not open</string>
     <string name="playback_error_other">This song would not play</string>
     <string name="radio_artist">Radio</string>
+    <!-- Under a jam's song in the notification: whose jam it is. -->
+    <string name="jam_sub">Jam · %1$s</string>
     <!-- A USB DAC that gives no name of its own. -->
     <string name="dac_unnamed">USB DAC</string>
     <string name="session_add_favourite">Add to favorites</string>
