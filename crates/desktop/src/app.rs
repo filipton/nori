@@ -1633,7 +1633,7 @@ impl App {
         let jams = guest || crate::session::app().settings.prefs(|p| p.jam);
         let remote = self.session.as_ref().and_then(|s| s.remote()).filter(|_| jams);
         let unsupported = remote.as_ref().is_some_and(|r| r.relay() == nori_core::remote::RelaySupport::Unsupported);
-        let view = remote.as_ref().and_then(|r| r.jam_view()).filter(|v| v.hosting || guest);
+        let view = remote.as_ref().and_then(|r| r.jam_view());
         g.set_on(remote.is_some() && !unsupported && !guest);
         g.set_guest(guest);
         g.set_note(if unsupported && !guest { words::JAM_UNSUPPORTED.into() } else { "".into() });

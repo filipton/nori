@@ -374,7 +374,7 @@ impl Runner {
             let names = nori_core::remote::device_names(d.list.clone(), r.me(), crate::text::kind_words());
             d.list.iter_mut().zip(names).for_each(|(x, name)| x.name = name);
         }
-        let jam = remote.as_ref().filter(|_| jams).and_then(|r| r.jam_view().filter(|v| v.hosting || guest).map(|v| (v, r.jam_added())));
+        let jam = remote.as_ref().filter(|_| jams).and_then(|r| r.jam_view().map(|v| (v, r.jam_added())));
         (d.jam, d.added) = jam.map_or_else(Default::default, |(v, added)| (Some(v), added));
         let e = if guest { s.jam_playing() } else { s.elsewhere() };
         d.controls = e.as_ref().filter(|_| guest).and_then(|e| e.jam_controls());

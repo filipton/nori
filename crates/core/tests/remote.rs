@@ -99,6 +99,8 @@ struct Relay {
     time: std::sync::atomic::AtomicBool,
     /// The lagging device's answers to time exchanges reach the relay this late, ms (0: as its other sends).
     answers_late: AtomicU64,
+    /// Closing a jam goes unanswered: the request is lost on the way.
+    lose_closes: std::sync::atomic::AtomicBool,
     /// Opening a jam takes a while, each one asked a little less than the one before, so their answers
     /// come back in the reverse order.
     opens_late: std::sync::atomic::AtomicBool,
@@ -136,7 +138,7 @@ const GUEST_ENDPOINTS: &[&str] = &["ping", "search3", "getCoverArt", "getSong", 
 
 impl Relay {
     fn new() -> Arc<Relay> {
-        Arc::new(Relay { hub: Mutex::default(), waiting: Mutex::default(), next: AtomicU64::new(1), absent: Default::default(), lagging: Mutex::new(None), lagged: AtomicU64::new(0), door_late: Default::default(), leave_late: Default::default(), down: Default::default(), along: std::sync::atomic::AtomicBool::new(true), time: Default::default(), answers_late: AtomicU64::new(0), opens_late: Default::default(), opens: AtomicU64::new(0) })
+        Arc::new(Relay { hub: Mutex::default(), waiting: Mutex::default(), next: AtomicU64::new(1), absent: Default::default(), lagging: Mutex::new(None), lagged: AtomicU64::new(0), door_late: Default::default(), leave_late: Default::default(), down: Default::default(), along: std::sync::atomic::AtomicBool::new(true), time: Default::default(), answers_late: AtomicU64::new(0), lose_closes: Default::default(), opens_late: Default::default(), opens: AtomicU64::new(0) })
     }
 
     fn absent() -> Arc<Relay> {
@@ -421,6 +423,10 @@ impl Transport for Relay {
         };
         let (endpoint, query) = rest.split_once('?').unwrap_or((rest, ""));
         let params: HashMap<String, String> = query.split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), decode(v))).collect();
+        if endpoint == "noriRemote.close" && self.lose_closes.load(Ordering::Relaxed) {
+            self.hub.lock().asked.push("lost close".into());
+            return unreachable();
+        }
         if endpoint == "noriRemote.open" && self.opens_late.load(Ordering::Relaxed) {
             let k = self.opens.fetch_add(1, Ordering::Relaxed);
             self.hub.lock().asked.push("open waits".into());
@@ -1604,6 +1610,29 @@ fn a_device_knows_its_own_jams_invite() {
     assert!(!host.remote.hosts_invite(desks));
     host.remote.clone().jam_close();
     assert!(!host.remote.hosts_invite(link));
+    relay.close();
+}
+
+/// A jam whose close did not reach the relay is still listed in this device's polls: it is closed again,
+/// never shown as a jam this device is in.
+#[test]
+fn a_jam_ended_while_the_relay_missed_it_is_closed_again() {
+    let relay = Relay::new();
+    let host = Device::account(&relay, DeviceKind::Phone, "Host");
+    let desk = Device::account(&relay, DeviceKind::Desktop, "Desk");
+    host.playing(&["s1"], 0);
+    host.remote.clone().watch(true);
+    opened(&host);
+    relay.lose_closes.store(true, Ordering::Relaxed);
+    host.remote.clone().jam_close();
+    eventually("the close lost", || relay.asked().iter().any(|a| a == "lost close"));
+    relay.lose_closes.store(false, Ordering::Relaxed);
+
+    // News in the account's room: the host's held poll answers, the jam still listed in it.
+    desk.remote.clone().serve(true);
+    host.until("the desk", |r| r.devices().into_iter().find(|d| d.name == "Desk"));
+    assert!(host.remote.jam_view().is_none(), "no jam shown");
+    eventually("the jam closed at the relay", || relay.jams() == 0);
     relay.close();
 }
 

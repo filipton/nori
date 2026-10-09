@@ -2078,8 +2078,21 @@ impl Remote {
         }
         let mut commands = Vec::new();
         let mut republish = false;
+        let mut lost = Vec::new();
         {
             let mut i = self.inner.lock();
+            // An account's device is listed only the jams it opened: one it does not host is one it ended
+            // or lost (its close or open went unanswered, the app started again). It is ended, not shown.
+            if self.me.kind != DeviceKind::Guest {
+                let hosted = i.jam_room().map(str::to_string);
+                let (keep, gone): (Vec<Room>, Vec<Room>) = std::mem::take(&mut a.rooms).into_iter().partition(|r| !r.jam || Some(&r.room) == hosted.as_ref());
+                a.rooms = keep;
+                a.events.retain(|e| !gone.iter().any(|r| r.room == e.room));
+                // One being opened may be listed before its answer arrives.
+                if i.opening.is_none() {
+                    lost = gone.into_iter().map(|r| r.room).collect();
+                }
+            }
             // Commands are heard from the first answer on: only then is this device's state said to the
             // relay, so no controller sends it one before it can hear it.
             if i.since.is_none() && i.serving {
@@ -2123,6 +2136,10 @@ impl Remote {
             if let Some((_, Some(host))) = i.joined() {
                 i.jam_host = Some(host.name.clone());
             }
+        }
+        for room in lost {
+            crate::alog::info("remote: the relay still lists a jam this device ended: closed again");
+            self.out(Out::Get(self.relay_url("noriRemote.close", &[("room", room)])));
         }
         for (via, from, id, op) in commands {
             self.obey(via, from, id, op, received);
