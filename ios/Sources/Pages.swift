@@ -725,9 +725,11 @@ class PageController: UITableViewController {
         empty.translatesAutoresizingMaskIntoConstraints = false
         empty.isHidden = true
         view.addSubview(empty)
+        // The view is the table, a scroll view: its own edges are the content's, which has no width.
+        let frame = tableView.frameLayoutGuide
         NSLayoutConstraint.activate([
-            empty.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 32),
-            empty.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -32),
+            empty.leadingAnchor.constraint(equalTo: frame.leadingAnchor, constant: 32),
+            empty.trailingAnchor.constraint(equalTo: frame.trailingAnchor, constant: -32),
             empty.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor, constant: -40),
         ])
         NotificationCenter.default.addObserver(self, selector: #selector(reload), name: .noriOpened, object: nil)
