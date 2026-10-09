@@ -777,22 +777,27 @@ impl Inner {
         }
     }
 
+    /// When the jam's host heard `st`'s place, on this device's clock, once its clock is known here
+    /// (listening along).
+    fn heard_at(&self, st: &DeviceState) -> Option<i64> {
+        Some(st.at_us? - self.listen.as_ref()?.clock.offset_at(clock::now_us())?)
+    }
+
     /// The host's playback as this guest plays along with it; None while it should not, or the host's
     /// clock is not known yet.
     fn lead(&self) -> Option<Lead> {
-        let l = self.listen.as_ref().filter(|_| self.listening() == Listening::Playing)?;
+        self.listen.as_ref().filter(|_| self.listening() == Listening::Playing)?;
         let (_, host) = self.joined()?;
         let st = host?.state.as_ref()?;
         let along = st.jam.as_ref()?.along.as_ref()?;
-        let at = st.at_us?;
-        let offset = l.clock.offset_at(clock::now_us())?;
+        let at = self.heard_at(st)?;
         let index = st.entries.iter().position(|e| Some(e.index) == st.index)?;
         let mix = along.mix.as_ref().and_then(|m| plan_of(m, &st.entries));
         Some(Lead {
             songs: st.entries.iter().map(Entry::song).collect(),
             index,
             ms: st.position_ms as f64,
-            at_us: at - offset,
+            at_us: at,
             rate: nori_remote::rate(st),
             playing: st.playing && !st.buffering,
             speed: along.speed,
@@ -1337,7 +1342,7 @@ impl Remote {
             buffering: st.buffering,
             position_ms: st.position_ms,
             rate: nori_remote::rate(st),
-            at_us: i.received.get(&host.id).copied().unwrap_or_else(clock::now_us),
+            at_us: i.heard_at(st).or_else(|| i.received.get(&host.id).copied()).unwrap_or_else(clock::now_us),
             shuffle: st.shuffle,
             repeat: st.repeat,
             volume: None,

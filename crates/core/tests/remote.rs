@@ -1363,6 +1363,18 @@ fn jam_guests_listen_along_where_the_host_is_heard() {
         let off = l.ms + (now - l.at_us) as f64 / 1000.0 * l.rate - (30_000.0 + (now - said) as f64 / 1000.0 * 1.25);
         assert!(off.abs() <= 10.0, "the guest plays {off:.1} ms off the host");
     }
+    // A word reaching them a quarter second late: their pages (the seek bar, the lyrics) show the place
+    // heard, not where it was as the word arrived.
+    relay.lag(&host.remote.id(), -4_000_000);
+    let said = clock::now_us();
+    host.remote.clone().played(Playing { playing: true, position_ms: 40_000, rate: 1.25, index: Some(0), volume: None, ..Default::default() });
+    for g in [&gus, &dee] {
+        let m = g.until("the host's new place", |r| r.jam_playing().filter(|m| m.position_ms >= 40_000));
+        let now = clock::now_us();
+        let off = m.position_at(now) as f64 - (40_000.0 + (now - said) as f64 / 1000.0 * 1.25);
+        assert!(off.abs() <= 10.0, "the guest shows the host's place {off:.1} ms off");
+    }
+    relay.skew(&host.remote.id(), -4_000_000);
 
     // The host stops letting its guests listen along: they stop.
     host.remote.clone().jam_along(false);
