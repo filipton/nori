@@ -5,9 +5,9 @@ import UIKit
 
 /// The player card: cover, song, seek bar, previous / play / next, volume, then lyrics, output, devices
 /// (with remote control on) and queue. While another device plays, the card is that device's music and
-/// controls it, and "Playing on" its name stands where the volume was. A jam guest's is the jam's music,
-/// its host's to control: the jam's strip stands where the controls were and opens the queue, where the
-/// jam is. Drag down to close.
+/// controls it, and its volume stands where this iPod's was. A jam guest's is the jam's music, its host's
+/// to control: the jam's glyph stands where the output's speaker does and opens the queue, where the jam
+/// is. Drag down to close.
 final class PlayerCard: UIViewController {
     /// The cover's size on the card, which the lock screen's artwork shares.
     static let coverPoints: CGFloat = 272
@@ -29,8 +29,6 @@ final class PlayerCard: UIViewController {
     private let play = UIButton(type: .system)
     private let nextButton = UIButton(type: .system)
     private let transport = UIStackView()
-    /// A jam guest's: "Jam · Desk · 2 listening".
-    private let jamStrip = UIButton(type: .system)
     private let volume = MPVolumeView()
     /// The volume of the device playing, in the iPod's volume's place while the music plays elsewhere.
     private let deviceVolume = UISlider()
@@ -120,11 +118,7 @@ final class PlayerCard: UIViewController {
         [previous, play, nextButton].forEach(transport.addArrangedSubview)
         transport.distribution = .equalSpacing
         transport.alignment = .center
-        jamStrip.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
-        jamStrip.titleLabel?.adjustsFontSizeToFitWidth = true
-        jamStrip.tintColor = Theme.Card.label
-        jamStrip.addTarget(self, action: #selector(queueTapped), for: .touchUpInside)
-        let deck = UIStackView(arrangedSubviews: [transport, jamStrip])
+        let deck = UIStackView(arrangedSubviews: [transport])
         deck.axis = .vertical
 
         volume.showsRouteButton = false
@@ -205,7 +199,6 @@ final class PlayerCard: UIViewController {
             heart.widthAnchor.constraint(equalToConstant: 36),
             more.widthAnchor.constraint(equalToConstant: 36),
             transport.heightAnchor.constraint(equalToConstant: 56),
-            jamStrip.heightAnchor.constraint(equalToConstant: 56),
             level.heightAnchor.constraint(equalToConstant: 30),
             lyrics.widthAnchor.constraint(equalToConstant: 36),
             devices.widthAnchor.constraint(equalToConstant: 36),
@@ -233,7 +226,7 @@ final class PlayerCard: UIViewController {
 
     @objc private func changed() {
         let now = Core.shared.now
-        devices.tintColor = now.device == nil ? Theme.Card.secondary : Theme.Card.label
+        devices.tintColor = now.device == nil && !now.jam ? Theme.Card.secondary : Theme.Card.label
         let elsewhere = now.device != nil
         if volume.isHidden != elsewhere {
             let swap = {
@@ -254,8 +247,9 @@ final class PlayerCard: UIViewController {
         nextButton.isHidden = previous.isHidden
         play.isHidden = now.jam && (jam?.play ?? 0) == 0
         transport.isHidden = previous.isHidden && play.isHidden
-        jamStrip.isHidden = !now.jam
-        jamStrip.setTitle(Core.shared.jam?.strip ?? Say.jamGuest, for: .normal)
+        // A jam stands where the output's speaker does: a jam plays on this device only.
+        devices.setImage(now.jam ? Glyph.groups : Glyph.speaker, for: .normal)
+        devices.accessibilityLabel = now.jam ? (Core.shared.jam?.strip ?? Say.jamGuest) : Say.output
         seek.isUserInteractionEnabled = !now.jam || (jam?.seek ?? 0) != 0
         guard let song = now.song else {
             songTitle.text = Say.nothingPlaying
@@ -411,7 +405,9 @@ final class PlayerCard: UIViewController {
     /// The output button: nori's devices with this iPod's outputs among them, or just the outputs with
     /// remote control off.
     @objc private func devicesTapped() {
-        if Core.shared.now.remote {
+        if Core.shared.now.jam {
+            queueTapped()
+        } else if Core.shared.now.remote {
             present(DevicesSheet(), animated: true)
         } else {
             outputs.show()

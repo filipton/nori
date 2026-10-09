@@ -22,6 +22,8 @@ enum Glyph {
     static let queue = material(Material.queueMusic, CGSize(width: 24, height: 24))
     static let speaker = material(Material.speaker, CGSize(width: 24, height: 24))
     /// Another device plays: its speaker, filled while it sounds.
+    static let groups = material(Material.groups, CGSize(width: 24, height: 24))
+    static let groupsSmall = material(Material.groups, CGSize(width: 22, height: 22))
     static let speakerSmall = material(Material.speaker, CGSize(width: 20, height: 20))
     static let speakerSmallOutline = material(Material.speakerOutline, CGSize(width: 20, height: 20))
     /// A queue row's handle: hold and drag it to move the song.
@@ -92,6 +94,7 @@ private enum Material {
     static let queueMusic = "M15 6H3v2h12V6ZM15 10H3v2h12V10ZM3 16h8v-2H3V16ZM17 6v8.18C16.69 14.07 16.35 14 16 14c-1.66 0 -3 1.34 -3 3s1.34 3 3 3s3 -1.34 3 -3V8h3V6H17Z"
     /// The outlined speaker, drawn here (the filled one is `speaker`): the same body, tweeter and woofer.
     static let speakerOutline = "M7 2H17C18.1 2 19 2.9 19 4V20C19 21.1 18.1 22 17 22H7C5.9 22 5 21.1 5 20V4C5 2.9 5.9 2 7 2ZM7 4V20H17V4ZM12 5.4C12.88 5.4 13.6 6.12 13.6 7C13.6 7.88 12.88 8.6 12 8.6C11.12 8.6 10.4 7.88 10.4 7C10.4 6.12 11.12 5.4 12 5.4ZM12 10.7C14.1 10.7 15.8 12.4 15.8 14.5C15.8 16.6 14.1 18.3 12 18.3C9.9 18.3 8.2 16.6 8.2 14.5C8.2 12.4 9.9 10.7 12 10.7ZM12 12.1C10.67 12.1 9.6 13.17 9.6 14.5C9.6 15.83 10.67 16.9 12 16.9C13.33 16.9 14.4 15.83 14.4 14.5C14.4 13.17 13.33 12.1 12 12.1Z"
+    static let groups = "M12 12.75c1.63 0 3.07 0.39 4.24 0.9c1.08 0.48 1.76 1.56 1.76 2.73V18H6v-1.61c0 -1.18 0.68 -2.26 1.76 -2.73c1.17 -0.52 2.61 -0.91 4.24 -0.91ZM4 13c1.1 0 2 -0.9 2 -2s-0.9 -2 -2 -2s-2 0.9 -2 2s0.9 2 2 2ZM5.13 14.1c-0.37 -0.06 -0.74 -0.1 -1.13 -0.1c-0.99 0 -1.93 0.21 -2.78 0.58C0.48 14.9 0 15.62 0 16.43V18h4.5v-1.61c0 -0.83 0.23 -1.61 0.63 -2.29ZM20 13c1.1 0 2 -0.9 2 -2s-0.9 -2 -2 -2s-2 0.9 -2 2s0.9 2 2 2ZM24 16.43c0 -0.81 -0.48 -1.53 -1.22 -1.85c-0.85 -0.37 -1.79 -0.58 -2.78 -0.58c-0.39 0 -0.76 0.04 -1.13 0.1c0.4 0.68 0.63 1.46 0.63 2.29V18H24v-1.57ZM12 6c1.66 0 3 1.34 3 3s-1.34 3 -3 3s-3 -1.34 -3 -3s1.34 -3 3 -3Z"
     static let speaker = "M17 2H7c-1.1 0 -1.99 0.9 -1.99 2L5 20c0 1.1 0.9 2 2 2h10c1.1 0 2 -0.9 2 -2V4c0 -1.1 -0.9 -2 -2 -2ZM12 4c1.1 0 2 0.9 2 2s-0.9 2 -2 2c-1.11 0 -2 -0.9 -2 -2s0.89 -2 2 -2ZM12 20c-2.76 0 -5 -2.24 -5 -5s2.24 -5 5 -5s5 2.24 5 5s-2.24 5 -5 5ZM12 12c-1.66 0 -3 1.34 -3 3s1.34 3 3 3s3 -1.34 3 -3s-1.34 -3 -3 -3Z"
     static let dragHandle = "M20 9H4v2h16V9ZM4 15h16v-2H4V15Z"
     static let lyrics = "M14 9c0 -2.04 1.24 -3.79 3 -4.57V4c0 -1.1 -0.9 -2 -2 -2H4C2.9 2 2.01 2.9 2.01 4L2 22l4 -4h9c1.1 0 2 -0.9 2 -2v-2.42C15.24 12.8 14 11.05 14 9ZM10 14H6v-2h4V14ZM13 11H6V9h7V11ZM13 8H6V6h7V8ZM20 6.18C19.69 6.07 19.35 6 19 6c-1.66 0 -3 1.34 -3 3c0 1.66 1.34 3 3 3s3 -1.34 3 -3V3h2V1h-4V6.18Z"

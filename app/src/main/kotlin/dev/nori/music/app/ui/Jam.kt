@@ -78,26 +78,23 @@ import dev.nori.music.look.CoverLook
 @Composable
 internal fun jamListening(n: Int): String = if (n == 0) words(R.string.jam_no_one) else words(R.string.jam_listening, n)
 
+/** "Jam · 2 listening" while this phone hosts a jam, or "Jam · Filip · 2 listening" in one it is a guest in. */
+@Composable
+internal fun jamLabel(jam: PlayerViewModel.JamStripState): String {
+    val listening = jamListening(jam.listening)
+    return if (jam.host == null) words(R.string.jam_strip, listening) else words(R.string.jam_strip_guest, jam.host, listening)
+}
+
 /**
- * "Jam · 2 listening" under the song, in the mini player and the full one, while this phone hosts a jam, or
- * "Jam · Filip · 2 listening" in one it is a guest in ([jam] is null without one): a tap opens the queue
- * with the jam's header.
+ * The jam's button, where the output's speaker stands while a jam is on (the player's bottom row, the bar):
+ * the host's opens the devices, a guest's the queue with the jam's header.
  */
 @Composable
-fun JamStrip(jam: PlayerViewModel.JamStripState?, color: Color, modifier: Modifier = Modifier) {
-    jam ?: return
+internal fun JamButton(jam: PlayerViewModel.JamStripState, size: Dp, tint: ColorProducer) {
     val nav = LocalNav.current
-    val listening = jamListening(jam.listening)
-    val label = if (jam.host == null) words(R.string.jam_strip, listening) else words(R.string.jam_strip_guest, jam.host, listening)
-    Row(
-        modifier.clickable { nav.player(Panel.QUEUE) }.padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(Icons.Filled.Groups, null, Modifier.size(15.dp), tint = color)
-        Text(
-            label, Modifier.padding(start = 6.dp),
-            style = MaterialTheme.typography.labelMedium, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis,
-        )
+    val devices = LocalDevices.current
+    IconButton({ if (jam.host == null) devices() else nav.player(Panel.QUEUE) }) {
+        LookIcon(Icons.Filled.Groups, jamLabel(jam), Modifier.size(size), tint)
     }
 }
 

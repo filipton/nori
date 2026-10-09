@@ -19,7 +19,7 @@ final class ShellController: UITabBarController {
         NotificationCenter.default.addObserver(self, selector: #selector(lay), name: .noriOpened, object: nil)
         mini.opened = { [weak self] in self?.openPlayer() }
         mini.dragged = { [weak self] in self?.dragPlayer($0) }
-        mini.devicesOpened = { [weak self] in self?.present(DevicesSheet(), animated: true) }
+        mini.devicesOpened = { [weak self] in self?.present(Core.shared.now.jam ? QueueSheet() : DevicesSheet(), animated: true) }
         view.addSubview(mini)
     }
 
@@ -87,7 +87,8 @@ final class MiniPlayer: UIView {
 
     var opened: (() -> Void)?
     var dragged: ((UIPanGestureRecognizer) -> Void)?
-    /// The speaker was tapped with remote control on: the devices.
+    /// The speaker was tapped with remote control on, or the jam in its place: the devices, or the queue where
+    /// the jam is.
     var devicesOpened: (() -> Void)?
     private let cover = CoverView()
     private let title = UILabel()
@@ -208,10 +209,15 @@ final class MiniPlayer: UIView {
         // A jam guest plays as its role lets it (the core's jam controls); its skip is a swipe.
         let jam = now.jam ? Core.shared.jam : nil
         play.isHidden = now.jam && (jam?.play ?? 0) == 0
-        // The sound goes elsewhere: the speaker is filled, and says only that.
-        speaker.isHidden = now.jam
-        speaker.setImage(now.device != nil ? Glyph.speakerSmall : Glyph.speakerSmallOutline, for: .normal)
-        speaker.accessibilityLabel = now.device.map(Say.playingOn) ?? Say.output
+        // The sound goes elsewhere: the speaker is filled, and says only that. A jam stands in its place: it
+        // plays on this iPod only.
+        if now.jam {
+            speaker.setImage(Glyph.groupsSmall, for: .normal)
+            speaker.accessibilityLabel = Core.shared.jam?.strip ?? Say.jamGuest
+        } else {
+            speaker.setImage(now.device != nil ? Glyph.speakerSmall : Glyph.speakerSmallOutline, for: .normal)
+            speaker.accessibilityLabel = now.device.map(Say.playingOn) ?? Say.output
+        }
         paintHeart()
         let playing = jam?.playing ?? now.playing
         play.setImage(playing ? Glyph.pause : Glyph.play, for: .normal)
@@ -262,7 +268,7 @@ final class MiniPlayer: UIView {
     }
 
     @objc private func speakerTapped() {
-        if Core.shared.now.remote { devicesOpened?() } else { outputs.show() }
+        if Core.shared.now.remote || Core.shared.now.jam { devicesOpened?() } else { outputs.show() }
     }
 
     @objc private func tapped() {

@@ -733,9 +733,6 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                 // A jam guest's volume is its own while the music plays here.
                 if (state.offersVolume) Box(kept("volume")) { VolumeRow(vm) }
                 val jam by vm.jamStrip.collectAsStateWithLifecycle()
-                if (jam != null) Box(Modifier.fillMaxWidth().padding(top = if (state.jamGuest) 16.dp else 0.dp), contentAlignment = Alignment.Center) {
-                    JamStrip(jam, live.color(CoverLook.ACCENT))
-                }
 
                 // Three slots of fixed shares, so the middle one's words, however long a device's name, never
                 // move the lyrics and queue buttons; each keeps the line under its glyph whether it has words or not.
@@ -748,8 +745,16 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                     // one tap is where the sound is going. The sleep timer moved to the ⋯ on the title row,
                     // which is where a setting for the evening belongs.
                     Column(Modifier.weight(1.6f), horizontalAlignment = Alignment.CenterHorizontally) {
-                        if (!state.jamGuest) {
-                            val panel = LocalLook.current
+                        val panel = LocalLook.current
+                        val jamOn = jam
+                        // While a jam is on it stands here instead of the speaker: a jam plays on this device only.
+                        if (jamOn != null) {
+                            JamButton(jamOn, 27.dp) { panel.color(CoverLook.ACCENT) }
+                            Text(
+                                jamLabel(jamOn), Modifier.height(OUTPUT_LINE),
+                                style = MaterialTheme.typography.labelSmall, color = live.color(CoverLook.ACCENT), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                        } else if (!state.jamGuest) {
                             OutputButton(
                                 state.playingOn != null, 27.dp,
                                 idle = { panel.color(CoverLook.ON_VARIANT) }, lit = { panel.color(CoverLook.ACCENT) },
@@ -774,7 +779,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
     }
 }
 
-/** The line under the lyrics, output and queue glyphs: the output's "Playing on", or nothing, the same height. */
+/** The line under the lyrics, output and queue glyphs: the output's "Playing on" or the jam's words, or nothing, the same height. */
 private val OUTPUT_LINE = 14.dp
 
 /** The larger of the status bar's and the gesture bar's heights, for room kept alike above and below. */

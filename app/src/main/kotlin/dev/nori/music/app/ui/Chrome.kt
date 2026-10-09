@@ -448,6 +448,8 @@ fun MiniPlayer(vm: PlayerViewModel, actions: ActionsViewModel, onOpen: () -> Uni
         // waiting for drag slop swallows a tap offered to a clickable further up the same chain.
         Surface(onClick = onOpen, color = Color.Transparent, contentColor = content) {
         Column {
+        // The jam this phone hosts or is a guest in.
+        val jam by vm.jamStrip.collectAsStateWithLifecycle()
         Row(Modifier.fillMaxWidth().padding(end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             // What is playing slides aside for the next (or last) song, which comes in from the other
             // edge already showing; the buttons stay where they are. Radio has no neighbours.
@@ -498,8 +500,10 @@ fun MiniPlayer(vm: PlayerViewModel, actions: ActionsViewModel, onOpen: () -> Uni
             // the room for it because the title beside it is already allowed to run out of space gracefully.
             // The skip is a swipe away. A jam guest's speaker and heart would be the host's; its play is the
             // one its role offers.
+            // While a jam is on it stands in the speaker's place: a jam plays on this device only.
+            jam?.let { JamButton(it, 24.dp) { look.color(CoverLook.ACCENT) } }
             if (!state.jamGuest) {
-                OutputButton(
+                if (jam == null) OutputButton(
                     state.playingOn != null, 24.dp,
                     idle = { look.color(CoverLook.CHROME_CONTENT_75) }, lit = { look.color(CoverLook.ACCENT) },
                 )
@@ -510,9 +514,6 @@ fun MiniPlayer(vm: PlayerViewModel, actions: ActionsViewModel, onOpen: () -> Uni
             }
             if (state.offersPlayPause) IconButton(vm::toggle) { PlayPauseGlyph(state.playing, state.buffering, 26.dp, 20.dp) }
         }
-        // The jam this phone hosts or is a guest in: said under the song, a tap away from its queue.
-        val jam by vm.jamStrip.collectAsStateWithLifecycle()
-        JamStrip(jam, look.color(CoverLook.ACCENT), Modifier.padding(start = 4.dp, bottom = 2.dp))
         }
         }
     }

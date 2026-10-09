@@ -92,19 +92,26 @@ fun DevicesSheet(open: Boolean, onDismiss: () -> Unit, onOutput: () -> Unit, jam
         Column(Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding()) {
             SectionHeader(words(R.string.devices_title))
             DeviceRow(words(R.string.devices_this), Icons.Filled.PhoneAndroid, null, mirror == null) { pick(null) }
-            devices.forEachIndexed { k, d ->
-                val now = d.state?.current()
-                DeviceRow(
-                    names.getOrNull(k) ?: d.name, kindIcon(d.kind),
-                    now?.let { "${it.title} · ${it.artist}" } ?: words(R.string.devices_idle),
-                    mirror?.id == d.id, if (d.nearby) words(R.string.devices_nearby) else null,
-                ) { pick(d.id) }
-            }
-            mirror?.refused?.let { Text(refusal(it), Modifier.padding(horizontal = Space.gutter, vertical = 6.dp), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
-            if (devices.isEmpty() || unsupported) Text(
-                words(if (unsupported) R.string.devices_nearby_only else R.string.devices_none), Modifier.padding(horizontal = Space.gutter, vertical = 12.dp),
+            val hosted = jam?.takeIf { it.hosting }
+            // A jam plays on this phone only: the other devices come back once it is ended.
+            if (hosted != null) Text(
+                words(R.string.devices_jam_on), Modifier.padding(horizontal = Space.gutter, vertical = 12.dp),
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            ) else {
+                devices.forEachIndexed { k, d ->
+                    val now = d.state?.current()
+                    DeviceRow(
+                        names.getOrNull(k) ?: d.name, kindIcon(d.kind),
+                        now?.let { "${it.title} · ${it.artist}" } ?: words(R.string.devices_idle),
+                        mirror?.id == d.id, if (d.nearby) words(R.string.devices_nearby) else null,
+                    ) { pick(d.id) }
+                }
+                mirror?.refused?.let { Text(refusal(it), Modifier.padding(horizontal = Space.gutter, vertical = 6.dp), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
+                if (devices.isEmpty() || unsupported) Text(
+                    words(if (unsupported) R.string.devices_nearby_only else R.string.devices_none), Modifier.padding(horizontal = Space.gutter, vertical = 12.dp),
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             // The phone's own speaker, headphones or Bluetooth: Android's picker, a quiet row of its own.
             Row(
                 Modifier.fillMaxWidth().clickable(onClick = onOutput).padding(horizontal = Space.gutter, vertical = 12.dp),
@@ -114,7 +121,6 @@ fun DevicesSheet(open: Boolean, onDismiss: () -> Unit, onOutput: () -> Unit, jam
                 Text(words(R.string.devices_output), Modifier.padding(start = 12.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Hairline(startIndent = Space.gutter)
-            val hosted = jam?.takeIf { it.hosting }
             val start by vm.jamStarting.collectAsStateWithLifecycle()
             when {
                 !jams -> {}
