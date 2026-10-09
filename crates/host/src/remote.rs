@@ -160,6 +160,10 @@ impl RemoteShown for Shown {
         }
         (self.out)(Said::Remote);
     }
+
+    fn jam_ended(&self, host: Option<String>) {
+        (self.out)(Said::JamEnded { host });
+    }
 }
 
 /// What a client's player asks of the music.
@@ -552,6 +556,7 @@ mod tests {
 
     impl RemoteShown for Nothing {
         fn changed(&self) {}
+        fn jam_ended(&self, _: Option<String>) {}
     }
 
     /// The desk mirrored playing the second of three songs (200 s each) 10 s in, at volume 40.

@@ -142,6 +142,7 @@ fn deliver_one(said: Said) {
             });
         }
         Said::Lyrics { song, pick } => crate::pages::lyrics_arrived(song, &pick.lyrics),
+        Said::JamEnded { host } => return crate::jam::left(Some(host.clone())),
         _ => {}
     }
     emit(&said);
@@ -238,6 +239,8 @@ fn pack(said: &Said) -> Packed {
             p.text = c(&e.to_string());
         }
         Said::Remote => p.kind = REPORT_REMOTE,
+        // Reported as the guest profile is dropped (jam::left).
+        Said::JamEnded { .. } => {}
         Said::Volume(v) => {
             p.kind = REPORT_VOLUME;
             p.ms = (v * 1000.0).round() as i64;
@@ -1110,6 +1113,8 @@ mod tests {
         fn changed(&self) {
             let _ = self.0.lock().unwrap().send(());
         }
+
+        fn jam_ended(&self, _: Option<String>) {}
     }
 
     /// The iPod's session as a device of the account, on the simulated audio unit called back in real time,

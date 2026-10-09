@@ -249,6 +249,8 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
         var menuSong by remember { mutableStateOf<Song?>(null) }
         var menuFromPlayer by remember { mutableStateOf(false) }
         var devicesOpen by remember { mutableStateOf(false) }
+        // Said on the profile the phone went back to: the guest's page is fading out by then.
+        if (!guest) LaunchedEffect(Unit) { remote.ended.collect { snackbar.showSnackbar(say.jamEnded(it), withDismissAction = true) } }
         LaunchedEffect(Unit) {
             // Latest, not in turn: showing a message suspends until it goes away, so a plain collect
             // could not even see the next one until the last had sat out its four seconds - a quick

@@ -90,18 +90,23 @@ pub unsafe extern "C" fn nori_ios_jam_join(link: *const c_char, name: *const c_c
     JOIN_STARTED
 }
 
-/// Leaves the jam this guest is in, on a thread of its own; a `REPORT_JAM_LEFT` once the guest profile is
-/// dropped.
+/// Leaves the jam this guest is in, at once (the relay is told on the way); a `REPORT_JAM_LEFT`.
 #[no_mangle]
 pub extern "C" fn nori_ios_jam_leave() {
-    let Some((remote, app)) = with_session(|s| (s.remote(), s.core.session.clone())) else { return };
-    nori_host::spawn("nori-ios-jam-leave", move || {
-        if let Some(r) = remote {
-            let _ = nori_core::transport::block_on(r.jam_leave());
-        }
-        let back = nori_host::jam_left(&app.settings);
-        report(REPORT_JAM_LEFT, i32::from(back.is_some()), 0, "");
-    });
+    let Some(remote) = with_session(|s| s.remote()) else { return };
+    if let Some(r) = remote {
+        r.jam_leave();
+    }
+    left(None);
+}
+
+/// Drops the guest profile, and reports `REPORT_JAM_LEFT`: flag 1 when there is a profile to open, index
+/// 1 when the jam ended (`ended`) rather than was left, text then its host's name if seen.
+pub(crate) fn left(ended: Option<Option<String>>) {
+    let Some(app) = with_session(|s| s.core.session.clone()) else { return };
+    let back = nori_host::jam_left(&app.settings);
+    let host = ended.clone().flatten().unwrap_or_default();
+    report(REPORT_JAM_LEFT, i32::from(back.is_some()), i32::from(ended.is_some()), &host);
 }
 
 /// Listens along (`on` 1: the host's music plays here, in step), or only shows the jam.

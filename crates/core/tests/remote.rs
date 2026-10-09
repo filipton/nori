@@ -193,6 +193,14 @@ impl Relay {
         self.wake();
     }
 
+    /// Starts afresh, as after a restart: every room and key is gone, and held polls answer.
+    fn restart(&self) {
+        let mut hub = self.hub.lock();
+        hub.rooms.clear();
+        hub.keys.clear();
+        self.wake();
+    }
+
     /// The server cannot be reached (`down`), or can again.
     fn go_down(&self, down: bool) {
         let _hub = self.hub.lock();
@@ -233,7 +241,7 @@ impl Relay {
     async fn news(&self, since: u64, rooms: &[String]) {
         std::future::poll_fn(|cx| {
             let hub = self.hub.lock();
-            if rooms.iter().any(|r| hub.rooms.get(r).is_some_and(|s| s.touched > since)) || hub.closed || self.down.load(Ordering::Relaxed) {
+            if rooms.iter().any(|r| hub.rooms.get(r).is_none_or(|s| s.touched > since)) || hub.closed || self.down.load(Ordering::Relaxed) {
                 return Poll::Ready(());
             }
             self.waiting.lock().push(cx.waker().clone());
@@ -340,6 +348,20 @@ impl Relay {
                 bump(&mut hub, room);
                 json(serde_json::json!({ "room": room, "member": member, "key": key }))
             }
+            ("noriRemote.close", Caller::Account(_)) => {
+                let room = p["room"].clone();
+                hub.rooms.remove(&room);
+                hub.keys.retain(|_, (r, _)| *r != room);
+                bump(&mut hub, &room);
+                json(serde_json::json!({}))
+            }
+            ("noriRemote.leave", Caller::Guest(room, member)) => {
+                let (room, member) = (room.clone(), member.clone());
+                hub.keys.retain(|_, (r, m)| !(*r == room && m.as_deref() == Some(member.as_str())));
+                hub.rooms.get_mut(&room).unwrap().members.retain(|m| m.id != member);
+                bump(&mut hub, &room);
+                json(serde_json::json!({}))
+            }
             ("noriRemote.kick", Caller::Account(_)) => {
                 let (room, member) = (p["room"].clone(), p["member"].clone());
                 hub.keys.retain(|_, (r, m)| !(*r == room && m.as_deref() == Some(member.as_str())));
@@ -390,9 +412,12 @@ impl Transport for Relay {
             }
             self.arrived(&params);
             if let (Some(since), Some("1")) = (params.get("since").and_then(|s| s.parse().ok()), params.get("hold").map(String::as_str)) {
-                // The rooms it listens to as it arrives: a jam opened meanwhile is not one of them.
-                let rooms = self.caller(endpoint, &params).map(|c| listened(&self.hub.lock(), &c, params.get("dev").map_or("", String::as_str))).unwrap_or_default();
-                self.news(since, &rooms).await;
+                // The rooms it listens to as it arrives: a jam opened meanwhile is not one of them. A key
+                // no longer known is refused at once.
+                if let Ok(c) = self.caller(endpoint, &params) {
+                    let rooms = listened(&self.hub.lock(), &c, params.get("dev").map_or("", String::as_str));
+                    self.news(since, &rooms).await;
+                }
                 if self.down.load(Ordering::Relaxed) {
                     return unreachable();
                 }
@@ -493,11 +518,17 @@ impl RemotePlayer for Player {
     }
 }
 
-/// Counts the remote's change notices, so a test waits for news rather than for time.
-struct Shown(Mutex<Sender<()>>);
+/// Counts the remote's change notices, so a test waits for news rather than for time, and keeps each
+/// jam end it was told of (the host's name).
+struct Shown(Mutex<Sender<()>>, Arc<Mutex<Vec<Option<String>>>>);
 
 impl RemoteShown for Shown {
     fn changed(&self) {
+        let _ = self.0.lock().send(());
+    }
+
+    fn jam_ended(&self, host: Option<String>) {
+        self.1.lock().push(host);
         let _ = self.0.lock().send(());
     }
 }
@@ -508,6 +539,7 @@ struct Device {
     remote: Arc<Remote>,
     ops: Receiver<Op>,
     news: Receiver<()>,
+    ended: Arc<Mutex<Vec<Option<String>>>>,
 }
 
 impl Device {
@@ -522,8 +554,9 @@ impl Device {
         client.set_profile(NetProfile { url: SERVER.into(), ..Default::default() });
         let (ops_to, ops) = channel();
         let (news_to, news) = channel();
-        let remote = Remote::new(client.clone(), RemoteMe { name: name.into(), kind }, Arc::new(Player(Mutex::new(ops_to))), Arc::new(Shown(Mutex::new(news_to))), discovery);
-        Device { core, client, remote, ops, news }
+        let ended = Arc::new(Mutex::new(Vec::new()));
+        let remote = Remote::new(client.clone(), RemoteMe { name: name.into(), kind }, Arc::new(Player(Mutex::new(ops_to))), Arc::new(Shown(Mutex::new(news_to), ended.clone())), discovery);
+        Device { core, client, remote, ops, news, ended }
     }
 
     fn account(relay: &Arc<Relay>, kind: DeviceKind, name: &str) -> Device {
@@ -1471,7 +1504,7 @@ fn a_guest_leaving_its_jam_stops_playing_along_at_once() {
     host.remote.clone().played(Playing { playing: true, position_ms: 30_000, rate: 1.0, index: Some(0), volume: None, ..Default::default() });
     gus.until("the host's place", |_| leads.last().flatten());
 
-    block_on(gus.remote.jam_leave()).unwrap();
+    gus.remote.clone().jam_leave();
     assert_eq!(leads.last(), Some(None), "nothing to follow once left");
     let given = leads.0.lock().len();
     host.remote.clone().played(Playing { playing: true, position_ms: 60_000, rate: 1.0, index: Some(1), volume: None, ..Default::default() });
@@ -1493,5 +1526,73 @@ fn a_device_knows_its_own_jams_invite() {
     assert!(!host.remote.hosts_invite(desks));
     host.remote.clone().jam_close();
     assert!(!host.remote.hosts_invite(link));
+    relay.close();
+}
+
+/// A guest of `host`'s jam `link`, listening along: its leads.
+fn listening_guest(relay: &Arc<Relay>, host: &Device, link: String) -> (Device, Arc<Leads>) {
+    host.remote.clone().jam_along(true);
+    let pass = block_on(jam_join(relay.clone(), link, "Gus".into())).unwrap();
+    let gus = Device::new(relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, "Gus");
+    let leads = Arc::new(Leads::default());
+    gus.remote.follow_with(Some(leads.clone()));
+    gus.remote.clone().listen(true);
+    host.remote.clone().played(Playing { playing: true, position_ms: 30_000, rate: 1.0, index: Some(0), volume: None, ..Default::default() });
+    gus.until("the host's place", |_| leads.last().flatten());
+    (gus, leads)
+}
+
+#[test]
+fn a_guest_hears_its_jam_end_and_stops_playing_along() {
+    // Ended by the host, or forgotten by the relay (its key no longer signs in).
+    for restarted in [false, true] {
+        let relay = Relay::new();
+        let host = Device::account(&relay, DeviceKind::Phone, "Host");
+        host.playing(&["s1", "s2"], 0);
+        let link = block_on(host.remote.clone().jam_open()).unwrap();
+        let (gus, leads) = listening_guest(&relay, &host, link);
+        if restarted {
+            relay.restart();
+        } else {
+            host.remote.clone().jam_close();
+        }
+        gus.until(if restarted { "the end, restarted" } else { "the end, closed" }, |_| (!gus.ended.lock().is_empty()).then_some(()));
+        assert_eq!(*gus.ended.lock(), [Some("Host".to_string())], "restarted: {restarted}");
+        assert_eq!(leads.last(), Some(None), "nothing to follow");
+        assert!(gus.remote.jam_view().is_none());
+        gus.remote.clone().stop();
+        assert_eq!(gus.ended.lock().len(), 1, "told once");
+        assert!(host.ended.lock().is_empty(), "the host was in no one's jam");
+        relay.close();
+    }
+}
+
+#[test]
+fn a_guest_profile_opened_after_its_jam_ended_hears_so_at_once() {
+    let relay = Relay::new();
+    let host = Device::account(&relay, DeviceKind::Phone, "Host");
+    let link = block_on(host.remote.clone().jam_open()).unwrap();
+    let pass = block_on(jam_join(relay.clone(), link, "Gus".into())).unwrap();
+    host.remote.clone().jam_close();
+    // The app opens again on the guest profile: its first look at the jam finds it gone.
+    let gus = Device::new(&relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, "Gus");
+    gus.remote.clone().watch(true);
+    gus.until("the end", |_| (!gus.ended.lock().is_empty()).then_some(()));
+    assert_eq!(*gus.ended.lock(), [None], "no host was ever seen");
+    relay.close();
+}
+
+#[test]
+fn a_guest_leaves_at_once_with_the_relay_down() {
+    let relay = Relay::new();
+    let host = Device::account(&relay, DeviceKind::Phone, "Host");
+    host.playing(&["s1", "s2"], 0);
+    let link = block_on(host.remote.clone().jam_open()).unwrap();
+    let (gus, leads) = listening_guest(&relay, &host, link);
+    relay.go_down(true);
+    gus.remote.clone().jam_leave();
+    assert_eq!(leads.last(), Some(None), "its music stops here at once");
+    gus.remote.clone().stop();
+    assert!(gus.ended.lock().is_empty(), "left, not ended by the host");
     relay.close();
 }

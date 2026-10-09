@@ -1166,17 +1166,16 @@ impl App {
         self.open(guest);
     }
 
-    /// Leaves the jam this guest is in; [`Msg::Left`] once the relay was told (or could not be).
-    fn leave_jam(&self) {
-        let (Some(r), tx) = (self.session.as_ref().and_then(|s| s.remote()), self.tx.clone()) else { return };
-        nori_host::spawn("nori-jam-leave", move || {
-            let _ = session::block_on(r.jam_leave());
-            tx.send(Msg::Left);
-        });
+    /// Leaves the jam this guest is in, at once; the relay is told on the way.
+    fn leave_jam(&mut self) {
+        if let Some(r) = self.session.as_ref().and_then(|s| s.remote()) {
+            r.jam_leave();
+        }
+        self.left(words::JAM_LEFT);
     }
 
-    /// The guest profile is dropped, and the user's own opened again.
-    fn left(&mut self) {
+    /// The guest profile is dropped, and the user's own opened again; `said` says why.
+    fn left(&mut self, said: &str) {
         let back = nori_host::jam_left(&session::app().settings);
         self.jam_now = None;
         self.asked.clear();
@@ -1189,7 +1188,7 @@ impl App {
                 self.go(LOGIN);
             }
         }
-        self.say(words::JAM_LEFT, false);
+        self.say(said, false);
     }
 
     fn take(&mut self, m: Msg) {
@@ -1260,7 +1259,7 @@ impl App {
                 ui.set_join_busy(false);
                 ui.set_join_error(e.into());
             }
-            Msg::Left => self.left(),
+            Msg::JamEnded(host) => self.left(&words::jam_ended(host.as_deref())),
             Msg::Starred => {
                 self.on_session(|s| s.mpris_changed());
                 self.follow();

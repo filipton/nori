@@ -1178,7 +1178,7 @@ impl App {
                 _ => self.say(e.clone(), true),
             },
             // The runner opens these, and the profiles a jam is joined and left with.
-            Msg::From(..) | Msg::Joined(Ok(_)) | Msg::Left => {}
+            Msg::From(..) | Msg::Joined(Ok(_)) | Msg::Left(_) => {}
         }
     }
 

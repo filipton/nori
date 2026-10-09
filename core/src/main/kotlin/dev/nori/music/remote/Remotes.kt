@@ -27,6 +27,7 @@ import dev.nori.music.settings.server
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import java.util.concurrent.Executors
 
@@ -113,7 +114,17 @@ class Remotes(private val context: Context, private val nori: Nori) {
             _changes.update { it + 1 }
             work { mirrorNow(); jamNow() }
         }
+
+        override fun jamEnded(host: String?) {
+            dev.nori.music.NoriLog.i("jam: ended (host ${host ?: "unseen"}); back to the profile before")
+            main.post { nori.jamEnded(); _ended.trySend(host) }
+        }
     }
+
+    private val _ended = kotlinx.coroutines.channels.Channel<String?>(kotlinx.coroutines.channels.Channel.CONFLATED)
+
+    /** The jam this phone was a guest in ended, by its host's name if seen; the guest profile is gone by then. */
+    val ended = _ended.receiveAsFlow()
 
     /** Reads the mirrored device again (on the worker) and shows it; [then] once it is shown. */
     private fun mirrorNow(then: () -> Unit = {}) {
@@ -325,9 +336,7 @@ class Remotes(private val context: Context, private val nori: Nori) {
     }
 
     /** Leaves the jam this guest profile is in; its music stops here at once (the core's `jam_leave`). */
-    suspend fun leave() = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-        runCatching { remote?.jamLeave() }
-    }
+    fun leave() = work { remote?.jamLeave() }
 
     /**
      * The profile in use changed: the remote of the one before goes (a jam guest's with its jam, so the

@@ -713,6 +713,7 @@ class Say(private val r: Resources) {
     val playingNext: String get() = r.getString(R.string.said_playing_next)
     val addedToQueue: String get() = r.getString(R.string.said_added_to_queue)
     fun jamAsked(title: String): String = r.getString(R.string.jam_asked, title)
+    fun jamEnded(host: String?): String = host?.let { r.getString(R.string.jam_ended_by, it) } ?: r.getString(R.string.jam_ended)
     val excludedFromMixes: String get() = r.getString(R.string.said_excluded_from_mixes)
     val noServerQueue: String get() = r.getString(R.string.said_no_server_queue)
     val serverDownloading: String get() = r.getString(R.string.said_server_downloading)

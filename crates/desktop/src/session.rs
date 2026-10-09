@@ -62,8 +62,8 @@ pub enum Msg {
     Jam(Result<(), String>),
     /// Someone's jam joined (what the guest profile signs in with), or why not.
     Joined(Result<nori_core::remote::JamPass, String>),
-    /// This guest left its jam.
-    Left,
+    /// The jam this guest is in ended (its host's name, if seen).
+    JamEnded(Option<String>),
     /// Another device set the volume (0 to 1).
     Volume(f32),
     /// A heart changed, here or on another device.
@@ -359,6 +359,7 @@ fn worded(s: Said) -> Msg {
         Said::Search(v) => Msg::Search(v),
         Said::Reachable(r) => Msg::Reachable(r.map_err(|e| net_error(&e))),
         Said::Remote => Msg::Remote,
+        Said::JamEnded { host } => Msg::JamEnded(host),
         Said::Volume(v) => Msg::Volume(v),
         Said::Starred(_) => Msg::Starred,
         Said::Note(n) => match n {

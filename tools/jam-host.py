@@ -39,6 +39,7 @@ def entry(song, at, by=None):
 opened = call("noriRemote.open", dev=dev, name=name)
 room = opened["room"]
 link_server = server.replace("localhost", "10.0.2.2")
+print(f"room: {room}", flush=True)
 print(f"invite: {link_server}/nori/jam#s=" + urllib.parse.quote(link_server, safe="") + "&k=" + urllib.parse.quote(opened["invite"], safe=""), flush=True)
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 

@@ -380,7 +380,7 @@ final class Core {
         case 20:
             Toast.show(Say.jamJoinFailed(Say.failure(count, text)))
         case 21:
-            switchProfile(Say.jamLeft)
+            switchProfile(count == 0 ? Say.jamLeft : Say.jamEnded(text))
         case 19:
             SystemVolume.set(Float(ms) / 1000)
         case 5:

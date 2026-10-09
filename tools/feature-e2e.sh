@@ -438,6 +438,11 @@ print(next(json.dumps({'id':s['id'],'title':s['title'],'artist':s['artist'],'cov
     link=$(ui | grep -oE 'text="https?://[^"]*/nori/jam#[^"]*"' | head -1 | cut -d'"' -f2 | sed 's/&amp;/\&/g')
     echo "     the invite: $link"
     adb shell input keyevent KEYCODE_BACK
+    # Its own invite opened here is refused: this phone stays the host, on its own profile.
+    adb shell am start -a android.intent.action.VIEW -d "'$link'" >/dev/null 2>&1
+    check "its own invite is refused" wait_until 10 on_screen 'text="That’s your own Jam"'
+    check "and it still hosts" bash -c "'$app' remote view | grep -q 'hosting=true'"
+    check "on its own profile" wait_for server "$app_jam" 5
     guests="$here/../build/e2e-jam"; mkdir -p "$guests"
     python3 "$here/jam-guest.py" "$link" Gus "{\"id\":\"$lib_song\",\"title\":\"Far Song Two\",\"artist\":\"Nori E2E Two\",\"duration\":170}" > "$guests/gus.log" 2>&1 & gus=$!
     check "Gus's request comes in by itself" wait_until 20 on_screen 'text="Asked by Gus"'
@@ -503,6 +508,26 @@ print(json.dumps({k:s.get(k) for k in ['id','title','artist','album','albumId','
     check "it is the one picked" wait_for title "${LYRICS_SONG#search:}" 10
     "$app" do pause >/dev/null
     kill $host 2>/dev/null
+
+    # A guest whose jam ends goes home by itself: at once when the host ends it, and on opening the app
+    # when the relay dropped it meanwhile (its key no longer signs in).
+    host_jam() { # host_jam <log>: a jam hosted on this Mac, joined from this phone
+      rm -f "$1"
+      python3 "$here/jam-host.py" "$jam_server" admin admin "$(relay_song 'Long%20Track%2004')" > "$1" 2>&1 & host=$!
+      wait_until 15 grep -qs invite: "$1"
+      adb shell am start -a android.intent.action.VIEW -d "'$(grep invite: "$1" | cut -d' ' -f2)'" >/dev/null 2>&1
+      check "a guest again" wait_until 20 bash -c "'$app' remote view | grep -q 'Mac Host:HOST'"
+    }
+    host_jam "$guests/host-ends.log"
+    kill $host
+    check "the host ending the jam takes the guest home" wait_for server "$APP_URL" 15
+    check "and says who ended it" wait_until 5 on_screen 'text="Mac Host ended the Jam"'
+    host_jam "$guests/host-gone.log"
+    kill -9 $host; wait $host 2>/dev/null
+    adb shell am force-stop "$pkg"
+    curl -sf "$jam_server/rest/noriRemote.close?u=admin&p=admin&v=1.16.1&c=e2e&f=json&room=$(grep room: "$guests/host-gone.log" | cut -d' ' -f2)" >/dev/null
+    app_up >/dev/null
+    check "a guest profile whose jam the relay dropped opens the user's own" wait_for server "$APP_URL" 20
   fi
 fi
 

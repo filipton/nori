@@ -317,6 +317,10 @@ pub const JOINING: &str = "Joining…";
 pub const NOT_AN_INVITE: &str = "That is not a jam invite. Paste the whole link the host sent you.";
 pub const JAM_LEAVE: &str = "Leave the jam";
 pub const JAM_LEFT: &str = "You left the jam";
+
+pub fn jam_ended(host: Option<&str>) -> String {
+    host.map_or("The jam ended".into(), |h| format!("{h} ended the jam"))
+}
 pub const LISTEN_HERE: &str = "Listen here";
 pub const PLAYING_HERE: &str = "Playing here";
 pub const LISTEN_KEYS: &str = "⏎ listen";

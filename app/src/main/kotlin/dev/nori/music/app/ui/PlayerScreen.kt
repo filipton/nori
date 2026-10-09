@@ -2685,9 +2685,10 @@ private fun Queue(vm: PlayerViewModel) {
     // Shuffle and repeat live here, pinned above the list - not in the transport, and never scrolled
     // away (the list opens at the playing row, which used to hide them).
     Column(Modifier.fillMaxSize()) {
-        jam?.let { j ->
-            if (j.hosting) JamHeader(j) { vm.cover(it, CoverSize.ROW) }
-            else if (state.jamGuest) GuestJamHeader(j) { vm.cover(it, CoverSize.ROW) }
+        val j = jam
+        if (j?.hosting == true) JamHeader(j) { vm.cover(it, CoverSize.ROW) }
+        else if (state.jamGuest) {
+            if (j != null) GuestJamHeader(j) { vm.cover(it, CoverSize.ROW) } else GuestLeaveHeader()
         }
         // A jam guest's queue is the host's to change: it only shows it.
         val edits = !state.jamGuest

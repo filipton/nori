@@ -67,6 +67,7 @@ impl RemotePlayer for Nothing {
 
 impl RemoteShown for Nothing {
     fn changed(&self) {}
+    fn jam_ended(&self, _: Option<String>) {}
 }
 
 #[test]

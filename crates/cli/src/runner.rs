@@ -322,7 +322,7 @@ impl Runner {
                 app.go(View::Home);
                 return;
             }
-            Msg::Left => {
+            Msg::Left(said) => {
                 match nori_host::jam_left(&crate::backend::app().settings) {
                     Some(p) => {
                         prefs_changed(app);
@@ -337,7 +337,7 @@ impl Runner {
                         app.view = View::Login;
                     }
                 }
-                return app.say(crate::text::JAM_LEFT, false);
+                return app.say(said.clone(), false);
             }
             Msg::LoggedIn(Ok(p)) => {
                 let mut prefs = crate::backend::app().settings.current().unwrap_or_default();

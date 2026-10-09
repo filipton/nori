@@ -48,6 +48,9 @@ class RemoteViewModel(app: Application) : NoriViewModel(app) {
     /** The jam this phone hosts or is a guest in. */
     val jam: StateFlow<JamView?> = remotes.jam
 
+    /** The jam this phone was a guest in ended, by its host's name if seen; the phone's own profile is open again. */
+    val ended = remotes.ended
+
     /** The device playing while it is not this phone (Remotes.mirror). */
     val mirror: StateFlow<dev.nori.music.ffi.Mirror?> = remotes.mirror
 
@@ -119,7 +122,7 @@ class RemoteViewModel(app: Application) : NoriViewModel(app) {
     /** Sends member [id] out of the jam. */
     fun remove(id: String) = jamAct(Op.Kick(id))
 
-    fun leave() = viewModelScope.launch { nori.leaveJam() }
+    fun leave() = nori.leaveJam()
 
     /** The server's address when an invite to it works only on a home network (the core's `is_home_only`). */
     fun homeOnly(): String? = nori.settings.value.server?.url?.takeIf { dev.nori.music.ffi.remote.isHomeOnly(it) }

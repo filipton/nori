@@ -86,6 +86,9 @@ pub trait RemotePlayer: Send + Sync {
 #[cfg_attr(feature = "ffi", uniffi::export(with_foreign))]
 pub trait RemoteShown: Send + Sync {
     fn changed(&self);
+    /// The jam this guest was in ended (its host ended it, or the relay no longer knows it), once: the
+    /// platform leaves it as after [`Remote::jam_leave`]. `host`: its host's name, if seen.
+    fn jam_ended(&self, host: Option<String>);
 }
 
 /// The platform's mDNS (NsdManager on Android, mdns-sd on the desktop).
@@ -698,6 +701,10 @@ struct Inner {
     server_clock: ClockSync,
     /// This guest listens along.
     listen: Option<Listen>,
+    /// The name of the host of the jam this guest is in, as last seen.
+    jam_host: Option<String>,
+    /// This guest's jam ended or was left: the relay is asked nothing more.
+    jam_over: bool,
 }
 
 impl Peer {
@@ -708,7 +715,7 @@ impl Peer {
 
 impl Inner {
     fn wants_relay(&self) -> bool {
-        self.relay != RelaySupport::Unsupported && (self.serving || self.watching || self.follows_mirror() || self.hosted.is_some() || self.listen.is_some())
+        self.relay != RelaySupport::Unsupported && !self.jam_over && (self.serving || self.watching || self.follows_mirror() || self.hosted.is_some() || self.listen.is_some())
     }
 
     /// Whether the mirrored device is followed: while something here shows it, or it plays.
@@ -1396,10 +1403,12 @@ impl Remote {
     }
 
     /// Leaves the jam this guest profile is in, its music stopping here at once; the app then drops the
-    /// profile.
-    pub async fn jam_leave(&self) -> Result<(), NetError> {
+    /// profile at once too. The relay is told on the way, as far as it can be before [`Remote::stop`]
+    /// gives up waiting.
+    pub fn jam_leave(self: Arc<Self>) {
+        self.inner.lock().jam_over = true;
         self.unfollow();
-        transport::get(&*self.client.transport, self.relay_url("noriRemote.leave", &[]), 0).await.map(|_| ())
+        self.out(Out::Get(self.relay_url("noriRemote.leave", &[])));
     }
 }
 
@@ -1464,6 +1473,12 @@ pub fn device_names(devices: Vec<RemoteDevice>, me: RemoteMe, words: KindWords) 
 }
 
 /// An answer from the relay; None when the server has no relay (a Subsonic error for an unknown endpoint).
+/// The Subsonic error code a relay answers with instead of an [`Answer`].
+fn refusal_code(body: &[u8]) -> Option<i64> {
+    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    v.get("subsonic-response")?.get("error")?.get("code")?.as_i64()
+}
+
 fn answer(body: &[u8]) -> Option<Answer> {
     let v: serde_json::Value = serde_json::from_slice(body).ok()?;
     if v.get("subsonic-response").is_some() {
@@ -1677,7 +1692,11 @@ impl Remote {
     fn probe(self: &Arc<Self>) {
         let me = self.clone();
         self.spawn("nori-remote-probe", move || {
+            let generation = me.inner.lock().generation;
             let Some(got) = me.get(me.poll_url(None, false, false), 0, |_| true) else { return };
+            if me.jam_gone(&got) {
+                return me.jam_ended(generation);
+            }
             let serving = {
                 let mut i = me.inner.lock();
                 if let Some(found) = support(&got) {
@@ -1750,6 +1769,9 @@ impl Remote {
             if self.inner.lock().generation != generation {
                 return;
             }
+            if self.jam_gone(&got) {
+                return self.jam_ended(generation);
+            }
             match (support(&got), got) {
                 (Some(RelaySupport::Supported), Ok(body)) => {
                     self.inner.lock().relay = RelaySupport::Supported;
@@ -1767,6 +1789,29 @@ impl Remote {
                 }
             }
         }
+    }
+
+    /// Whether a relay poll's answer says this guest's jam is gone: the relay no longer takes its key, or
+    /// no longer lists its jam's room (it lists it while the jam lasts).
+    fn jam_gone(&self, got: &Result<Vec<u8>, NetError>) -> bool {
+        let Ok(body) = got else { return false };
+        self.me.kind == DeviceKind::Guest && (refusal_code(body) == Some(40) || answer(body).is_some_and(|a| !a.rooms.iter().any(|r| r.jam)))
+    }
+
+    /// The jam this guest is in ended: nothing more is followed or asked, and the platform is told.
+    fn jam_ended(&self, generation: u64) {
+        let host = {
+            let mut i = self.inner.lock();
+            if i.generation != generation || std::mem::replace(&mut i.jam_over, true) {
+                return;
+            }
+            i.relay_polling = false;
+            i.rooms.clear();
+            i.jam_host.clone()
+        };
+        self.unfollow();
+        self.shown.jam_ended(host);
+        self.shown.changed();
     }
 
     fn no_relay(&self, generation: u64) {
@@ -1903,6 +1948,9 @@ impl Remote {
                 }
             }
             i.rooms = a.rooms;
+            if let Some((_, Some(host))) = i.joined() {
+                i.jam_host = Some(host.name.clone());
+            }
         }
         for (via, from, id, op) in commands {
             self.obey(via, from, id, op, received);

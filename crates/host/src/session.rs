@@ -44,6 +44,9 @@ pub enum Said {
     Reachable(Result<(), NetError>),
     /// The other devices or the jam changed (remote control): read them again.
     Remote,
+    /// The jam this guest is in ended (`host`: its host's name, if seen): the client leaves it as on
+    /// Leave, and says so.
+    JamEnded { host: Option<String> },
     /// Another device set the volume (0 to 1).
     Volume(f32),
     /// A heart changed (pressed here, or by another device): hearts are read again ([`Session::starred`]), or drawn from the core's marks

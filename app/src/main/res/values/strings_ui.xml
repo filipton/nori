@@ -640,6 +640,8 @@
     <string name="jam_join_failed">Couldn’t join the Jam</string>
     <string name="jam_own">That’s your own Jam</string>
     <string name="jam_leave">Leave</string>
+    <string name="jam_ended_by">%1$s ended the Jam</string>
+    <string name="jam_ended">The Jam ended</string>
     <string name="jam_listen_here">Listen here</string>
     <string name="jam_playing_here">Playing here</string>
     <string name="jam_along_host_off">The host isn’t letting guests listen along right now. You can still ask for songs.</string>

@@ -25,7 +25,8 @@ void nori_ios_free(char *s);
 /// `kind`: 1 state, 2 song, 3 looped, 4 position, 5 error, 6 output, 7 buffering, 8 stopped,
 /// 9 note, 10 reachable, 11 lyrics, 12 search, 13 title, 14 mixing, 15 bridge, 16 placed, 17 awake,
 /// 18 remote (the devices, the one playing or the jam changed), 19 volume (another device set it: `ms`
-/// thousandths), 20 jam joined, 21 jam left (`nori_ios_jam_join`, `nori_ios_jam_leave`).
+/// thousandths), 20 jam joined, 21 jam left (`nori_ios_jam_join`, `nori_ios_jam_leave`; `index` 1: the jam
+/// ended, `text` its host's name if known).
 /// `state`: 0 idle, 1 playing, 2 paused, 3 ended.
 typedef struct NoriReport {
     int32_t kind;

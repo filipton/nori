@@ -213,6 +213,26 @@ internal fun JamHeader(j: JamView, cover: (String?) -> String?) {
     PeopleSheet(people, j, { people = false; inviting = true }) { people = false }
 }
 
+/** A jam guest whose jam is not seen (not yet, or the relay cannot be reached): Leave is always there. */
+@Composable
+internal fun GuestLeaveHeader() {
+    val vm: RemoteViewModel = viewModel()
+    val look = LocalLook.current
+    val accent = ColorProducer { look.color(CoverLook.ACCENT) }
+    Row(Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 6.dp).heightIn(min = 40.dp), verticalAlignment = Alignment.CenterVertically) {
+        LookIcon(Icons.Filled.Groups, null, Modifier.size(22.dp), accent)
+        LookText(
+            words(R.string.jam_title), { look.color(CoverLook.ON) }, Modifier.weight(1f).padding(start = 8.dp),
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold), maxLines = 1,
+        )
+        LookText(
+            words(R.string.jam_leave), accent,
+            Modifier.clip(RoundedCornerShape(50)).clickable(onClick = { vm.leave() }).padding(horizontal = 8.dp, vertical = 6.dp),
+            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold), maxLines = 1,
+        )
+    }
+}
+
 /**
  * The jam this phone is a guest in, over the host's queue: whose it is, who listens (a tap opens People),
  * Leave, and the songs asked for here until the host decides. Drawn in the player's own colours.

@@ -140,10 +140,18 @@ class Nori private constructor(private val context: Context) {
     /** The invite [joinJam] was given is to the jam this phone hosts. */
     class OwnJamException : Exception("the jam this device hosts")
 
-    /** Leaves the jam this guest profile is in and drops the profile. */
-    suspend fun leaveJam() {
+    /**
+     * Leaves the jam this guest profile is in, at once: its music stops, the profile goes and the one in
+     * use before it opens again. The relay is told on the way (the core's `jam_leave`). Main thread.
+     */
+    fun leaveJam() {
         remotes.leave()
-        withContext(Dispatchers.Main) { logout() }
+        logout()
+    }
+
+    /** The jam this guest profile was in ended (the core's `jam_ended`): left as on Leave. Main thread. */
+    fun jamEnded() {
+        if (remotes.isGuest()) logout()
     }
 
     /** The app's own updates from its GitHub releases; nothing is asked until the app starts it. */
