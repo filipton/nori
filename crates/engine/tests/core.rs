@@ -362,7 +362,7 @@ fn downloads_read_back(core: &Arc<Core>, store: &Arc<Store>, analyses: &Arc<Anal
     // Already analysed: nothing to read back.
     assert!(!core.download_unanalysed(false).unwrap().iter().any(|id| id.starts_with("rb-")));
     // Analysis gone: read back again.
-    core.analysis_clear().unwrap();
+    core.measure_again().unwrap();
     let again: Vec<String> = core.download_unanalysed(false).unwrap().into_iter().filter(|id| id.starts_with("rb-")).collect();
     assert_eq!(again.len(), 2);
     assert_eq!(analyses.analyse(again), 2);

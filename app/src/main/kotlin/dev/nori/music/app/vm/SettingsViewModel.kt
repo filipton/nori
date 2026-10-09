@@ -545,7 +545,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     }
 
     fun clearAnalyses() = viewModelScope.launch {
-        withContext(Dispatchers.IO) { runCatching { nori.core.analysisClear() } }
+        withContext(Dispatchers.IO) { runCatching { nori.core.measureAgain() } }.getOrNull()?.let { nori.settings.asked(it.effect) }
         refreshAnalysed()
     }
 

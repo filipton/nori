@@ -733,10 +733,9 @@ impl Session {
                 }
             }
             Chore::MeasureAgain => {
-                let n = self.core.analysis_clear().unwrap_or(0);
-                self.core.session.planner.analyses_changed();
-                self.engine.replan();
-                return self.note(Note::Forgot(n));
+                let Ok(m) = self.core.measure_again() else { return };
+                self.applied(m.effect);
+                return self.note(Note::Forgot(m.forgot));
             }
         }
         self.note(Note::Done(chore));
