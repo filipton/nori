@@ -239,7 +239,7 @@
     <string name="interface_title">Interface</string>
     <string name="open_source">Open source</string>
     <string name="free_software">nori is free software</string>
-    <string name="licence_line">MIT license \u0020· \u0020Copyright (c) 2026 filipton</string>
+    <string name="licence_line">MIT license \u0020· \u0020Copyright (c) 2026 norifm</string>
     <string name="licences">Licenses</string>
     <string name="licences_detail">The libraries, fonts and data this app is made of, and their terms</string>
     <string name="rust_core">Rust core</string>
