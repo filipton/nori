@@ -3,10 +3,10 @@
 #   tools/perf-suite.sh <adb-serial> <server-url> [user=admin] [password=admin]
 # Needs the dev server (tools/dev-server.sh) with the "Bench / Long Play" album (10-minute MP3s, one FLAC,
 # "Noise 1" with synced lyrics). The device must be unlocked. Media volume is set to 0 for the run and restored.
-# Results are appended to perf-results.md as one table per device.
+# Results are appended to docs/performance/raw/perf-results.md as one table per device.
 set -uo pipefail
 export ANDROID_SERIAL=$1; url=$2; user=${3:-admin}; pass=${4:-admin}
-here="$(cd "$(dirname "$0")" && pwd)"; pkg=dev.nori.music; ui="$here/ui.sh"; out="$here/../perf-results.md"
+here="$(cd "$(dirname "$0")" && pwd)"; pkg=dev.nori.music; ui="$here/ui.sh"; out="$here/../docs/performance/raw/perf-results.md"
 apk="$here/../app/build/outputs/apk/release/app-release.apk"
 model=$(adb shell getprop ro.product.model | tr -d '\r'); rel=$(adb shell getprop ro.build.version.release | tr -d '\r'); abi=$(adb shell getprop ro.product.cpu.abi | tr -d '\r')
 size=$(adb shell wm size | grep -oE '[0-9]+x[0-9]+' | tail -1); w=${size%x*}; h=${size#*x}

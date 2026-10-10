@@ -1,5 +1,7 @@
 # Battery shootout: nori vs Symfonium vs musly vs Navic
 
+Historical: measured on nori 0.3.x, being re-measured. The summary is [the performance page](../../site/performance.md).
+
 Same emulator (`sdk_gphone64_x86_64`, Android 14), same local Navidrome server,
 same tracks, media volume 0, screen off, no touches. nori is the **release**
 build throughout; the other three are Play releases. Full per-thread outputs

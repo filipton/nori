@@ -1,5 +1,7 @@
 # Measured performance
 
+Historical: measured in September 2026 on releases before 0.4, being re-measured. `tools/perf-suite.sh` appends to it.
+
 Everything here is produced by `tools/perf-suite.sh <serial> <server-url>`, which installs the release
 APK, logs in, and walks the app while `tools/bench.sh` samples CPU, wake-ups and memory from `/proc`.
 "Quiet seconds" counts seconds in which every thread of the app stayed asleep - the number that
