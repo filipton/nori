@@ -38,3 +38,6 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 
 [build-dependencies]
 slint-build = "1.18"
+
+[dev-dependencies]
+i-slint-backend-testing = "=1.18.1"

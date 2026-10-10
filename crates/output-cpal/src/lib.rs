@@ -225,7 +225,7 @@ fn build_stream<T: SizedSample + Default + Send + 'static>(
 /// engine is told ([`AudioOutput::failed`]) and woken to hear it; others are only logged.
 fn stream_failed(kind: ErrorKind, detail: String, failed: &Mutex<Option<String>>, wake: impl FnOnce()) {
     eprintln!("nori: the output stream failed: {detail}");
-    if matches!(kind, ErrorKind::DeviceNotAvailable | ErrorKind::HostUnavailable) {
+    if matches!(kind, ErrorKind::DeviceNotAvailable | ErrorKind::HostUnavailable | ErrorKind::StreamInvalidated) {
         *failed.lock().unwrap_or_else(|p| p.into_inner()) = Some(detail);
         wake();
     }
@@ -262,7 +262,7 @@ impl CpalOutput {
             _ => build_stream(device, *config, feed, volume, heard, on_error, Feed::pull_i16, |s, v| (s as f32 * v) as i16),
         }?;
         if self.playing {
-            let _ = stream.play();
+            stream.play().map_err(|e| e.to_string())?;
         }
         self.stream = Some(stream);
         Ok(())
@@ -318,7 +318,10 @@ impl AudioOutput for CpalOutput {
         self.playing = true;
         if let Some(s) = &self.stream {
             if let Err(e) = s.play() {
-                eprintln!("nori: the output would not start: {e}");
+                *self.failed.lock().unwrap_or_else(|p| p.into_inner()) = Some(e.to_string());
+                if let Some(feed) = &self.feed {
+                    feed.lock().unwrap_or_else(|p| p.into_inner()).wake_engine();
+                }
             }
         }
     }
@@ -357,7 +360,10 @@ impl AudioOutput for CpalOutput {
             return;
         }
         if let Err(e) = self.rebuild() {
-            eprintln!("nori: the output would not open with a period of {period} ms: {e}");
+            *self.failed.lock().unwrap_or_else(|p| p.into_inner()) = Some(e);
+            if let Some(feed) = &self.feed {
+                feed.lock().unwrap_or_else(|p| p.into_inner()).wake_engine();
+            }
         }
     }
 
@@ -406,7 +412,7 @@ mod tests {
     #[test]
     fn a_device_gone_stops_the_engine() {
         let failed = Mutex::new(None);
-        for (kind, stops) in [(ErrorKind::DeviceNotAvailable, true), (ErrorKind::HostUnavailable, true), (ErrorKind::DeviceBusy, false)] {
+        for (kind, stops) in [(ErrorKind::DeviceNotAvailable, true), (ErrorKind::HostUnavailable, true), (ErrorKind::DeviceBusy, false), (ErrorKind::StreamInvalidated, true)] {
             let mut woke = false;
             stream_failed(kind, "gone".into(), &failed, || woke = true);
             assert_eq!((failed.lock().unwrap().take().is_some(), woke), (stops, stops), "{kind:?}");

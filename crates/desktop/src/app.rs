@@ -1562,7 +1562,7 @@ impl App {
         let names = nori_core::remote::device_names(devices.clone(), r.me(), words::kind_words());
         devices.iter_mut().zip(names).for_each(|(d, name)| d.name = name);
         let rows: Vec<crate::DeviceRow> = here.chain(devices.iter().map(|d| words::device_row(Some(d), active == Some(d.id.as_str())))).collect();
-        ui.set_devices(ModelRc::new(VecModel::from(rows)));
+        devices_set(&ui, rows);
     }
 
     /// Moves the music to device `id`, or here ("").
@@ -2038,5 +2038,38 @@ fn queue_from<'a>(upcoming: impl Iterator<Item = &'a Song>) -> String {
     match albums.next() {
         Some(first) if !first.is_empty() && albums.all(|a| a == first) => first.to_string(),
         _ => String::new(),
+    }
+}
+
+fn devices_set(ui: &AppWindow, rows: Vec<crate::DeviceRow>) {
+    let model = ui.get_devices();
+    match model.as_any().downcast_ref::<VecModel<crate::DeviceRow>>() {
+        Some(model) => renew(model, rows),
+        None => ui.set_devices(ModelRc::new(VecModel::from(rows))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_updates_keep_the_picker_rows() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = AppWindow::new().unwrap();
+        let here = crate::DeviceRow { name: "This computer".into(), active: true, ..Default::default() };
+        let phone = crate::DeviceRow { id: "phone".into(), name: "Phone".into(), ..Default::default() };
+        devices_set(&ui, vec![here.clone(), phone.clone()]);
+        let model = ui.get_devices();
+        devices_set(&ui, vec![here.clone(), phone.clone()]);
+        assert!(model == ui.get_devices(), "a remote update must preserve a mouse press on a device row");
+        let picked = crate::DeviceRow { active: true, ..phone };
+        devices_set(&ui, vec![crate::DeviceRow { active: false, ..here.clone() }, picked.clone()]);
+        assert!(model == ui.get_devices());
+        assert_eq!(model.row_data(1), Some(picked));
+        devices_set(&ui, vec![here.clone()]);
+        assert!(model == ui.get_devices(), "a disconnected device leaves the existing picker");
+        assert_eq!(model.row_count(), 1);
+        assert_eq!(model.row_data(0), Some(here));
     }
 }

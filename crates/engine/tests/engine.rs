@@ -3380,3 +3380,22 @@ fn heard_again_after_pause() {
         }
     }
 }
+
+#[test]
+fn a_queue_returned_after_release_is_heard() {
+    let (a, b) = (music(12.0, 19), music(12.0, 20));
+    for fade_ms in [0, 350] {
+        let rig = Rig::build(files(&[("a", &a), ("b", &b)]), sim::App::new(), Settings { fade_ms, ..Settings::default() }, Extra::default());
+        rig.engine.play_at(0, 0);
+        assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2));
+        rig.engine.release_now();
+        assert!(rig.wait_for(5, |r| r.shut.load(Ordering::Relaxed) == 1));
+        let before = rig.heard.lock().len();
+        rig.engine.queue_changed();
+        rig.engine.play_at(1, 3_000);
+        assert!(rig.wait_for(10, |r| r.heard.lock().len() > before + RATE as usize * 2), "fade {fade_ms}: {:?}", rig.events.lock());
+        let heard = rig.heard.lock();
+        assert!(heard[before..].iter().any(|&v| v.abs() > 1000), "fade {fade_ms}: the returned queue must be audible");
+        assert_eq!(rig.engine.status().index, Some(1));
+    }
+}
