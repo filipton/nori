@@ -22,7 +22,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         window.tintColor = Theme.accent
         window.makeKeyAndVisible()
         self.window = window
-        Core.shared.start()
+        Core.shared.start(in: window)
         NowPlaying.shared.start()
         Bonjour.shared.start()
         let dir = dataDirectory().path

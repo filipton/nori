@@ -218,6 +218,7 @@ final class Core {
     private var pages: [UInt64: (PageAnswer) -> Void] = [:]
     private var covers: [UInt64: (UIImage) -> Void] = [:]
     private let lock = NSLock()
+    private var systemVolume: SystemVolume?
 
     var isOpen: Bool { nori_ios_is_open() != 0 }
 
@@ -252,7 +253,8 @@ final class Core {
         NotificationCenter.default.post(name: .noriFavorites, object: nil)
     }
 
-    func start() {
+    func start(in window: UIWindow) {
+        systemVolume = SystemVolume(in: window)
         nori_ios_on_report { report in
             guard let r = report?.pointee else { return }
             let kind = r.kind
@@ -404,7 +406,7 @@ final class Core {
         case 21:
             switchProfile(count == 0 ? Say.jamLeft : Say.jamEnded(text))
         case 19:
-            SystemVolume.set(Float(ms) / 1000)
+            systemVolume?.set(Float(ms) / 1000)
         case 5:
             Toast.show(Say.playbackError(text))
         case 7 where now.device == nil:

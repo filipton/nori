@@ -282,19 +282,19 @@ final class Bonjour: NSObject, NetServiceDelegate, NetServiceBrowserDelegate {
     }
 }
 
-/// The system volume, set when another device asks: through a volume view's slider, the one way iOS 12
-/// lets an app move it. The view is in the window only for the move.
-enum SystemVolume {
-    static func set(_ fraction: Float) {
-        guard let window = UIApplication.shared.keyWindow else { return }
-        let view = MPVolumeView(frame: CGRect(x: -200, y: -200, width: 100, height: 40))
+/// The system volume slider, kept in the window so it stays connected to the output route.
+final class SystemVolume {
+    private let view = MPVolumeView(frame: CGRect(x: -200, y: -200, width: 100, height: 40))
+
+    init(in window: UIWindow) {
+        view.isUserInteractionEnabled = false
         window.addSubview(view)
-        guard let slider = view.subviews.lazy.compactMap({ $0 as? UISlider }).first else {
-            return view.removeFromSuperview()
-        }
+        view.layoutIfNeeded()
+    }
+
+    func set(_ fraction: Float) {
+        guard let slider = view.subviews.lazy.compactMap({ $0 as? UISlider }).first else { return }
         slider.setValue(min(1, max(0, fraction)), animated: false)
         slider.sendActions(for: .valueChanged)
-        // The slider hands the value to the system on its own turn; the view goes after it.
-        DispatchQueue.main.async { view.removeFromSuperview() }
     }
 }
