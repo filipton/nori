@@ -894,8 +894,8 @@ impl Inner {
     fn heard_at(&self, st: &DeviceState) -> Option<i64> {
         let l = self.listen.as_ref()?;
         let now = clock::now_us();
-        let server = st.server_us.zip(self.server_clock.offset_at(now)).map(|(host, here)| host - here);
-        Some(st.at_us? + server.or_else(|| l.clock.offset_at(now).map(|o| -o))?)
+        let server = st.server_us.zip(self.server_clock.settled_offset_at(now)).map(|(host, here)| host - here);
+        Some(st.at_us? + server.or_else(|| l.clock.settled_offset_at(now).map(|o| -o))?)
     }
 
     /// The host's playback as this guest plays along with it; None while it should not, or the host's
@@ -2143,6 +2143,7 @@ impl Remote {
         let mut lost = Vec::new();
         {
             let mut i = self.inner.lock();
+            let clock_before = i.timed();
             // An account's device is listed only the jams it opened: one it does not host is one it ended
             // or lost (its close or open went unanswered, the app started again). It is ended, not shown.
             if self.me.kind != DeviceKind::Guest {
@@ -2195,6 +2196,9 @@ impl Remote {
                 }
             }
             i.rooms = a.rooms;
+            if i.timed() != clock_before {
+                self.timing.notify_all();
+            }
             if let Some((_, Some(host))) = i.joined() {
                 i.jam_host = Some(host.name.clone());
             }
@@ -2256,7 +2260,7 @@ impl Remote {
                 let mut i = self.inner.lock();
                 let mut wait = |gap: Duration| {
                     let until = Instant::now() + gap;
-                    while i.timing == generation && !self.timing.wait_until(&mut i, until).timed_out() {}
+                    while i.timing == generation && i.timed() == last && !self.timing.wait_until(&mut i, until).timed_out() {}
                 };
                 if sent > 0 {
                     wait(if sent < clock::BURST { Duration::from_millis(BURST_GAP_MS) } else { Duration::from_micros(clock::EVERY_US as u64) });
@@ -2531,7 +2535,7 @@ impl Remote {
         let now = clock::now_us();
         st.position_ms = i.position_at_of(&st, now);
         st.at_us = Some(now);
-        st.server_us = i.server_clock.offset_at(now).filter(|_| i.hosts_along());
+        st.server_us = i.server_clock.settled_offset_at(now).filter(|_| i.hosts_along());
         st
     }
 

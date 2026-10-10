@@ -97,6 +97,8 @@ struct Relay {
     along: std::sync::atomic::AtomicBool,
     /// Tells its time at `nori/time`; its clock reads [`SERVER_SKEW_US`] ahead.
     time: std::sync::atomic::AtomicBool,
+    /// The next relay clock answer arrives this late.
+    first_time_delay_ms: AtomicU64,
     /// The lagging device's answers to time exchanges reach the relay this late, ms (0: as its other sends).
     answers_late: AtomicU64,
     /// Closing a jam goes unanswered: the request is lost on the way.
@@ -138,7 +140,7 @@ const GUEST_ENDPOINTS: &[&str] = &["ping", "search3", "getCoverArt", "getSong", 
 
 impl Relay {
     fn new() -> Arc<Relay> {
-        Arc::new(Relay { hub: Mutex::default(), waiting: Mutex::default(), next: AtomicU64::new(1), absent: Default::default(), lagging: Mutex::new(None), lagged: AtomicU64::new(0), door_late: Default::default(), leave_late: Default::default(), down: Default::default(), along: std::sync::atomic::AtomicBool::new(true), time: Default::default(), answers_late: AtomicU64::new(0), lose_closes: Default::default(), opens_late: Default::default(), opens: AtomicU64::new(0) })
+        Arc::new(Relay { hub: Mutex::default(), waiting: Mutex::default(), next: AtomicU64::new(1), absent: Default::default(), lagging: Mutex::new(None), lagged: AtomicU64::new(0), door_late: Default::default(), leave_late: Default::default(), down: Default::default(), along: std::sync::atomic::AtomicBool::new(true), time: Default::default(), first_time_delay_ms: Default::default(), answers_late: AtomicU64::new(0), lose_closes: Default::default(), opens_late: Default::default(), opens: AtomicU64::new(0) })
     }
 
     fn absent() -> Arc<Relay> {
@@ -415,6 +417,10 @@ impl Transport for Relay {
             self.hub.lock().asked.push("nori/time".into());
             let now = clock::now_us() + SERVER_SKEW_US;
             let body = Body::Clock { t1: t1.parse().unwrap(), t2: now, t3: now };
+            let delay = self.first_time_delay_ms.swap(0, Ordering::Relaxed);
+            if delay > 0 {
+                off_thread(move || std::thread::sleep(Duration::from_millis(delay))).await;
+            }
             return Ok(TransportResponse { status: 200, body: json(body) });
         }
         let Some(rest) = request.url.strip_prefix(&format!("{SERVER}/rest/")).filter(|_| !self.down.load(Ordering::Relaxed)) else {
@@ -1468,8 +1474,32 @@ fn jam_guests_listen_along_by_the_relays_clock() {
     let l = leads.last().flatten().expect("a lead");
     let now = clock::now_us();
     let off = l.ms + (now - l.at_us) as f64 / 1000.0 * l.rate - (30_000.0 + (now - said) as f64 / 1000.0 * 1.25);
-    assert!(off.abs() <= 5.0, "the guest plays {off:.1} ms off the host");
+    assert!(off.abs() <= 5.0, "the guest plays {off:.1} ms off the host: {l:?}, said {said}, now {now}");
     assert!(relay.asked().iter().filter(|a| *a == "nori/time").count() >= 2 * nori_remote::clock::BURST, "each learned the relay's clock");
+    relay.close();
+}
+
+#[test]
+fn a_guest_starts_with_the_settled_clock() {
+    let relay = Relay::new();
+    relay.time.store(true, Ordering::Relaxed);
+    let host = Device::account(&relay, DeviceKind::Desktop, "Host");
+    host.playing(&["s1"], 0);
+    let link = opened(&host);
+    host.remote.clone().jam_along(true);
+    host.until("the host's clock burst", |_| (relay.asked().iter().filter(|a| *a == "nori/time").count() >= nori_remote::clock::BURST).then_some(()));
+    let said = clock::now_us();
+    host.remote.clone().played(Playing { playing: true, position_ms: 30_000, rate: 1.0, index: Some(0), ..Default::default() });
+    let pass = joined(&relay, link, "Phone".into());
+    let guest = Device::new(&relay, ServerConfig { url: pass.url, api_key: Some(pass.api_key), ..Default::default() }, DeviceKind::Guest, "Phone");
+    let leads = Arc::new(Leads::default());
+    guest.remote.follow_with(Some(leads.clone()));
+    relay.first_time_delay_ms.store(160, Ordering::Relaxed);
+    guest.remote.clone().listen(true);
+    guest.until("the first playback lead", |_| leads.0.lock().iter().flatten().next().cloned());
+    let first = leads.0.lock().iter().flatten().next().cloned().expect("the first lead");
+    let off = first.ms + (said - first.at_us) as f64 / 1000.0 - 30_000.0;
+    assert!(off.abs() < 5.0, "the first lead starts {off:.1} ms off the host");
     relay.close();
 }
 

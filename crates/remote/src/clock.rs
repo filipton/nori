@@ -89,6 +89,11 @@ pub struct ClockSync {
 }
 
 impl ClockSync {
+    /// The offset after the startup burst can discard delayed exchanges.
+    pub fn settled_offset_at(&self, at: i64) -> Option<i64> {
+        (self.samples.len() >= BURST).then(|| self.offset_at(at)).flatten()
+    }
+
     pub fn add(&mut self, e: Exchange) {
         let s = Sample { at: (e.t1 + e.t4) / 2, offset: e.offset(), round_trip: e.round_trip().max(0) };
         if self.offset_at(s.at).is_some_and(|o| (s.offset - o).abs() > s.round_trip + JUMP_US) {

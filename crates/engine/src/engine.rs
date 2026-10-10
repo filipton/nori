@@ -1103,6 +1103,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             }
             st.state = s;
             drop(st);
+            self.report(self.now());
             (self.events)(Event::State(s));
         }
     }
