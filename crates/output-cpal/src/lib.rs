@@ -75,7 +75,10 @@ impl Heard {
     fn pulled(&self, now: Instant, delay_us: u64, frames: usize, rate: u32) {
         let at = now.saturating_duration_since(self.base).as_micros() as u64;
         let taken = self.taken();
-        *self.last.lock().unwrap_or_else(|p| p.into_inner()) = Last { until_us: at + delay_us + frames as u64 * 1_000_000 / rate.max(1) as u64, taken, rate };
+        let mut last = self.last.lock().unwrap_or_else(|p| p.into_inner());
+        // Silent pulls may discard a skipped song; those frames never reach the device.
+        let until_us = if frames == 0 { last.until_us } else { at + delay_us + frames as u64 * 1_000_000 / rate.max(1) as u64 };
+        *last = Last { until_us, taken, rate };
     }
 
     /// How long until what was pulled has been heard.
@@ -195,22 +198,22 @@ fn build_stream<T: SizedSample + Default + Send + 'static>(
         .build_output_stream(
             config,
             move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
-                let music = match feed.try_lock() {
-                    Ok(mut f) => pull(&mut f, data),
-                    Err(_) => {
-                        data.fill(T::default());
-                        0
-                    }
+                let Ok(mut feed) = feed.try_lock() else {
+                    data.fill(T::default());
+                    return;
                 };
+                let music = pull(&mut feed, data);
+                let t = info.timestamp();
+                let delay = t.playback.saturating_duration_since(t.callback).as_micros() as u64;
+                heard.pulled(Instant::now(), delay, music, rate);
+                // A flush wakes the engine before its discarded frames are accounted for here.
+                if feed.flushed() {
+                    feed.wake_engine();
+                }
+                drop(feed);
                 let v = volume.get();
                 if v != 1.0 {
                     data.iter_mut().for_each(|s| *s = scale(*s, v));
-                }
-                let t = info.timestamp();
-                let delay = t.playback.saturating_duration_since(t.callback).as_micros() as u64;
-                // Only music counts: playing silence holds nothing, so a reopen waiting to drain goes on.
-                if music > 0 {
-                    heard.pulled(Instant::now(), delay, music, rate);
                 }
             },
             on_error,
@@ -407,6 +410,24 @@ mod tests {
         assert_eq!(heard.left_us(next), 120_000, "the delay left and the period pulled");
         heard.pulled(next, 20_000, 4_410, 44_100);
         assert_eq!(heard.left_us(next), 120_000, "as the callback then says");
+    }
+
+    #[test]
+    fn silent_pull_does_not_hold_discarded_music() {
+        let heard = Heard::default();
+        let taken = Arc::new(AtomicU64::new(4_410));
+        let ring = taken.clone();
+        heard.follow(Box::new(move || ring.load(Ordering::Relaxed)));
+        let t = heard.base + Duration::from_secs(1);
+        heard.pulled(t, 20_000, 4_410, 44_100);
+        // A skip discards ten seconds in the ring before new music is ready.
+        taken.store(445_410, Ordering::Relaxed);
+        heard.pulled(t + Duration::from_millis(100), 20_000, 0, 44_100);
+        assert_eq!(heard.left_us(t + Duration::from_millis(100)), 20_000);
+        assert_eq!(heard.left_us(t + Duration::from_millis(130)), 0);
+        taken.store(449_820, Ordering::Relaxed);
+        heard.pulled(t + Duration::from_millis(200), 20_000, 4_410, 44_100);
+        assert_eq!(heard.left_us(t + Duration::from_millis(200)), 120_000);
     }
 
     #[test]
