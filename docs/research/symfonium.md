@@ -1,5 +1,7 @@
 # Symfonium (Android) - exhaustive feature inventory
 
+Internal planning note, not published.
+
 Compiled 2026-09-17 from primary sources only. Current stable: 15.0.1 (2026-08); beta: 15.1.0 b6.
 
 ## Source tags

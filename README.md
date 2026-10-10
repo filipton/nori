@@ -1,149 +1,49 @@
 <p align="center">
-  <img src="docs/brand/nori.png" alt="nori" width="160">
-</p>
-
-<h1 align="center">nori</h1>
-
-<p align="center">
-  A native Android client for Navidrome and octo-fiesta.<br>
-  Battery first, then features, then looks.
+  <img src="docs/brand/nori-wordmark.svg" alt="nori" width="280">
 </p>
 
 <p align="center">
-  <a href="https://github.com/norifm/nori/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/norifm/nori?style=flat-square&label=version&color=2b7fff"></a>
-  <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-3ddc84?style=flat-square&logo=android&logoColor=white">
-  <img alt="Kotlin · Rust" src="https://img.shields.io/badge/Kotlin%20%C2%B7%20Rust-555?style=flat-square">
-  <img alt="arm64 · x86_64" src="https://img.shields.io/badge/arm64%20%C2%B7%20x86__64-555?style=flat-square">
+  A music player for your own Navidrome or Subsonic server, on Android, desktop, the terminal and the iPod touch.
 </p>
 
 <p align="center">
-  <a href="#install">Install</a> ·
-  <a href="#measured">Measured</a> ·
-  <a href="#what-it-does">Features</a> ·
-  <a href="BENCHMARKS.md">Benchmarks</a> ·
-  <a href="#build">Build</a>
-</p>
-
----
-
-<p align="center">
-  <img src="docs/screenshots/home.png" width="28%" alt="Listen now">
-  &nbsp;
-  <img src="docs/screenshots/player.png" width="28%" alt="Player — artwork bleeds into the page">
-  &nbsp;
-  <img src="docs/screenshots/library.png" width="28%" alt="Library">
-</p>
-<p align="center">
-  <sub>Listen now · Player · Library</sub>
+  <a href="https://github.com/norifm/nori/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/norifm/nori?style=flat-square&label=release&color=3d6b52"></a>
+  <img alt="Android · Linux · macOS · terminal · iPod" src="https://img.shields.io/badge/Android%20%C2%B7%20Linux%20%C2%B7%20macOS%20%C2%B7%20terminal%20%C2%B7%20iPod-555?style=flat-square">
+  <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/licence-MIT-555?style=flat-square"></a>
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/search.png" width="28%" alt="Search">
-  &nbsp;
-  <img src="docs/screenshots/equalizer.png" width="28%" alt="Equalizer">
-  &nbsp;
-  <img src="docs/screenshots/lyrics.png" width="28%" alt="Synced lyrics">
-</p>
-<p align="center">
-  <sub>Search · Equalizer · Lyrics</sub>
+  <img src="docs/screenshots/home.png" width="28%" alt="Home">&nbsp;
+  <img src="docs/screenshots/player.png" width="28%" alt="The player">&nbsp;
+  <img src="docs/screenshots/lyrics.png" width="28%" alt="Lyrics">
 </p>
 
-## Measured
-
-Same emulator, same server, same track, screen off — release nori against
-Play builds of the alternatives. Quiet seconds are how often the process
-almost never woke: the number that decides overnight battery.
-
-| | **nori 0.3.1** | Symfonium | musly | Navic |
-|---|---|---|---|---|
-| CPU while playing (MP3 / FLAC / EQ) | **1.26 / 1.30 / 1.35 %** | 10.7 / 8.74 / 13.4 % | 4.01 / 4.70 / no EQ | 3.10 / 3.72 / 2.92 % |
-| Seconds asleep of 90 (MP3 / FLAC / EQ) | **75 / 69 / 73** | 1 / 0 / 1 | 0 / 0 / 0 | 1 / 1 / 1 |
-| Cold start | **~590 ms** | ~900 ms | ~1050 ms | ~700 ms |
-
-Nothing polls with the screen off. Audio is decoded into 10 s bursts so the
-CPU sleeps most of every playing minute. Full table and method:
-[BENCHMARKS.md](BENCHMARKS.md).
-
-## What it does
-
-**Playback** — gapless, hardware offload, burst buffering, ReplayGain,
-a queue that survives process death, shuffle / repeat, sleep timer,
-internet radio, AutoMix (beat-aware transitions).
-
-**Sound** — parametric EQ in Rust (peaks, shelves, passes, notches,
-per-channel bands, Equalizer APO paste-in, AutoEQ headphone curves),
-crossfeed, balance, mono, look-ahead limiter, per-output profiles.
-Changes apply on the fly with no silence.
-
-**Bit-perfect USB** — Android 14+, the track's own sample rate straight
-to the DAC.
-
-**Offline** — downloads, stars, ratings, playlist edits and plays queued
-and replayed later; rolling stream cache; offline search; optional bridge
-that keeps playing local downloads when the server drops.
-
-**Library** — live FTS search as you type, home shelves, bios, similar
-artists, playlists, favourites, ratings, genres, song radio, a queue
-shared with your other devices.
-
-**Integration** — home-screen widget, share links, media notification,
-headset buttons, Android Auto, scrobbling.
-
-Not there yet: casting, smart playlists, multiple servers, formats the
-platform cannot decode (DSD, APE, WavPack), integer 24/32-bit bit-perfect.
+- **Sleeps between bursts.** Music is decoded ahead and the CPU sleeps in between; nothing ticks with the screen off.
+- **Sounds right.** Gapless albums, AutoMix transitions on the beat, an equalizer with AutoEQ curves, a sound for each output.
+- **Finds the words.** Your server's lyrics first, then lyrics services online, scored, word by word where they have it.
+- **One core, every screen.** One Rust core plays, queues and decides; each app only draws.
+- **Yours.** No accounts, no analytics; your music stays on your server and downloads play offline.
 
 ## Install
 
-```sh
-tools/apk.sh           # release APK for a phone (arm64)
-tools/apk.sh x86_64    # for an emulator
-tools/apk.sh --install # build and push to whatever is connected
-```
+- **Android**: the APK from the [latest release](https://github.com/norifm/nori/releases/latest), or see [norifm.com](https://norifm.com/#download).
+- **Desktop and terminal**: build from source, below.
+- **iPod touch** (6th generation, iOS 12, jailbroken): the `.ipa` from the [latest release](https://github.com/norifm/nori/releases/latest), and the [iPod guide](https://norifm.com/docs/clients/ipod/).
 
-Lands in `build/nori-music-<version>-<abi>.apk`. Signed with the Android
-debug key — fine on your own devices, not for Play Store.
+## Links
 
-Android Auto hides apps that were not installed from the Play Store. To see
-nori in the car, open the Android Auto settings on the phone, tap Version
-ten times to unlock developer settings, then in the ⋮ menu open Developer
-settings and turn on Unknown sources.
+[Website](https://norifm.com) · [Docs](https://norifm.com/docs/) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
 
 ## Build
 
 ```sh
-./gradlew :app:assembleDebug -PrustTargets=x86_64   # fast emulator build
-./gradlew :app:assembleRelease                      # arm64 + x86_64
-cargo test
-tools/dev-server.sh                                 # local Navidrome + generated music
+cargo test -j4 --workspace                              # every Rust test
+cargo run --release -p nori-desktop                     # the desktop client (nori-cli: the terminal)
+./gradlew :app:assembleDebug -PrustTargets=arm64-v8a    # the Android app
 ```
 
-Needs the Android SDK + NDK, Rust Android targets, and `cargo-ndk`.
-`tools/app.sh` drives a debug build over adb; `tools/audio-e2e.sh` and
-`tools/feature-e2e.sh` check playback and the rest against a real server.
+More in [Building](docs/site/developers/building.md).
 
-## How it is put together
+## Licence
 
-| Layer | Role |
-|---|---|
-| `crates/` | Rust: signing, parsing, SQLite/FTS5, equalizer DSP |
-| `core/` | Kotlin: net, library, media3 service, downloads, settings — no UI |
-| `app/` | Compose UI + ViewModels only; may be thrown away and rewritten |
-
-`ui/` reads ViewModel state and calls ViewModel functions. It never
-touches networking, media3 or the FFI.
-
-## More
-
-- [Battery shootout](BENCHMARKS.md) · raw traces in [`perf-shootout.md`](perf-shootout.md)
-- [What's planned](docs/features.md)
-- [Working in this repo](AGENTS.md)
-
-Provider items (`ext-…`) show a cloud icon and are never indexed or
-auto-queued — streaming one makes the proxy download it first. A search
-tap plays that one song only, for the same reason.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
-
-Third-party licenses are listed in the app under Settings, About, Licences, and in [NOTICE](NOTICE).
+MIT. See [LICENSE](LICENSE); third-party licences are in [NOTICE](NOTICE) and in the app under Settings, About, Licences.

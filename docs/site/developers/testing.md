@@ -1,4 +1,11 @@
-# Testing
+---
+title: Testing
+description: The test tiers, from cargo test to the device checks, and the local server they run against.
+sidebar:
+  order: 4
+---
+
+Applies to the nori repository at 0.6.
 
 Three tiers, from fastest to slowest. What decides how music plays, the queue, the library, lyrics and
 settings is Rust and is tested by `cargo test`, on a virtual clock where time matters. The device checks
@@ -7,14 +14,14 @@ notification, audio focus, routing, JNI, the service and a force stop.
 
 | Tier | What | Time | Who runs it |
 | --- | --- | --- | --- |
-| `cargo test -j4 --workspace` | every Rust test | 56 s (build warm, M4 Pro; [measurements](build-times.md)) | every agent, every change |
+| `cargo test -j4 --workspace` | every Rust test | 56 s (build warm, M4 Pro; [measurements](building.md#development-build-and-test-times)) | every agent, every change |
 | `tools/smoke.sh` | launch, login, play, pause, seek, next, a queue edit, one AutoMix transition, the equalizer tuned in place, offload on and off, the notification's pause and play, a download played offline, no crash or ANR | 56 s on the hardware-rendered arm64 emulator against the local server; 34 checks passed | every agent that touched Android, on its emulator turn |
 | `tools/audio-e2e.sh --only …`, `tools/feature-e2e.sh --only …` | the sections of the area a change touched | a section is 10-90 s | the agent that touched it |
 | `tools/audio-e2e.sh` in full | every audio device check | 95 s on the arm64 emulator against the local server; 33 checks passed | the coordinator, once per batch, before a perf APK build |
-| `tools/feature-e2e.sh` in full | every feature device check | 216 s, 123 passing checks, hardware graphics and isolated local fixtures ([details](build-times.md)) | the coordinator, once per batch, before a perf APK build |
+| `tools/feature-e2e.sh` in full | every feature device check | 216 s, 123 passing checks, hardware graphics and isolated local fixtures ([details](building.md#development-build-and-test-times)) | the coordinator, once per batch, before a perf APK build |
 
 Never `-j` above 4: the machine runs out of memory. For queued host checks, nextest,
-Bazel player targets and a pool of hardware-rendered emulators, see [development.md](development.md).
+Bazel player targets and a pool of hardware-rendered emulators, see [Building](building.md#faster-development-checks).
 
 ## Desktop UI controls
 
@@ -250,7 +257,7 @@ is Android glue and stays on the device. 50 moved, 60 stay.
 `cargo test -j4 --workspace` passed 1,129 tests in 72–79 s once built on 2026-10-10;
 the first warm measurement reported 54.87 s in test binaries. The older 2026-09-26
 baseline was about 1,120 tests in 30 s; its per-binary figures below are historical,
-not the current baseline. See [build-times.md](build-times.md) for current timings.
+not the current baseline. See [build and test times](building.md#development-build-and-test-times) for current timings.
 `[profile.test.package.…]` in Cargo.toml
 builds nori-player, nori-engine and every dependency at opt-level 2 for `cargo test` only; debug
 assertions and overflow checks stay on. The workspace's own crates that are not listed there (nori-core,

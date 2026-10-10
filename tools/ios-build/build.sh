@@ -71,7 +71,7 @@ ln -s "$swift_ios/darwin" "$obj/clang/lib/darwin"
 clang -target arm64-apple-ios$target_os -isysroot "$sdk" -fobjc-arc -O2 -I ios/Sound \
   -c ios/Sound/NoriAudio.m -o "$obj/NoriAudio.o"
 
-# lld, not Apple's new linker, whose binaries crash on iOS 12.5 (docs/ipod.md): dyld info, no chained fixups.
+# lld, not Apple's new linker, whose binaries crash on iOS 12.5 (docs/site/developers/ipod-internals.md): dyld info, no chained fixups.
 # No retain sinking or release hoisting: a compiler that is not Apple's moves the releases of the empty array
 # singleton ahead of its retains, which only an immortal one survives, and iOS 12's is not (abort in malloc).
 swiftc \

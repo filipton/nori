@@ -29,7 +29,7 @@
 # Leaves one directory holding everything a release page needs:
 #
 #   nori-music-<version>.apk    (nori-music-<version>-<abi>.apk with --abi)
-#   nori-ipod-<version>.ipa     the iPod touch app (docs/ipod.md), fake-signed for AppSync
+#   nori-ipod-<version>.ipa     the iPod touch app (docs/site/developers/ipod-internals.md), fake-signed for AppSync
 #   SHA256SUMS                  one line per file, as `sha256sum -c` wants it
 #   RELEASE.txt                 version, commit, ABIs, size, signing certificate
 #

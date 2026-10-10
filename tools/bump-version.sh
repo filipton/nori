@@ -10,7 +10,7 @@
 #   docs/features.md       "Living inventory for nori x.y.z"
 #
 # Left alone on purpose: the README's version badge reads the latest GitHub release by itself, and the
-# benchmark tables (README, BENCHMARKS.md) name the version the numbers were measured on, which only a
+# benchmark tables (docs/performance/raw/) name the version the numbers were measured on, which only a
 # new measurement should change. Prints what changed; commits nothing.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"

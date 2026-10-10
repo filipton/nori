@@ -1,5 +1,7 @@
 # AutoMix, the next step: iOS 27 smoothness and the plan to get there
 
+Internal planning note, not published.
+
 This follows `automix.md`, which covers the earlier research and the design as built, and `analysis.md`, which covers the beat, key and structure analysis. Read those first. This file records what changed in Apple's AutoMix with iOS 27 (2026), what our own logs show about why nori's mixes rarely sound like it, and the build plan in order.
 
 Labels: **[verified]** is stated by a cited source; **[inferred]** is our reasoning; **[measured]** comes from nori's logs or tests.
@@ -44,7 +46,7 @@ So the beat-matched and effect paths exist but are starved of reliable grids. Fi
 
 ## 3. Build plan, in order
 
-Each step needs Rust tests on the virtual clock and the synthetic set (`automix/synth.rs`, `automix/eval.rs`; see docs/testing.md), plus a listening check on the phone.
+Each step needs Rust tests on the virtual clock and the synthetic set (`automix/synth.rs`, `automix/eval.rs`; see docs/site/developers/testing.md), plus a listening check on the phone.
 
 ### Step 0: a way to listen fast (tooling)
 - A debug or perf "mix preview": for the current queue, play only the last ~20 s of song N into the first ~20 s of N+1, then jump to the next pair. This lets a person judge many transitions in minutes.

@@ -1,5 +1,7 @@
 # Song analysis for AutoMix: what a phone can afford
 
+Internal planning note, not published.
+
 How AutoMix reads a song (beats, bars, tempo, key, sections, voices, loudness), what the best current methods
 are, which of them an MIT-licensed app may ship, what they cost on a phone, and what was changed on the back of
 this research. The design of AutoMix itself is in `automix.md`; this is the analysis underneath it.

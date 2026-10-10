@@ -1,5 +1,7 @@
 # Motion: every animation in the app, and the state of each
 
+Internal planning note, not published.
+
 The owner asked for every animation to be looked at and polished, one at a time, starting with the
 page transitions ("all of them just animate from the top of the page, it doesn't seem natural; back
 needs to be gesture-natural"). This file is the list, so the work can be picked up by anyone: what
@@ -232,7 +234,7 @@ Status is one of: **todo**, **doing**, **done (commit)**, **leave** (looked at, 
   its draw phase (`Modifier.arriving`): the rows on screen still fade and rise as one block (320 ms,
   36 dp), a row scrolled to mid-run joins where the block is, and none is animated after. An artist's
   biography, links and top songs, which come after the page, fade in where they join (`animateItem`).
-  `tools/open-bench.sh` counts the frames of opening a page ten times (docs/testing.md).
+  `tools/open-bench.sh` counts the frames of opening a page ten times (docs/site/developers/testing.md).
 - Left: page content that is composed late mid-slide (Compose Navigation), player sheet contents
   that are already on the rising surface, Cover picture fade-in, loaders, lyrics, downloads,
   switches, seek / volume - already eased or intentional snaps under `reduceMotion`.
@@ -292,7 +294,7 @@ Status is one of: **todo**, **doing**, **done (commit)**, **leave** (looked at, 
 - The timings are nori-look's (`RISE_MIN_MS`, `SETTLE_MS`, `HELD_MS`, `GLOW_FADE_MS`, handed to Kotlin
   in `stage`), and so is when to draw: every display frame while a word of the sung line moves
   (`LyricTiming::moving`, the clock's `lively`), every second frame otherwise. The rise and glow
-  themselves are per-frame animation maths, kept in Kotlin (docs/clients.md). Only the moving pieces are
+  themselves are per-frame animation maths, kept in Kotlin (docs/site/developers/writing-a-client.md). Only the moving pieces are
   drawn on their own; the brushes are made once and moved, so a frame allocates nothing new. With
   movement reduced there is only the fill, at every second frame.
 - Colours, as Apple's: every timed line is drawn by `SungText` with its own strength (the core's, moving

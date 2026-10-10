@@ -4,7 +4,7 @@
 #   --list                         print the sections and exit
 #   NORI_E2E_SERVER=real|local     real (default): the server in ~/.music.pass. local: tools/dev-server.sh's
 #                                  Navidrome with its generated music, reached through tools/lying-proxy.py,
-#                                  which states transcoded songs longer than they are (see docs/testing.md).
+#                                  which states transcoded songs longer than they are (see docs/site/developers/testing.md).
 #
 # Nothing here sleeps for a fixed time where a condition can be awaited: `wait_for <field> <value>
 # <timeout>` polls tools/app.sh state until the field reads that value.

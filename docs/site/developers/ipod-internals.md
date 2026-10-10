@@ -1,4 +1,11 @@
-# nori on the iPod touch 6: implementation plan
+---
+title: iPod internals
+description: "How the iPod touch client is built: the device, the toolchain, the sound, and the work packages."
+sidebar:
+  order: 7
+---
+
+Applies to the iPod touch client (`crates/ios`, `ios/`) at 0.6. The user guide is [iPod touch](../clients/ipod.md).
 
 A client for a jailbroken iPod touch (6th generation), built from the ground up on the nori engine.
 Three things come first, in this order when they collide: the sound, the feel of the interface, and what
@@ -53,7 +60,7 @@ cover loader, search, queue saves (`Keeper`), the song-arrived rules, the offlin
 The terminal and desktop clients are interfaces over `Session` and nothing more; **the iPod client should be
 the same**.
 
-What a client has to write itself (docs/clients.md, in short): the `AudioOutput`, the HTTP `Transport` and
+What a client has to write itself ([Writing a client](writing-a-client.md), in short): the `AudioOutput`, the HTTP `Transport` and
 `ByteSource` (or link `nori-http`), the OS glue (now playing, remote commands, interruptions, routes,
 background), the pictures (a `Paint` for the platform), every screen and every word.
 
@@ -336,7 +343,7 @@ paused, nothing runs. A line tapped seeks.
 screenful). Covers come from `nori-covers` at the view's pixel size: the iOS `Paint` decodes straight into
 a buffer that becomes a `CGImage` (`CGDataProvider` over the Rust allocation, released by a Rust callback,
 no copy), and an `UIImage` memory cache keyed like Android's `CoverLoader` (per address, largest kept,
-trimmed on `didReceiveMemoryWarning`). The rule from clients.md holds: nothing touches the disk or network
+trimmed on `didReceiveMemoryWarning`). The rule from [Writing a client](writing-a-client.md) holds: nothing touches the disk or network
 on the main thread, the request posts its answer to main.
 
 ### 6.5 Type, icons, theme
@@ -455,7 +462,7 @@ In the tree, uncommitted:
   hand), `Info.plist` (`dev.nori.music`, iOS 12.2, portrait, `audio` background mode, launch image),
   `Launch-568h@2x.png`, `entitlements.plist`, `tools/ios-build/build.sh` (what builds it).
 - `tools/ipod.sh` with the steps `build install run` (section 4).
-- `docs/ipod.md`, this file.
+- `docs/ipod.md`, this file (now `docs/site/developers/ipod-internals.md`).
 
 **Milestone 1 is done**: `rust` (48 s, 9.2 MB), `app` (Swift 5.9.2, 2.7 MB executable,
 `minos 12.2`), `sign`, `install`, and the app runs on the iPod as `mobile` at 11 MB RSS, having created
@@ -510,7 +517,7 @@ is kept in step with the `extern "C"` functions by hand. The note is at the top 
 sum, shallow, a route change, a failed reopen, and no allocation on the render path.
 `ios/Sound/NoriAudio.m` is the AURemoteIO unit (syntax-checked against the iOS 17.2 SDK); `tools/ios-build/build.sh`
 compiles it. The device listen (a sine, both buffer sizes, a Bluetooth change) still waits: W5 plays in
-a Rust test, and that build is not on the iPod. The line in docs/testing.md says why that part cannot
+a Rust test, and that build is not on the iPod. The line in [Testing](testing.md) says why that part cannot
 be Rust.
 
 Rust (`crates/ios/src/output.rs`, tested on the virtual clock with a simulated sink, as
@@ -535,7 +542,7 @@ Float32 interleaved at the granted rate, the render callback forwarding to `nori
 interruption / route-change / media-reset notifications forwarded as C callbacks. No logic: every decision
 the shim seems to make (pause on headphones out, resume after an interruption) is the Rust side's answer.
 
-Device check (a line in docs/testing.md saying why it cannot be Rust): a sine from the engine's test tone
+Device check (a line in [Testing](testing.md) saying why it cannot be Rust): a sine from the engine's test tone
 through the jack with no underrun for a minute at 93 ms, at 10 ms, and across a Bluetooth route change.
 
 ### W5 - done on the Rust side: the session behind the ABI

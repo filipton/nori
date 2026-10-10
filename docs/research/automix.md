@@ -1,5 +1,7 @@
 # AutoMix-style transitions for an Android player: research and design
 
+Internal planning note, not published.
+
 Labels used: **[verified]** = stated by a cited source; **[inferred]** = my reasoning or estimate, not confirmed by a source.
 
 The song analysis underneath (beats, bars, tempo, key, sections, vocals: methods, licences, what runs on a phone,

@@ -3,7 +3,7 @@ name = "nori-ios"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "nori's iOS client library: nori-host and the engine behind a C ABI for the UIKit app (docs/ipod.md)"
+description = "nori's iOS client library: nori-host and the engine behind a C ABI for the UIKit app (docs/site/developers/ipod-internals.md)"
 publish = false
 
 # libnori_ios.a: linked into the app by tools/ios-build/build.sh.

@@ -2,7 +2,7 @@
 # The smoke tier: the Android glue a change can break, in about two minutes on an installed debug build.
 # What Rust owns (mixing, the queue, the planner, the settings' effects) is tested by `cargo test`; this
 # checks that the app around it still launches, plays through a real AudioTrack, answers its controls and
-# notification, and has not crashed. Exits non-zero on any failure. See docs/testing.md.
+# notification, and has not crashed. Exits non-zero on any failure. See docs/site/developers/testing.md.
 #   tools/smoke.sh [--only <section>,...] [--list]      NORI_E2E_SERVER=local for tools/dev-server.sh
 source "$(dirname "$0")/e2e-lib.sh"
 SECTIONS="launch play controls queue automix eq offload notification offline crashes"

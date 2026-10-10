@@ -1,5 +1,7 @@
 # Battery/CPU shootout: nori vs Symfonium vs musly vs Navic
 
+Historical: the raw run behind [benchmarks.md](benchmarks.md), on nori 0.2.0 and 0.3.x, being re-measured.
+
 Date: 2026-09-21 (UTC). Device: sdk_gphone64_x86_64 (Google), Android 14 (SDK 34), ABI x86_64
 (abilist x86_64,arm64-v8a). Server: local Navidrome at http://10.0.2.2:4533, user admin.
 Workload everywhere: track "Noise 1", album "Bench" (~10-min MP3 320 kbps) — no window crosses

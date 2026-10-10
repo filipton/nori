@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Battery and CPU of a music app on the iPod (docs/ipod.md W13): a fixed playlist playing, screen off,
+# Battery and CPU of a music app on the iPod (docs/site/developers/ipod-internals.md W13): a fixed playlist playing, screen off,
 # Wi-Fi on, unplugged. Every 30 s it reads the battery (ioreg AppleARMPMUCharger) and the app's RSS over
 # SSH; at the end a table and the averages. Run it once for nori and once for Apple's Music app on the
 # same downloaded songs, and compare.
