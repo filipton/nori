@@ -3801,6 +3801,7 @@ version = "0.6.0-beta.2"
 dependencies = [
  "arboard",
  "i-slint-backend-testing",
+ "i-slint-core",
  "muda",
  "nori-core",
  "nori-covers",

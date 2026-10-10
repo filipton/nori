@@ -115,3 +115,21 @@ Six batches of thirty next/previous actions over already-requested tracks comple
 playback stalls. Anonymous resident memory was 90.1, 90.3, 85.0, 85.0, 85.1 and 85.2 MiB,
 respectively. After warm-up it varied by less than 0.3 MiB across the last four batches.
 This demonstrates a plateau for that workload, not proof that every path is leak-free.
+
+## Mouse scrolling and border dragging
+
+The custom backend now forwards wheel phases as Slint's native winit backend does. The public
+`PointerScrolled` event marks wheels as cancelled, which makes Flickable jump immediately instead
+of using its wheel deceleration. A virtual-clock regression failed before the phase correction;
+it checks motion between notches and the final accumulated distance. Precise touchpad phases
+remain intact. Shelves support mouse dragging, Shift+wheel, arrows and a draggable scrollbar.
+Their Show all links open vertically scrollable, virtualized album or Top Picks grids.
+
+Border-drag comparisons used a private xfwm4 session with compositing disabled on a 1920 × 1080
+Xvfb screen. Each run dragged the corner and right border inward and outward on Home and fullscreen.
+The observed client widths ranged from 1000 to 1280 pixels. Recordings contained no black flashes;
+the final browsing build had zero mostly black frames out of 601.
+With the same instrumented optimized build, reducing Linux's maximum queued frames from two to
+one changed median whole-frame CPU time from 42.1 to 38.2 ms. Painting remained about 3.4 ms;
+presentation dominated at 29.6 versus 28.2 ms. Vsync remains enabled. This modest virtual-display
+improvement does not establish smooth physical-display resizing or a CPU/memory reduction.

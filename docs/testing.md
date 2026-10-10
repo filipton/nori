@@ -48,6 +48,12 @@ in the Rust virtual-clock tests. Use Xvfb and a private audio sink for unattende
 display clicks and captures require the owner's authorization. See [desktop profiling](desktop-performance.md)
 for CPU, live heap and GPU measurements.
 
+Desktop UI regressions use Slint's software testing backend and virtual time. They check that Home
+Show all links open vertically scrollable collections, offscreen cards are released, mouse dragging
+reveals later shelf items, and wheel notches move over time to their accumulated destination.
+On Linux, check actual border dragging under a private window manager on a 1920 × 1080 Xvfb screen;
+programmatic window-size changes alone do not exercise interactive resizing.
+
 The desktop GPU regression reads rendered pixels before and after a redraw, checking that wgpu
 does not clear Skia's first frame. It needs a real GPU backend, so it runs explicitly rather than
 on headless CI: `cargo test -j4 -p nori-desktop layer_pixels_survive_first_sampling_and_redraw -- --ignored`.

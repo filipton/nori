@@ -442,6 +442,19 @@ impl Runner {
     }
 }
 
+fn wheel_event(position: LogicalPosition, dx: f32, dy: f32, phase: winit::event::TouchPhase) -> WindowEvent {
+    use i_slint_core::input::{BackendMouseEvent, TouchPhase};
+    let phase = match phase {
+        winit::event::TouchPhase::Started => TouchPhase::Started,
+        winit::event::TouchPhase::Moved => TouchPhase::Moved,
+        winit::event::TouchPhase::Ended => TouchPhase::Ended,
+        winit::event::TouchPhase::Cancelled => TouchPhase::Cancelled,
+    };
+    WindowEvent::internal(BackendMouseEvent::Wheel {
+        position: i_slint_core::lengths::logical_point_from_api(position), delta_x: dx, delta_y: dy, phase,
+    })
+}
+
 /// Maps a winit key to Slint's key text. On macOS, Command maps to Control and Control to Meta, as in
 /// Slint's own macOS backend.
 fn key_text(event: &winit::event::KeyEvent) -> Option<SharedString> {
@@ -564,13 +577,13 @@ impl ApplicationHandler<Wake> for Runner {
                     }
                 }
             }
-            E::MouseWheel { delta, .. } => {
+            E::MouseWheel { delta, phase, .. } => {
                 let scale = self.shared.window.borrow().as_ref().map_or(1.0, |w| w.scale_factor()) as f32;
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (x * 60.0, y * 60.0),
                     MouseScrollDelta::PixelDelta(p) => (p.x as f32 / scale, p.y as f32 / scale),
                 };
-                self.pointer(|position| WindowEvent::PointerScrolled { position, delta_x: dx, delta_y: dy });
+                self.pointer(|position| wheel_event(position, dx, dy, phase));
             }
             E::ModifiersChanged(m) => self.modifiers = m.state(),
             E::KeyboardInput { event, .. } => self.key(&event),
@@ -642,6 +655,10 @@ impl Draw {
         config.format = FORMAT;
         config.alpha_mode = wgpu::CompositeAlphaMode::Auto;
         config.present_mode = wgpu::PresentMode::AutoVsync;
+        #[cfg(target_os = "linux")]
+        {
+            config.desired_maximum_frame_latency = 1;
+        }
         surface.configure(d, &config);
         let shader = d.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("glass"), source: wgpu::ShaderSource::Wgsl(include_str!("glass.wgsl").into()) });
         let tex = |binding| wgpu::BindGroupLayoutEntry {
@@ -988,6 +1005,31 @@ fn unified_toolbar(window: &WinitWindow) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wheel_scroll_moves_over_time() {
+        slint::slint! {
+            export component ScrollWindow inherits Window {
+                width: 100px; height: 100px;
+                out property <length> scroll-y: flick.content-y;
+                flick := Flickable { content-height: 1000px; Rectangle { height: 1000px; } }
+            }
+        }
+        i_slint_backend_testing::init_integration_test_with_mock_time();
+        use slint::ComponentHandle;
+        let ui = ScrollWindow::new().unwrap();
+        ui.show().unwrap();
+        let event = wheel_event(LogicalPosition::new(50.0, 50.0), 0.0, -60.0, winit::event::TouchPhase::Moved);
+        ui.window().dispatch_event(event);
+        assert!(ui.get_scroll_y() > -60.0, "a wheel notch starts an animation instead of jumping");
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(60));
+        slint::platform::update_timers_and_animations();
+        assert!(ui.get_scroll_y() < 0.0 && ui.get_scroll_y() > -60.0);
+        ui.window().dispatch_event(wheel_event(LogicalPosition::new(50.0, 50.0), 0.0, -60.0, winit::event::TouchPhase::Moved));
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_secs(1));
+        slint::platform::update_timers_and_animations();
+        assert!((ui.get_scroll_y() + 120.0).abs() < 0.1, "successive notches keep their full distance");
+    }
 
     #[test]
     #[ignore = "requires a GPU; run with --ignored"]

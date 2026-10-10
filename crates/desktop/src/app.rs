@@ -364,6 +364,7 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
     ));
     ui.set_shelves(ModelRc::from(shelves.clone()));
     ui.set_greeting("Home".into());
+    ui.set_show_all_text(words::SHOW_ALL.into());
     let (tx, inbox) = Tx::new(ui.as_weak());
     let art = Rc::new(RefCell::new(Art::default()));
     let app = Rc::new_cyclic(|me: &Weak<RefCell<App>>| {
@@ -2203,7 +2204,7 @@ mod tests {
         slint::platform::set_platform(Box::new(i_slint_backend_testing::TestingBackend::new(
             i_slint_backend_testing::TestingBackendOptions { mock_time: true, renderer_name: Some("skia-software".into()), ..Default::default() },
         ))).unwrap();
-        for view in [ALBUMS, HOME] {
+        for view in [ALBUMS, HOME, 10] {
             let ui = AppWindow::new().unwrap();
             ui.window().set_size(slint::PhysicalSize::new(1280, 820));
             ui.set_view(view);
@@ -2234,6 +2235,85 @@ mod tests {
             ui.window().take_snapshot().unwrap();
             assert!(requests.borrow().iter().filter(|id| id.as_str() == "0").count() > initial, "returning to a row must load it again after its offscreen component was released");
         }
+    }
+
+    #[test]
+    fn show_all_opens_scrollable_collections() {
+        slint::platform::set_platform(Box::new(i_slint_backend_testing::TestingBackend::new(
+            i_slint_backend_testing::TestingBackendOptions { mock_time: true, renderer_name: Some("skia-software".into()), ..Default::default() },
+        ))).unwrap();
+        for view in [10, 11] {
+            let ui = AppWindow::new().unwrap();
+            ui.window().set_size(slint::PhysicalSize::new(1280, 820));
+            ui.set_picks_loaded(true);
+            ui.set_show_all_text(words::SHOW_ALL.into());
+            ui.set_shelves(ModelRc::new(VecModel::from(vec![Shelf {
+                title: "Recently played".into(), loaded: true,
+                cards: cards((0..100).map(|i| Card { id: i.to_string().into(), art: i.to_string().into(), ..Default::default() })),
+            }])));
+            if view == 11 {
+                ui.set_picks(ModelRc::new(VecModel::from((0..100).map(|i| crate::Pick {
+                    id: i.to_string().into(), covers: ModelRc::new(VecModel::from(vec![i.to_string().into()])), ..Default::default()
+                }).collect::<Vec<_>>())));
+            }
+            let weak = ui.as_weak();
+            ui.on_go(move |view| weak.unwrap().set_view(view));
+            let requests = Rc::new(RefCell::new(Vec::new()));
+            let seen = requests.clone();
+            ui.on_art(move |id, _, _| { seen.borrow_mut().push(id.to_string()); Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::new(16, 16)) });
+            let seen = requests.clone();
+            ui.on_pick_art(move |ids, _| { seen.borrow_mut().push(ids.row_data(0).unwrap().to_string()); Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::new(16, 16)) });
+            ui.show().unwrap();
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_secs(1));
+            slint::platform::update_timers_and_animations();
+            let frame = ui.window().take_snapshot().unwrap();
+            let links: Vec<_> = frame.as_slice().iter().enumerate().filter(|(i, p)| i % 1280 > 1100 && (64..200).contains(&(i / 1280)) && p.r > 200 && p.g < 100 && p.b < 150).map(|(i, _)| (i % 1280, i / 1280)).collect();
+            assert!(!links.is_empty(), "Show all is visible in the shelf header");
+            let position = slint::LogicalPosition::new(links[links.len() / 2].0 as f32, links[links.len() / 2].1 as f32);
+            for event in [
+                slint::platform::WindowEvent::PointerPressed { position, button: slint::platform::PointerEventButton::Left },
+                slint::platform::WindowEvent::PointerReleased { position, button: slint::platform::PointerEventButton::Left },
+            ] { ui.window().dispatch_event(event); }
+            assert_eq!(ui.get_view(), view, "the shelf's Show all link opens its collection");
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_secs(1));
+            slint::platform::update_timers_and_animations();
+            ui.window().take_snapshot().unwrap();
+            requests.borrow_mut().clear();
+            ui.window().dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(600.0, 400.0), delta_x: 0.0, delta_y: -3000.0,
+            });
+            ui.window().take_snapshot().unwrap();
+            assert!(requests.borrow().iter().any(|id| id.parse::<usize>().is_ok_and(|i| i > 20)), "the collection reveals later items by scrolling vertically");
+        }
+    }
+
+    #[test]
+    fn shelves_drag_with_a_mouse() {
+        slint::platform::set_platform(Box::new(i_slint_backend_testing::TestingBackend::new(
+            i_slint_backend_testing::TestingBackendOptions { mock_time: true, renderer_name: Some("skia-software".into()), ..Default::default() },
+        ))).unwrap();
+        let ui = AppWindow::new().unwrap();
+        ui.window().set_size(slint::PhysicalSize::new(1280, 820));
+        ui.set_view(HOME);
+        ui.set_picks_loaded(true);
+        ui.set_shelves(ModelRc::new(VecModel::from(vec![Shelf {
+            loaded: true, cards: cards((0..60).map(|i| Card { id: i.to_string().into(), art: i.to_string().into(), ..Default::default() })), ..Default::default()
+        }])));
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let seen = requests.clone();
+        ui.on_art(move |id, _, _| { seen.borrow_mut().push(id.to_string()); Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::new(16, 16)) });
+        ui.show().unwrap();
+        ui.window().take_snapshot().unwrap();
+        let initial = requests.borrow().iter().filter_map(|id| id.parse::<usize>().ok()).max().unwrap();
+        let position = slint::LogicalPosition::new(1000.0, 250.0);
+        ui.window().dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button: slint::platform::PointerEventButton::Left });
+        for x in [900.0, 650.0, 300.0] {
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(20));
+            ui.window().dispatch_event(slint::platform::WindowEvent::PointerMoved { position: slint::LogicalPosition::new(x, 250.0) });
+        }
+        ui.window().dispatch_event(slint::platform::WindowEvent::PointerReleased { position: slint::LogicalPosition::new(300.0, 250.0), button: slint::platform::PointerEventButton::Left });
+        ui.window().take_snapshot().unwrap();
+        assert!(requests.borrow().iter().any(|id| id.parse::<usize>().is_ok_and(|i| i > initial)), "dragging must reveal cards beyond the original viewport");
     }
 
     #[test]

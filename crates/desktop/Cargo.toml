@@ -25,7 +25,9 @@ nori-covers = { path = "../covers" }
 nori-look = { path = "../look" }
 parking_lot = "0.12"
 # Slint with Skia on wgpu; layers are composited by compositor.rs.
-slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "renderer-skia", "unstable-wgpu-30"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-2", "renderer-skia", "unstable-wgpu-30"] }
+# Phase-preserving wheel events use Slint's backend API.
+i-slint-core = { version = "=1.18.1", default-features = false }
 # compositor.rs: winit window and events, pollster for GPU setup, arboard for the clipboard.
 winit = "0.30"
 # Slint's wgpu, with WGSL for glass.wgsl.
@@ -42,7 +44,7 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSWindow", "NSToolbar"] }
 
 [build-dependencies]
-slint-build = "1.18"
+slint-build = "=1.18.1"
 
 [dev-dependencies]
 i-slint-backend-testing = { version = "=1.18.1", features = ["renderer-skia"] }

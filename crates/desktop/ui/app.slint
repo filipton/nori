@@ -763,6 +763,8 @@ component SectionTitle inherits HorizontalLayout {
 component ShelfView inherits VerticalLayout {
     in property <string> title;
     in property <int> count;
+    in property <string> show-all-text;
+    callback show-all;
     in property <bool> loading;
     in property <bool> round;
     // A card's narrowest, and the height under its square (its captions).
@@ -792,8 +794,18 @@ component ShelfView inherits VerticalLayout {
     padding-bottom: 26px;
     HorizontalLayout {
         padding-left: root.pad;
-        SectionTitle {
-            text: root.title;
+        padding-right: root.pad;
+        SectionTitle { text: root.title; }
+        Rectangle { horizontal-stretch: 1; }
+        if !root.loading && root.count > 0: Text {
+            text: root.show-all-text;
+            color: Theme.accent;
+            font-size: 14px;
+            vertical-alignment: center;
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.show-all(); }
+            }
         }
     }
     hover := TouchArea {
@@ -835,6 +847,36 @@ component ShelfView inherits VerticalLayout {
                 visible: !root.loading;
                 x: floor(flick.content-x / 1phx + 0.5) * 1phx - flick.content-x;
                 @children
+            }
+        }
+        if root.end < 0 && !root.loading: track := Rectangle {
+            x: root.pad;
+            y: parent.height - 5px;
+            width: parent.width - root.pad * 2;
+            height: 5px;
+            border-radius: 2.5px;
+            background: Theme.hairline;
+            thumb := Rectangle {
+                width: max(28px, parent.width * root.seen / flick.content-width);
+                x: max(0, min(1, flick.content-x / root.end)) * (parent.width - self.width);
+                border-radius: 2.5px;
+                background: drag.has-hover || drag.pressed ? Theme.text : Theme.dim;
+                drag := TouchArea {
+                    property <length> start;
+                    property <length> start-x;
+                    pointer-event(e) => {
+                        if e.button == PointerEventButton.left && e.kind == PointerEventKind.down {
+                            root.paging = false;
+                            self.start = flick.content-x;
+                            self.start-x = thumb.x + self.mouse-x;
+                        }
+                    }
+                    moved => {
+                        if self.pressed {
+                            flick.content-x = max(root.end, min(0, self.start + (thumb.x + self.mouse-x - self.start-x) * root.end / (track.width - thumb.width)));
+                        }
+                    }
+                }
             }
         }
         for b[i] in [{ by: -1, path: Icons.chevron-back }, { by: 1, path: Icons.chevron }]: Rectangle {
@@ -3332,7 +3374,7 @@ component SidebarContent inherits Rectangle {
             SideItem {
                 text: "Home";
                 icon: Icons.home;
-                chosen: root.view == 0;
+                chosen: root.view == 0 || root.view == 10 || root.view == 11;
                 clicked => { root.go(0); }
             }
             SideHeading {
@@ -3474,6 +3516,8 @@ export component AppWindow inherits Window {
     pure callback pick-art([string], int) -> image;
 
     in property <[Shelf]> shelves;
+    in property <string> show-all-text;
+    in-out property <int> shown-shelf;
     in property <[Pick]> picks;
     // The page is one of the mixes, laid out as a playlist.
     in property <bool> page-mix;
@@ -3594,7 +3638,7 @@ export component AppWindow inherits Window {
     in-out property <string> find-text;
     // Every playlist, for the sidebar (the Playlists page's list may be narrowed).
     in property <[Card]> side-playlists;
-    property <string> list-name: root.view == 2 ? "Albums" : root.view == 3 ? "Artists" : root.view == 4 ? "Playlists" : root.view == 5 ? "Songs" : root.view == 6 && root.page-kind == 0 ? "Album" : root.view == 6 && root.page-kind == 2 ? (root.page-mix ? "Mix" : "Playlist") : "";
+    property <string> list-name: root.view == 10 ? root.shelves[root.shown-shelf].title : root.view == 11 ? "Top Picks for You" : root.view == 2 ? "Albums" : root.view == 3 ? "Artists" : root.view == 4 ? "Playlists" : root.view == 5 ? "Songs" : root.view == 6 && root.page-kind == 0 ? "Album" : root.view == 6 && root.page-kind == 2 ? (root.page-mix ? "Mix" : "Playlist") : "";
     callback find-edited(string);
     // The artist chosen on the Artists page.
     in property <string> artist-chosen;
@@ -3860,6 +3904,8 @@ export component AppWindow inherits Window {
                             }
                             if !root.picks-loaded || root.picks.length > 0: picks-shelf := ShelfView {
                                 title: "Top Picks for You";
+                                show-all-text: root.show-all-text;
+                                show-all => { root.go(11); }
                                 count: root.picks.length;
                                 loading: !root.picks-loaded;
                                 least: 230px;
@@ -3872,9 +3918,11 @@ export component AppWindow inherits Window {
                                     open => { root.open-mix(m.id); }
                                 }
                             }
-                            for shelf in root.shelves: VerticalLayout {
+                            for shelf[index] in root.shelves: VerticalLayout {
                                 if !shelf.loaded || shelf.cards.length > 0: albums-shelf := ShelfView {
                                     title: shelf.title;
+                                    show-all-text: root.show-all-text;
+                                    show-all => { root.shown-shelf = index; root.go(10); }
                                     count: shelf.cards.length;
                                     loading: !shelf.loaded;
                                     for slot in albums-shelf.visible-count: CardView {
@@ -3977,28 +4025,50 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                if root.view == 2 || root.view == 4: Fade {
+                if root.view == 2 || root.view == 4 || root.view == 10: Fade {
                     Grid {
                         y: 64px;
                         height: parent.height - 64px;
-                        cards: root.view == 2 ? root.albums : root.playlists;
+                        cards: root.view == 10 ? root.shelves[root.shown-shelf].cards : root.view == 2 ? root.albums : root.playlists;
                         rev: root.covers-rev;
                         art(a, s, r) => { return root.art(a, s, r); }
                         open(c) => {
-                            if root.view == 2 {
+                            if (root.view == 2 || root.view == 10) {
                                 root.open-album(c.id);
                             } else {
                                 root.open-playlist(c.id);
                             }
                         }
                         play(c) => {
-                            if root.view == 2 {
+                            if (root.view == 2 || root.view == 10) {
                                 root.play-album(c.id);
                             } else {
                                 root.play-playlist(c.id);
                             }
                         }
-                        jam(c) => { root.jam-play(root.view == 2 ? 0 : 1, c.id); }
+                        jam(c) => { root.jam-play((root.view == 2 || root.view == 10) ? 0 : 1, c.id); }
+                    }
+                }
+
+                if root.view == 11: Fade {
+                    picks-grid := Flickable {
+                        y: 64px;
+                        height: parent.height - 64px;
+                        property <int> columns: max(2, floor((self.width - 64px + 22px) / 252px));
+                        property <length> side: (self.width - 64px - (self.columns - 1) * 22px) / self.columns;
+                        content-height: ceil(root.picks.length / self.columns) * (self.side * 1.3 + 22px) + 100px;
+                        property <int> first: max(0, floor(-self.content-y / (self.side * 1.3 + 22px)) - 1) * self.columns;
+                        property <int> visible-count: max(0, min(root.picks.length - self.first, (ceil(self.height / (self.side * 1.3 + 22px)) + 2) * self.columns));
+                        for slot in self.visible-count: PickCard {
+                            property <int> i: picks-grid.first + slot;
+                            property <Pick> item: root.picks[self.i];
+                            x: 32px + mod(self.i, parent.columns) * (parent.side + 22px);
+                            y: floor(self.i / parent.columns) * (parent.side * 1.3 + 22px);
+                            side: parent.side;
+                            pick: self.item;
+                            picture: root.pick-art(self.item.covers, root.covers-rev);
+                            open => { root.open-mix(self.item.id); }
+                        }
                     }
                 }
 
@@ -4508,7 +4578,21 @@ export component AppWindow inherits Window {
                     font-size: 13px;
                     font-weight: 600;
                 }
-                if root.list-name != "": Field {
+                if root.view == 10 || root.view == 11: IconButton {
+                    x: 16px;
+                    y: 10px;
+                    path: Icons.chevron-back;
+                    clicked => { root.go(0); }
+                }
+                if root.view == 10 || root.view == 11: Text {
+                    x: 58px;
+                    y: 18px;
+                    text: root.list-name;
+                    color: Theme.text;
+                    font-size: 13px;
+                    font-weight: 600;
+                }
+                if root.list-name != "" && root.view < 10: Field {
                     x: parent.width - self.width - 16px;
                     y: 9px;
                     width: 226px;
