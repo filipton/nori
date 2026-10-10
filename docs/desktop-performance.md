@@ -122,7 +122,7 @@ The custom backend now forwards wheel phases as Slint's native winit backend doe
 `PointerScrolled` event marks wheels as cancelled, which makes Flickable jump immediately instead
 of using its wheel deceleration. A virtual-clock regression failed before the phase correction;
 it checks motion between notches and the final accumulated distance. Precise touchpad phases
-remain intact. Shelves support mouse dragging, Shift+wheel, arrows and a draggable scrollbar.
+remain intact. Shelves support mouse dragging, Shift+wheel and arrows.
 Their Show all links open vertically scrollable, virtualized album or Top Picks grids.
 
 Border-drag comparisons used a private xfwm4 session with compositing disabled on a 1920 × 1080
@@ -133,3 +133,26 @@ With the same instrumented optimized build, reducing Linux's maximum queued fram
 one changed median whole-frame CPU time from 42.1 to 38.2 ms. Painting remained about 3.4 ms;
 presentation dominated at 29.6 versus 28.2 ms. Vsync remains enabled. This modest virtual-display
 improvement does not establish smooth physical-display resizing or a CPU/memory reduction.
+
+## Linux GPU fault follow-up
+
+A physical-display back-navigation failure was followed by a reboot. The previous boot's kernel
+log records NVIDIA Xid 13 and Xid 31 (GPU memory read fault), attributed to the same nori-desktop
+process as Slint's failed Vulkan texture import. This is a GPU fault, not just a UI exception.
+Slint's Vulkan import wraps a borrowed image handle; its Skia image does not retain the wgpu texture
+that owns it. Linux now supplies raster cover images and mosaics so Skia owns their GPU uploads.
+The direct-upload memory figures above describe the earlier implementation; Linux restores CPU
+cover copies in this fix. Other platforms retain their existing upload path. The one-frame latency
+trial is reverted, and the horizontal shelf scrollbar is removed.
+
+The compositor now keeps the physical window dimensions from resize events. Winit's X11
+`inner_size()` makes a synchronous XGetGeometry request; drawing and pointer routing no longer
+repeat that request. Resize events update the latest dimensions, and layer layout and surface
+reconfiguration run once before drawing rather than on every intermediate resize event.
+Software Vulkan navigation checks isolate the NVIDIA GPU, but cannot prove hardware-specific
+fault recovery or 60 fps physical-display resizing.
+
+Ten overview/back cycles passed with software Vulkan. One bounded Xvfb check of both collection
+views on NVIDIA also passed, with no new kernel Xids during that run. Software-Vulkan corner and
+side dragging produced zero mostly black frames out of 661, and the GPU pixel regression passed.
+These are bounded checks, not a guarantee that every NVIDIA rendering path is fault-free.

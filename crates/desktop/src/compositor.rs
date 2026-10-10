@@ -102,6 +102,7 @@ struct Shared {
     gpu: Rc<Gpu>,
     layers: Layers,
     window: RefCell<Option<Arc<WinitWindow>>>,
+    size: Cell<PhysicalSize>,
     proxy: EventLoopProxy<Wake>,
     sidebar_shown: Cell<bool>,
     player_shown: Cell<bool>,
@@ -214,6 +215,7 @@ pub fn install() -> Result<Compositor, String> {
         gpu: Rc::new(Gpu { instance, adapter, device, queue }),
         layers: RefCell::new(Vec::new()),
         window: RefCell::new(None),
+        size: Cell::new(PhysicalSize::new(1280, 820)),
         proxy: event_loop.create_proxy(),
         sidebar_shown: Cell::new(false),
         player_shown: Cell::new(false),
@@ -227,7 +229,19 @@ pub fn install() -> Result<Compositor, String> {
 }
 
 impl Compositor {
+    /// Vulkan's borrowed Skia images cannot own imported wgpu texture lifetimes.
+    #[cfg(target_os = "linux")]
+    pub fn picture(&self, pixels: &[u8], width: u32, height: u32) -> slint::Image {
+        slint::Image::from_rgba8(slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(pixels, width, height))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn mosaic(&self, images: &[slint::Image]) -> Option<slint::Image> {
+        crate::app::mosaic(images)
+    }
+
     /// Uploads decoded pixels once; Slint keeps the texture instead of CPU raster copies.
+    #[cfg(not(target_os = "linux"))]
     pub fn picture(&self, pixels: &[u8], width: u32, height: u32) -> slint::Image {
         let texture = self.image_texture(width, height);
         self.0.gpu.queue.write_texture(
@@ -238,6 +252,7 @@ impl Compositor {
         slint::Image::try_from(texture).expect("RGBA texture with render and sampling usages")
     }
 
+    #[cfg(not(target_os = "linux"))]
     fn image_texture(&self, width: u32, height: u32) -> wgpu::Texture {
         self.0.gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("cover"),
@@ -251,6 +266,7 @@ impl Compositor {
     }
 
     /// Card covers are decoded to equal squares; copy their pixels into one seamless image.
+    #[cfg(not(target_os = "linux"))]
     pub fn mosaic(&self, images: &[slint::Image]) -> Option<slint::Image> {
         if images.len() != 4 { return None; }
         let textures: Vec<_> = images.iter().map(slint::Image::to_wgpu_30_texture).collect::<Option<_>>()?;
@@ -351,9 +367,14 @@ fn place(s: &Shared, role: Role, window: LogicalSize) -> (LogicalPosition, Logic
 
 /// Resizes every layer to the current window size.
 fn relayout(s: &Shared) {
+    layout_layers(s);
+    redraw(s);
+}
+
+fn layout_layers(s: &Shared) {
     let Some(win) = s.window.borrow().clone() else { return };
     let scale = win.scale_factor() as f32;
-    let phys = win.inner_size();
+    let phys = s.size.get();
     let logical = LogicalSize::new(phys.width as f32 / scale, phys.height as f32 / scale);
     for (layer, role) in s.layers.borrow().iter() {
         let Some(role) = role.get() else { continue };
@@ -368,7 +389,6 @@ fn relayout(s: &Shared) {
             layer.dirty.set(true);
         }
     }
-    redraw(s);
 }
 
 struct Runner {
@@ -389,7 +409,7 @@ impl Runner {
     fn logical_window(&self) -> Option<LogicalSize> {
         let w = self.shared.window.borrow().clone()?;
         let scale = w.scale_factor() as f32;
-        let p = w.inner_size();
+        let p = self.shared.size.get();
         Some(LogicalSize::new(p.width as f32 / scale, p.height as f32 / scale))
     }
 
@@ -516,6 +536,8 @@ impl ApplicationHandler<Wake> for Runner {
         }
         #[cfg(target_os = "macos")]
         unified_toolbar(&window);
+        let size = window.inner_size();
+        self.shared.size.set(PhysicalSize::new(size.width, size.height));
         *self.shared.window.borrow_mut() = Some(window);
         relayout(&self.shared);
         self.shared.menu.install();
@@ -537,10 +559,8 @@ impl ApplicationHandler<Wake> for Runner {
                 redraw(&self.shared);
             }
             E::Resized(size) => {
-                if let Some(d) = &mut self.draw {
-                    d.resize(size.width, size.height);
-                }
-                relayout(&self.shared);
+                self.shared.size.set(PhysicalSize::new(size.width, size.height));
+                redraw(&self.shared);
             }
             E::ScaleFactorChanged { .. } => relayout(&self.shared),
             E::Focused(on) => {
@@ -597,6 +617,13 @@ impl ApplicationHandler<Wake> for Runner {
                 slint::platform::update_timers_and_animations();
                 if self.shared.occluded.get() {
                     return;
+                }
+                let size = self.shared.size.get();
+                if let Some(d) = &mut self.draw {
+                    if d.config.width != size.width.max(1) || d.config.height != size.height.max(1) {
+                        d.resize(size.width, size.height);
+                        layout_layers(&self.shared);
+                    }
                 }
                 let win = self.logical_window();
                 if let (Some(d), Some(win)) = (&mut self.draw, win) {
@@ -655,10 +682,6 @@ impl Draw {
         config.format = FORMAT;
         config.alpha_mode = wgpu::CompositeAlphaMode::Auto;
         config.present_mode = wgpu::PresentMode::AutoVsync;
-        #[cfg(target_os = "linux")]
-        {
-            config.desired_maximum_frame_latency = 1;
-        }
         surface.configure(d, &config);
         let shader = d.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("glass"), source: wgpu::ShaderSource::Wgsl(include_str!("glass.wgsl").into()) });
         let tex = |binding| wgpu::BindGroupLayoutEntry {

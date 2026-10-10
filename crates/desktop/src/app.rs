@@ -189,8 +189,8 @@ fn pick_image(art: &RefCell<Art>, app: &AppHandle, covers: ModelRc<SharedString>
     image
 }
 
-#[cfg(test)]
-fn mosaic(images: &[Image]) -> Option<Image> {
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) fn mosaic(images: &[Image]) -> Option<Image> {
     use skia_safe::{AlphaType, ColorType, Data, FilterMode, ImageInfo, Paint, Rect, SamplingOptions};
     let side = SMALL_PX;
     let width = side * 2;
@@ -2284,6 +2284,15 @@ mod tests {
             });
             ui.window().take_snapshot().unwrap();
             assert!(requests.borrow().iter().any(|id| id.parse::<usize>().is_ok_and(|i| i > 20)), "the collection reveals later items by scrolling vertically");
+            let position = slint::LogicalPosition::new(248.0, 26.0);
+            for event in [
+                slint::platform::WindowEvent::PointerPressed { position, button: slint::platform::PointerEventButton::Left },
+                slint::platform::WindowEvent::PointerReleased { position, button: slint::platform::PointerEventButton::Left },
+            ] { ui.window().dispatch_event(event); }
+            assert_eq!(ui.get_view(), HOME, "the back button returns to Home");
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_secs(1));
+            slint::platform::update_timers_and_animations();
+            ui.window().take_snapshot().unwrap();
         }
     }
 

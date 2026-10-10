@@ -849,36 +849,6 @@ component ShelfView inherits VerticalLayout {
                 @children
             }
         }
-        if root.end < 0 && !root.loading: track := Rectangle {
-            x: root.pad;
-            y: parent.height - 5px;
-            width: parent.width - root.pad * 2;
-            height: 5px;
-            border-radius: 2.5px;
-            background: Theme.hairline;
-            thumb := Rectangle {
-                width: max(28px, parent.width * root.seen / flick.content-width);
-                x: max(0, min(1, flick.content-x / root.end)) * (parent.width - self.width);
-                border-radius: 2.5px;
-                background: drag.has-hover || drag.pressed ? Theme.text : Theme.dim;
-                drag := TouchArea {
-                    property <length> start;
-                    property <length> start-x;
-                    pointer-event(e) => {
-                        if e.button == PointerEventButton.left && e.kind == PointerEventKind.down {
-                            root.paging = false;
-                            self.start = flick.content-x;
-                            self.start-x = thumb.x + self.mouse-x;
-                        }
-                    }
-                    moved => {
-                        if self.pressed {
-                            flick.content-x = max(root.end, min(0, self.start + (thumb.x + self.mouse-x - self.start-x) * root.end / (track.width - thumb.width)));
-                        }
-                    }
-                }
-            }
-        }
         for b[i] in [{ by: -1, path: Icons.chevron-back }, { by: 1, path: Icons.chevron }]: Rectangle {
             property <bool> shown: hover.has-hover && (b.by < 0 ? flick.content-x < 0 : flick.content-x > root.end);
             x: b.by < 0 ? root.pad - self.width / 2 : root.width - root.pad - self.width / 2;
