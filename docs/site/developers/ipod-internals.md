@@ -1,6 +1,6 @@
 ---
 title: iPod internals
-description: How the iPod touch client is built: the device, the toolchain, the sound, and the work packages.
+description: "How the iPod touch client is built: the device, the toolchain, the sound, and the work packages."
 sidebar:
   order: 7
 ---

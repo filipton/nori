@@ -1,6 +1,6 @@
 ---
 title: Desktop profiling
-description: Measuring the desktop client: CPU, memory and GPU, and what was found.
+description: "Measuring the desktop client: CPU, memory and GPU, and what was found."
 sidebar:
   order: 6
 ---
