@@ -39,8 +39,7 @@ Status is one of: **todo**, **doing**, **done (commit)**, **leave** (looked at, 
 - Should: a stack, the way iOS pushes. Push: the new page slides in from the right edge, opaque, the
   whole width, over the old page, which moves a third of the way left underneath and darkens under a
   scrim. Pop: the reverse. No fade on the pages themselves (the pages are opaque; a fade is what made
-  the earlier sideways slide read as "flying out of the top left corner" - see handoff.md, "Page
-  transitions"). About 350 ms, decelerating hard (most of the travel in the first half).
+  the earlier sideways slide read as "flying out of the top left corner"). About 350 ms, decelerating hard (most of the travel in the first half).
 - Check: home → tap an album → back button. Both pages must stay opaque throughout; the album must
   arrive from the right, not from above; the home page must be visibly *under* it, shifted, and come
   back to place on pop.
@@ -174,8 +173,7 @@ Status is one of: **todo**, **doing**, **done (commit)**, **leave** (looked at, 
 ### 13. Lyrics — `LyricsView.kt` (line change, scroll)
 
 - Now: the line arriving fades and rises 1/40 of its height over 420 ms after an 80 ms wait; the list
-  scrolls with a tuned spring. Tuned with the owner on the phone (see handoff, "Animation and
-  Android's animation setting").
+  scrolls with a tuned spring. Tuned with the owner on the phone.
 - Should: as is.
 - Status: **leave**
 
@@ -282,7 +280,7 @@ Status is one of: **todo**, **doing**, **done (commit)**, **leave** (looked at, 
   crates/uniffi-bindgen).
 - Known: a very quick pull on the sheet or the back gesture can catch the video part faded, since the
   sleeve hands over to the flight's still cover on the first frame of a move; and the blurred band at
-  the sleeve's foot is the still cover's (a surface is drawn once; see handoff.md, "Moving covers").
+  the sleeve's foot is the still cover's (a surface is drawn once).
 - Status: **doing**
 
 ### 20. Lyrics sung the way Apple's are — `LyricsView.kt` `SungText`, `drawSung`, nori-look `lyrics.rs`

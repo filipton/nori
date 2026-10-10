@@ -135,7 +135,7 @@ touches networking, media3 or the FFI.
 ## More
 
 - [Battery shootout](BENCHMARKS.md) · raw traces in [`perf-shootout.md`](perf-shootout.md)
-- [What's planned](docs/features.md) · [where the work stopped](docs/handoff.md)
+- [What's planned](docs/features.md)
 - [Working in this repo](AGENTS.md)
 
 Provider items (`ext-…`) show a cloud icon and are never indexed or

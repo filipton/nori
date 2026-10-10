@@ -67,9 +67,8 @@ via nori-core):
 Kotlin: `core/` is the Android library with no UI (media3 service, `RustPlayer.kt`, downloads, `Nori.kt`
 object graph). `app/` is UI only: `vm/` ViewModels, `ui/` Compose.
 
-Docs: `docs/testing.md` (test tiers, local server), `docs/handoff.md` (unfinished work, testing traps;
-read before UI work), `docs/clients.md` (what is core vs client), `docs/features.md` (planned features,
-owner's decisions), `docs/perf-build.md`.
+Docs: `docs/testing.md` (test tiers, local server), `docs/clients.md` (what is core vs client),
+`docs/features.md` (planned features, owner's decisions), `docs/perf-build.md`.
 
 ## Boundaries
 

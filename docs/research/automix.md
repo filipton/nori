@@ -401,7 +401,7 @@ measured again as songs play.
    it for up to four bars and the rest (within the cap) is not played. The same rule applies to echo-outs,
    one-grid fades and MixRamp fades. *Limits:* a hidden track longer than 15 s is music, so it is played, and the
    silence before it with it; a false ending with more than 15 s of song after it is not an exit; the sink drops
-   the skipped remainder by decoding through it (see `docs/handoff.md`).
+   the skipped remainder by decoding through it.
 3. **Two singers.** The mixer has a vocal duck on the incoming deck: a band-pass around 1 kHz (Q 0.35, 3 dB down
    near 300 Hz and 3.3 kHz) subtracted in proportion, which is a peaking cut whose depth can move sample by sample
    without touching the filter's state, so it releases without a click and leaves the deck untouched, bit for bit,
