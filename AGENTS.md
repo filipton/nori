@@ -23,7 +23,7 @@ tools/feature-e2e.sh --only <sections>
 tools/perf-host.sh [rev]                            # engine wakes/CPU/allocs per minute vs another revision, on the host
 cargo run --release -p nori-cli                     # terminal client
 cargo run --release -p nori-desktop                 # desktop client
-tools/ipod.sh [build install run]                   # the iPod app's .ipa, built in Docker; installs and runs it if an iPod is on USB (docs/ipod.md)
+tools/ipod.sh [build install run]                   # the iPod app's .ipa, built in Docker; installs and runs it if an iPod is on USB (docs/site/developers/ipod-internals.md)
 tools/ipod-bench.sh nori|music                      # iPod battery/CPU for 30 min, unplugged, SSH over Wi-Fi (NORI_IPOD_HOST)
 ```
 
@@ -31,7 +31,7 @@ Before committing: `cargo test -j4 --workspace` and a build. If the change reach
 `tools/smoke.sh` plus the `--only` sections it touches. The full e2e suites run once per batch.
 Use `tools/check.sh` or `tools/with-resource.py build <command>` for heavy commands across agents.
 Device scripts lease their emulator; `tools/device-check.sh` allocates from `NORI_E2E_DEVICES`.
-Multiple emulators are supported, with isolated fixture accounts and ports. See `docs/development.md`.
+Multiple emulators are supported, with isolated fixture accounts and ports. See `docs/site/developers/building.md`.
 
 ## Layout
 
@@ -59,7 +59,7 @@ via nori-core):
 | android | Android only: the `norimusic` cdylib, uniffi scaffolding, JNI doors, AudioTrack writer (track.rs), playback path (player.rs) |
 | http, output-cpal, mpris | desktop: ureq transport, cpal output, Linux media controls |
 | cli, desktop | terminal (ratatui) and desktop (Slint) clients |
-| ios | the iPod touch client's static library over nori-host behind a C ABI; the Swift app is `ios/`, the plan and work packages `docs/ipod.md` |
+| ios | the iPod touch client's static library over nori-host behind a C ABI; the Swift app is `ios/`, the plan and work packages `docs/site/developers/ipod-internals.md` |
 | host | the session every client shares (terminal, desktop and iPod today; Android is moving onto it): engine, queue saving, remote and jams, config, index sync, media controls |
 | uniffi-jni-runtime, uniffi-bindgen | upstream uniffi JNI runtime with changes marked `NORI`; Kotlin binding generator |
 | testdir | `TempDir` for tests; every test that writes files uses it |
@@ -67,8 +67,17 @@ via nori-core):
 Kotlin: `core/` is the Android library with no UI (media3 service, `RustPlayer.kt`, downloads, `Nori.kt`
 object graph). `app/` is UI only: `vm/` ViewModels, `ui/` Compose.
 
-Docs: `docs/testing.md` (test tiers, local server), `docs/clients.md` (what is core vs client),
-`docs/features.md` (planned features, owner's decisions), `docs/perf-build.md`.
+## Docs
+
+Published docs live in `docs/site/` (Starlight Markdown: `title`, `description`, optional `sidebar.order`)
+and change with the code, in the same commit when they can. norifm.com copies them at build time; they
+are never edited there. Each page says which versions and clients it applies to. The developer pages:
+`docs/site/developers/` (`testing.md` test tiers and the local server, `writing-a-client.md` what is core
+vs client, `building.md` builds and the perf build, `ipod-internals.md` the iPod plan). Raw measurements:
+`docs/performance/raw/`.
+
+Internal notes, never published: `docs/features.md` (planned features, owner's decisions),
+`docs/research/`, `docs/motion.md`, `docs/player-colour-band.md`.
 
 ## Boundaries
 
@@ -122,7 +131,7 @@ Docs: `docs/testing.md` (test tiers, local server), `docs/clients.md` (what is c
 
 - Behaviour Rust owns is tested in Rust, on the virtual clock where time matters. A device check is only
   for Android glue (AudioTrack, MediaCodec, media3, session, focus, routing, JNI, the service); a new
-  one needs a line in docs/testing.md saying why it can't be Rust.
+  one needs a line in docs/site/developers/testing.md saying why it can't be Rust.
 - A bug fix starts with a test that fails on the bug.
 - Every test can fail on a real bug. No asserting constants or defaults, no asserts an `if` can skip,
   no ignored tests that only print. Near-duplicates become one table test.
@@ -158,7 +167,7 @@ Docs: `docs/testing.md` (test tiers, local server), `docs/clients.md` (what is c
 ## Builds and releases
 
 - `tools/apk.sh [x86_64] [--install]`: release APK into `build/`. `./gradlew :app:assemblePerf
-  -PrustTargets=arm64-v8a`: perf build ("nori dev"), see docs/perf-build.md.
+  -PrustTargets=arm64-v8a`: perf build ("nori dev"), see docs/site/developers/building.md.
 - `./gradlew :app:assemblePreview -PrustTargets=arm64-v8a`: a release build named "nori preview" (id
   `dev.nori.music.preview`) that installs beside the real app, for trying a change on a phone.
 - `tools/app.sh` drives a debug build over adb (`open`, `play`, `do`, `set`, `state`).
