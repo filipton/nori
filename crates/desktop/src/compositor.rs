@@ -429,12 +429,12 @@ impl ApplicationHandler<Wake> for Runner {
         if self.shared.window.borrow().is_some() {
             return;
         }
-        let mut attrs = WindowAttributes::default().with_title("nori").with_inner_size(winit::dpi::LogicalSize::new(1280.0, 820.0)).with_min_inner_size(winit::dpi::LogicalSize::new(860.0, 560.0));
+        let attrs = WindowAttributes::default().with_title("nori").with_inner_size(winit::dpi::LogicalSize::new(1280.0, 820.0)).with_min_inner_size(winit::dpi::LogicalSize::new(860.0, 560.0));
         #[cfg(target_os = "macos")]
-        {
+        let attrs = {
             use winit::platform::macos::WindowAttributesExtMacOS;
-            attrs = attrs.with_titlebar_transparent(true).with_fullsize_content_view(true).with_title_hidden(true);
-        }
+            attrs.with_titlebar_transparent(true).with_fullsize_content_view(true).with_title_hidden(true)
+        };
         let window = match el.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -567,11 +567,20 @@ struct Draw {
     focus: wgpu::RenderPipeline,
     bind: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    groups: RefCell<Vec<Group>>,
+    next_group: Cell<usize>,
     pyramid: Option<Pyramid>,
     /// The pyramid holds the page as last rendered.
     page_blurred: bool,
     /// Surface must be reconfigured before the next frame.
     stale: bool,
+}
+
+struct Group {
+    buffer: wgpu::Buffer,
+    a: wgpu::TextureView,
+    b: wgpu::TextureView,
+    binding: wgpu::BindGroup,
 }
 
 impl Draw {
@@ -646,6 +655,8 @@ impl Draw {
             focus: pipeline("fs_focus", None, FORMAT),
             bind,
             sampler,
+            groups: RefCell::new(Vec::new()),
+            next_group: Cell::new(0),
             pyramid: None,
             page_blurred: false,
             stale: false,
@@ -656,11 +667,13 @@ impl Draw {
         self.config.width = w.max(1);
         self.config.height = h.max(1);
         self.pyramid = None;
+        self.groups.borrow_mut().clear();
         self.stale = true;
     }
 
     /// Renders dirty layers, then composites page, glass and the sidebar/player on top.
     fn frame(&mut self, s: &Shared, win: LogicalSize) {
+        self.next_group.set(0);
         let gpu = s.gpu.clone();
         let d = &gpu.device;
         let scale = s.window.borrow().as_ref().map_or(1.0, |w| w.scale_factor() as f32);
@@ -761,6 +774,7 @@ impl Draw {
         drop(layers);
         gpu.queue.submit([enc.finish()]);
         gpu.queue.present(frame);
+        self.groups.borrow_mut().truncate(self.next_group.get());
     }
 
     /// Draws the page's blur pyramid, each level a 13-tap downsample of the one above it, unless it
@@ -786,9 +800,20 @@ impl Draw {
     }
 
     fn group(&self, d: &wgpu::Device, q: &wgpu::Queue, u: &[u8], a: &wgpu::TextureView, b: &wgpu::TextureView) -> wgpu::BindGroup {
-        let buf = d.create_buffer(&wgpu::BufferDescriptor { label: Some("glass"), size: u.len() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let slot = self.next_group.get();
+        self.next_group.set(slot + 1);
+        let mut groups = self.groups.borrow_mut();
+        if let Some(group) = groups.get(slot) {
+            if &group.a == a && &group.b == b {
+                q.write_buffer(&group.buffer, 0, u);
+                return group.binding.clone();
+            }
+        }
+        let buf = groups.get(slot).map(|group| group.buffer.clone()).unwrap_or_else(|| d.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("glass"), size: u.len() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+        }));
         q.write_buffer(&buf, 0, u);
-        d.create_bind_group(&wgpu::BindGroupDescriptor {
+        let group = d.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("glass"),
             layout: &self.bind,
             entries: &[
@@ -797,7 +822,14 @@ impl Draw {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(b) },
             ],
-        })
+        });
+        let entry = Group { buffer: buf, a: a.clone(), b: b.clone(), binding: group.clone() };
+        if slot == groups.len() {
+            groups.push(entry);
+        } else {
+            groups[slot] = entry;
+        }
+        group
     }
 }
 
@@ -860,8 +892,12 @@ struct Glass {
 }
 
 /// Uniforms as glass.wgsl lays them out (six vec4s).
-fn uniforms(rect: [f32; 4], view: [f32; 4], shape: [f32; 4], face: [f32; 4], light: [f32; 4], gather: [f32; 4]) -> Vec<u8> {
-    [rect, view, shape, face, light, gather].iter().flatten().flat_map(|f| f.to_ne_bytes()).collect()
+fn uniforms(rect: [f32; 4], view: [f32; 4], shape: [f32; 4], face: [f32; 4], light: [f32; 4], gather: [f32; 4]) -> [u8; 96] {
+    let mut bytes = [0; 96];
+    for (out, value) in bytes.as_chunks_mut::<4>().0.iter_mut().zip([rect, view, shape, face, light, gather].iter().flatten()) {
+        out.copy_from_slice(&value.to_ne_bytes());
+    }
+    bytes
 }
 
 /// Adds an empty unified toolbar so the traffic lights sit lower, level with the page's toolbar.

@@ -131,6 +131,8 @@ Docs: `docs/testing.md` (test tiers, local server), `docs/clients.md` (what is c
   that wakes the engine outside a command goes through `Virtual::woke_engine`.
 - Device scripts wait with `wait_for`/`wait_until` (tools/e2e-lib.sh), never fixed sleeps.
 - CLI screens: ratatui TestBackend (`cargo test -p nori-cli`; `NORI_TUI_DUMP=dir` dumps screens).
+- Desktop checks on the SSH PC run in Xvfb. Scope launches, clicks and screenshots to that display;
+  keep the owner's desktop and audio output free by using a private audio sink.
 
 ## Performance
 

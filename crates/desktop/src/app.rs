@@ -32,10 +32,9 @@ use crate::{AppWindow, ArtistLink, Card, Credits, LyricPiece, Pick, PlayerBar, S
 const SMALL_PX: u32 = 256;
 const LARGE_PX: u32 = 800;
 const HERO_PX: u32 = 1600;
-/// Decoded covers kept per class. Covers drawn within `IN_USE` are never evicted.
-const SMALL_KEPT: usize = 240;
-const LARGE_KEPT: usize = 12;
-const IN_USE: Duration = Duration::from_secs(3);
+/// Bytes of decoded covers kept per class.
+const SMALL_BYTES: usize = 60 * 1024 * 1024;
+const LARGE_BYTES: usize = 30 * 1024 * 1024;
 /// Pending cover requests kept; the oldest beyond this are cancelled.
 const PENDING_KEPT: usize = 1000;
 /// A pending cover not looked up for this long is off screen, and its request is cancelled.
@@ -99,6 +98,37 @@ struct Art {
     wanted: Vec<CoverKey>,
     /// When a pending cover was last looked up; stale ones are off screen.
     missing: HashMap<CoverKey, Instant>,
+}
+
+impl Art {
+    fn insert(&mut self, key: CoverKey, image: Image, colours: Option<Box<CoverColours>>, now: Instant) {
+        let id = key.id.clone();
+        let large = key.size != CoverSize::Card;
+        self.missing.remove(&key);
+        self.images.insert(key.clone(), (image, now));
+        if let Some(c) = colours {
+            self.colours.insert(id.clone(), Rc::from(c));
+        }
+        let limit = if large { LARGE_BYTES } else { SMALL_BYTES };
+        let class = |k: &CoverKey| (k.size != CoverSize::Card) == large;
+        let bytes = |image: &Image| { let size = image.size(); size.width as usize * size.height as usize * 4 };
+        let mut kept: usize = self.images.iter().filter(|(k, _)| class(k)).map(|(_, (image, _))| bytes(image)).sum();
+        while kept > limit {
+            let oldest = self
+                .images
+                .iter()
+                .filter(|(k, _)| class(k))
+                .min_by_key(|(_, (_, drawn))| *drawn)
+                .map(|(k, _)| k.clone());
+            let Some(old) = oldest else { break };
+            let (image, _) = self.images.remove(&old).expect("the oldest cover");
+            kept -= bytes(&image);
+            self.asked.remove(&old);
+            if large && !self.images.keys().any(|k| k.id == old.id && k.size != CoverSize::Card) {
+                self.colours.remove(&old.id);
+            }
+        }
+    }
 }
 
 /// app.slint's size code: 0 card, 1 large, 2 hero.
@@ -1353,33 +1383,7 @@ impl App {
         let id = key.id.clone();
         let large = key.size != CoverSize::Card;
         self.tickets.retain(|(k, _)| *k != key);
-        {
-            let mut a = self.art.borrow_mut();
-            let now = Instant::now();
-            a.missing.remove(&key);
-            a.images.insert(key.clone(), (picture(image), now));
-            if let Some(c) = colours {
-                a.colours.insert(id.clone(), Rc::from(c));
-            }
-            let limit = if large { LARGE_KEPT } else { SMALL_KEPT };
-            let class = |k: &CoverKey| (k.size != CoverSize::Card) == large;
-            let mut count = a.images.keys().filter(|k| class(k)).count();
-            while count > limit {
-                let oldest = a
-                    .images
-                    .iter()
-                    .filter(|(k, (_, drawn))| class(k) && now.duration_since(*drawn) > IN_USE)
-                    .min_by_key(|(_, (_, drawn))| *drawn)
-                    .map(|(k, _)| k.clone());
-                let Some(old) = oldest else { break };
-                a.images.remove(&old);
-                a.asked.remove(&old);
-                if large {
-                    a.colours.remove(&old.id);
-                }
-                count -= 1;
-            }
-        }
+        self.art.borrow_mut().insert(key, picture(image), colours, Instant::now());
         let ui = self.ui();
         ui.set_covers_rev(ui.get_covers_rev().wrapping_add(1));
         if let Some(p) = &self.player {
@@ -2052,6 +2056,46 @@ fn devices_set(ui: &AppWindow, rows: Vec<crate::DeviceRow>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cover_bursts_keep_the_cache_bounded() {
+        let now = Instant::now();
+        for size in [CoverSize::Card, CoverSize::Large, CoverSize::Hero] {
+            let mut art = Art::default();
+            let side = cover_px(size);
+            let image = Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::new(side, side));
+            let limit = if size == CoverSize::Card { SMALL_BYTES } else { LARGE_BYTES } / (side as usize * side as usize * 4);
+            for i in 0..limit + 20 {
+                art.insert(CoverKey { id: i.to_string(), size }, image.clone(), None, now + Duration::from_millis(i as u64));
+            }
+            assert_eq!(art.images.len(), limit, "a burst must evict covers even when they were recently drawn");
+            assert!(!art.images.contains_key(&CoverKey { id: "0".into(), size }));
+            assert!(art.images.contains_key(&CoverKey { id: (limit + 19).to_string(), size }));
+        }
+    }
+
+    #[test]
+    fn cover_colours_last_until_both_large_sizes_leave() {
+        let mut art = Art::default();
+        let now = Instant::now();
+        let image = |size| { let side = cover_px(size); Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::new(side, side)) };
+        let key = |id: &str, size| CoverKey { id: id.into(), size };
+        let colours = nori_look::cover::derive(&[0xff406080], 1, 1, true, false);
+        art.insert(key("shared", CoverSize::Card), image(CoverSize::Card), None, now);
+        art.insert(key("shared", CoverSize::Large), image(CoverSize::Large), Some(Box::new(colours)), now);
+        art.insert(key("shared", CoverSize::Hero), image(CoverSize::Hero), None, now + Duration::from_millis(1));
+        let large = image(CoverSize::Large);
+        for i in 0..8 {
+            art.insert(key(&i.to_string(), CoverSize::Large), large.clone(), None, now + Duration::from_millis(i + 2));
+        }
+        assert!(!art.images.contains_key(&key("shared", CoverSize::Large)));
+        assert!(art.images.contains_key(&key("shared", CoverSize::Hero)));
+        assert!(art.colours.contains_key("shared"));
+        art.insert(key("last", CoverSize::Large), large, None, now + Duration::from_millis(10));
+        assert!(!art.images.contains_key(&key("shared", CoverSize::Hero)));
+        assert!(!art.colours.contains_key("shared"));
+        assert!(art.images.contains_key(&key("shared", CoverSize::Card)));
+    }
 
     #[test]
     fn pick_covers_scroll_together() {
