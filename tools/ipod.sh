@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the iPod app (docs/ipod.md) and puts it on the device:
+# Builds the iPod app (docs/site/developers/ipod-internals.md) and puts it on the device:
 #   build    build/ios/nori.app and nori-ipod-<version>.ipa, fake-signed for AppSync: tools/ios-build/build.sh in
 #            the Docker image of tools/ios-build/Dockerfile, the only thing a machine needs
 #   install  puts it in /Applications on the iPod and registers it (uicache)

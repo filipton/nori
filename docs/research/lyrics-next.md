@@ -1,5 +1,7 @@
 # Lyrics and downloads, the next step
 
+Internal planning note, not published.
+
 Written on 2026-09-26, from the owner's requests. Read `docs/features.md` (lyrics) and `crates/lyrics` first. The
 current trust score is in `crates/lyrics/src/trust.rs`, and the race is in `race.rs`.
 

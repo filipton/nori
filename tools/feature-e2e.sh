@@ -4,7 +4,7 @@
 # offline bridge as the network really goes, the mock DAC's track, and a device's sound on connect. The
 # decisions behind them (stars, playlists, scrobbling, lyrics choice, mixes, what plays when the queue
 # runs out, the DAC's modes, AutoEQ) are the core's and tested by cargo test against fake servers;
-# docs/testing.md lists what moved where. Checks that the server has to agree with ask the server's API.
+# docs/site/developers/testing.md lists what moved where. Checks that the server has to agree with ask the server's API.
 #   tools/feature-e2e.sh [--only <section>,...] [--list]     NORI_E2E_SERVER=local for tools/dev-server.sh
 #   (the real server's credentials come from ~/.music.pass: url, blank, user, password)
 source "$(dirname "$0")/e2e-lib.sh"

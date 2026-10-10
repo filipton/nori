@@ -1,5 +1,7 @@
 # Feature checklist
 
+Internal planning note, not published.
+
 Living inventory for **nori 0.6.0-beta.2**. Every distinct feature found in Symfonium (S), Musly (M) and
 Navic (N), merged. The raw, sourced inventories are in `docs/research/` (Symfonium: all 67 release
 posts, the docs site, the Play listing and the APK's strings; Musly: changelog, 892 l10n keys,
@@ -362,7 +364,7 @@ by …"-style lines whose next word is a name, watermarks and ads ("Lyrics from 
 Title"), "[Instrumental]" placeholders, and empty or time-only lines (`credits.rs`). Done once as an answer
 is read, before it is scored and kept; the lines left keep their times.
 
-All of it is Rust (docs/clients.md): the service table and the user's ranking in nori-settings
+All of it is Rust (docs/site/developers/writing-a-client.md): the service table and the user's ranking in nori-settings
 (`lyrics_sources.rs`), the requests, matching and answers in nori-lyrics (`services.rs`, through the
 core's `Transport`, which now carries a third party's headers and a JSON body), the formats with their
 tests and fixtures (`formats.rs`, `json.rs`, `html.rs`, `testdata/`), the ranking and racing

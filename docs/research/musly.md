@@ -1,5 +1,7 @@
 # Musly feature inventory (dddevid/musly, tag v2.0.2, pubspec 2.0.2+7)
 
+Internal planning note, not published.
+
 Sources read: README.md, CHANGELOG.md (all entries 1.0.1 → 2.0.2), GitHub release notes v1.0.0–v2.0.2 (`gh release view`), fastlane/metadata/android/en-US (full_description + changelogs 5, 7), pubspec.yaml, lib/l10n/app_en.arb (892 keys), lib/services/*, lib/providers/*, lib/screens/*, lib/widgets/*, android MainActivity.kt + AndroidManifest, ios/Runner/*, react-website/src/components/Features.jsx.
 
 Source tags: `CL x.y.z` = CHANGELOG entry, `REL x.y.z` = GitHub release notes, `arb:key` = lib/l10n/app_en.arb, paths relative to repo root (`lib/` omitted where obvious).

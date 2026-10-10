@@ -1,5 +1,7 @@
 # Navic feature inventory
 
+Internal planning note, not published.
+
 Source: https://github.com/ssalggnikool/Navic (formerly paigely/Navic), local clone at HEAD `8f8741a` (2026-09-15, "feat: tap cover art to fullscreen (#551)"), i.e. a few commits past the latest release `v1.0.0-alpha55` (2026-09-12).
 
 Primary sources read:

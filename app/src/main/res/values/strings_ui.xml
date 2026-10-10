@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Every word the app's screens say. Numbers are written in Kotlin (dev.nori.music.text.Fmt); the words
      around them are here, so the app can be translated. The core says none of these: it hands over data
-     and kinds (docs/clients.md). -->
+     and kinds (docs/site/developers/writing-a-client.md). -->
 <resources>
     <!-- The fixed words: titles, buttons, hints, and the names icons are read out by (ui/Say.kt). -->
     <string name="home">Home</string>

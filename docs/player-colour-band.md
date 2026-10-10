@@ -1,5 +1,7 @@
 # The band under the cover, and the colours of the player's page
 
+Internal planning note, not published.
+
 Written after a long night of failed attempts on it, so the next person does not repeat them. The
 short version: the soft strip where the sleeve meets the page is the hardest thing on that screen to
 get right, every fix that changed *when* its colours move was wrong, and the answer is almost

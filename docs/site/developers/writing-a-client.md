@@ -1,4 +1,11 @@
-# Writing a nori client
+---
+title: Writing a client
+description: What the Rust core already does, and what every nori client builds for itself.
+sidebar:
+  order: 2
+---
+
+Applies to the nori repository at 0.6. The Android app (`app/`, `core/`) is the reference for each item.
 
 The Rust core (`crates/`) is meant to be reused whole: a desktop app or a terminal client links it and
 writes only what is specific to its platform. This page lists what the core already does, and what every
@@ -404,7 +411,7 @@ draws them.
   keeps the record's colours.
 
 The debug build measures the core's covers (the perf build runs the same from its Performance page,
-docs/perf-build.md):
+[the perf build](building.md#the-perf-build)):
 
 ```sh
 adb shell am broadcast -a dev.nori.music.TEST --es cmd coverbench --es arg 40
@@ -460,7 +467,7 @@ native heaps before and after.
   context switches, heap, memory, the battery's counter and gauge, frames, the network bytes, and the audio
   output as the platform describes it against what was asked of it) at each change of state, and hand them
   to `perf_log` (`perf_state`, `perf_stretch`, `perf_log_add`, `perf_page`, `perf_report`). Android's is
-  the perf build (`app/src/perf`, docs/perf-build.md).
+  the perf build (`app/src/perf`, [Building](building.md#the-perf-build)).
 - Locale: the core writes no number for display and needs no locale; the DAC's modes and rates come
   as numbers (`DacMode`, `DacTrack`) and the client writes "44.1 kHz" itself.
 - Drawing cost: redraw only when something visible changes. The Android player draws the seek bar once

@@ -3,7 +3,7 @@
 # keys, the background and a screen that is off; offload taken up and given back; the equalizer's in-place
 # resize of the track; AutoMix measuring songs out of the media3 cache; a seek surviving a force stop; a
 # transcode whose stated length the bytes never reach. How music is mixed, sped up, skipped, sought and
-# planned is Rust's and tested there (cargo test; docs/testing.md lists what moved where).
+# planned is Rust's and tested there (cargo test; docs/site/developers/testing.md lists what moved where).
 #   tools/audio-e2e.sh [--only <section>,...] [--list] [song-ref] [other-song-ref]
 #   NORI_E2E_SERVER=local for tools/dev-server.sh
 source "$(dirname "$0")/e2e-lib.sh"
