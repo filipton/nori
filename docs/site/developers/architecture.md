@@ -46,5 +46,5 @@ The table of every crate, with what it holds, is in [AGENTS.md](../../../AGENTS.
 
 ## Docs versions
 
-The docs are published from `docs/site/` as they are on `main`, as "latest". Versioned docs can be
+The docs are published from `docs/site/` as they are on `master`, as "latest". Versioned docs can be
 added later by building the site from each release tag into its own path.
