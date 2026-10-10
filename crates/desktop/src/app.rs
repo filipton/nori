@@ -197,18 +197,21 @@ pub(crate) fn mosaic(images: &[Image]) -> Option<Image> {
     let mut surface = skia_safe::surfaces::raster_n32_premul((width as i32, width as i32))?;
     let paint = Paint::default();
     for (i, image) in images.iter().enumerate() {
-        let pixels = image.to_rgba8()?;
-        let (w, h) = (pixels.width(), pixels.height());
-        let info = ImageInfo::new((w as i32, h as i32), ColorType::RGBA8888, AlphaType::Unpremul, None);
-        let image = skia_safe::images::raster_from_data(&info, Data::new_copy(pixels.as_bytes()), w as usize * 4)?;
+        let image = if let Some(image) = i_slint_renderer_skia::image_to_skia(image) {
+            image
+        } else {
+            let pixels = image.to_rgba8()?;
+            let (w, h) = (pixels.width(), pixels.height());
+            let info = ImageInfo::new((w as i32, h as i32), ColorType::RGBA8888, AlphaType::Unpremul, None);
+            skia_safe::images::raster_from_data(&info, Data::new_copy(pixels.as_bytes()), w as usize * 4)?
+        };
+        let (w, h) = (image.width() as u32, image.height() as u32);
         let crop = w.min(h) as f32;
         let source = Rect::from_xywh((w as f32 - crop) / 2.0, (h as f32 - crop) / 2.0, crop, crop);
         let target = Rect::from_xywh((i % 2) as f32 * side as f32, (i / 2) as f32 * side as f32, side as f32, side as f32);
         surface.canvas().draw_image_rect_with_sampling_options(&image, Some((&source, skia_safe::canvas::SrcRectConstraint::Strict)), target, SamplingOptions::new(FilterMode::Linear, skia_safe::MipmapMode::None), &paint);
     }
-    let mut pixels = SharedPixelBuffer::<Rgba8Pixel>::new(width, width);
-    let info = ImageInfo::new((width as i32, width as i32), ColorType::RGBA8888, AlphaType::Unpremul, None);
-    surface.read_pixels(&info, pixels.make_mut_bytes(), width as usize * 4, (0, 0)).then(|| Image::from_rgba8(pixels))
+    Some(i_slint_renderer_skia::image_from_skia(surface.image_snapshot()))
 }
 
 /// The cover's blurred wash (square ARGB) as an image.
@@ -2139,6 +2142,15 @@ mod tests {
         assert!(art.images.contains_key(&key("shared", CoverSize::Card)));
     }
 
+    fn image_pixels(image: &Image) -> SharedPixelBuffer<Rgba8Pixel> {
+        if let Some(pixels) = image.to_rgba8() { return pixels; }
+        let image = i_slint_renderer_skia::image_to_skia(image).unwrap();
+        let mut pixels = SharedPixelBuffer::<Rgba8Pixel>::new(image.width() as u32, image.height() as u32);
+        let info = skia_safe::ImageInfo::new((image.width(), image.height()), skia_safe::ColorType::RGBA8888, skia_safe::AlphaType::Unpremul, None);
+        assert!(image.read_pixels(&info, pixels.make_mut_bytes(), image.width() as usize * 4, (0, 0), skia_safe::image::CachingHint::Disallow));
+        pixels
+    }
+
     #[test]
     fn pick_updates_replace_the_changed_quadrant() {
         let art = RefCell::new(Art::default());
@@ -2153,9 +2165,9 @@ mod tests {
         }
         let covers = ModelRc::new(VecModel::from((0..4).map(|i| SharedString::from(i.to_string())).collect::<Vec<_>>()));
         let app = AppHandle(Weak::new());
-        let before = pick_image(&art, &app, covers.clone(), mosaic).to_rgba8().unwrap();
+        let before = image_pixels(&pick_image(&art, &app, covers.clone(), mosaic));
         art.borrow_mut().insert(CoverKey { id: "0".into(), size: CoverSize::Card }, solid(255, 0, 255), None, now);
-        let after = pick_image(&art, &app, covers, mosaic).to_rgba8().unwrap();
+        let after = image_pixels(&pick_image(&art, &app, covers, mosaic));
         for (i, expected) in [(255, 0, 255), (0, 255, 0), (0, 0, 255), (255, 255, 0)].into_iter().enumerate() {
             let offset = ((i / 2) * SMALL_PX as usize + 20) * after.width() as usize + (i % 2) * SMALL_PX as usize + 20;
             let p = after.as_slice()[offset];

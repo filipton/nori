@@ -67,8 +67,8 @@ impl WindowAdapter for Layer {
 
     fn request_redraw(&self) {
         self.dirty.set(true);
-        if let Some(w) = self.shared.upgrade().and_then(|s| s.window.borrow().clone()) {
-            w.request_redraw();
+        if let Some(s) = self.shared.upgrade() {
+            redraw(&s);
         }
     }
 }
@@ -103,6 +103,7 @@ struct Shared {
     layers: Layers,
     window: RefCell<Option<Arc<WinitWindow>>>,
     size: Cell<PhysicalSize>,
+    frames: RefCell<FrameSchedule>,
     proxy: EventLoopProxy<Wake>,
     sidebar_shown: Cell<bool>,
     player_shown: Cell<bool>,
@@ -116,6 +117,28 @@ struct Shared {
 }
 
 type FocusSource = Box<dyn Fn() -> Option<Focus>>;
+
+struct FrameSchedule {
+    next: Instant,
+    interval: Duration,
+    pending: bool,
+}
+
+impl FrameSchedule {
+    fn request(&mut self, now: Instant) -> bool {
+        self.pending = true;
+        now >= self.next
+    }
+
+    fn begin(&mut self, now: Instant) -> bool {
+        if !self.request(now) { return false; }
+        self.pending = false;
+        self.next = now + self.interval;
+        true
+    }
+
+    fn deadline(&self) -> Option<Instant> { self.pending.then_some(self.next) }
+}
 
 /// A page region drawn blurred except for a sharp horizontal band (logical pixels).
 #[derive(Clone, Copy)]
@@ -150,6 +173,7 @@ impl slint::platform::Platform for Platform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
         let g = &self.shared.gpu;
         let renderer = SkiaWGPU30Renderer::new(g.instance.clone(), g.adapter.clone(), g.device.clone(), g.queue.clone())?;
+        renderer.set_resource_cache_limit(16 * 1024 * 1024);
         let layer = Rc::new_cyclic(|me: &Weak<Layer>| Layer {
             window: slint::Window::new(me.clone() as Weak<dyn WindowAdapter>),
             renderer,
@@ -216,6 +240,7 @@ pub fn install() -> Result<Compositor, String> {
         layers: RefCell::new(Vec::new()),
         window: RefCell::new(None),
         size: Cell::new(PhysicalSize::new(1280, 820)),
+        frames: RefCell::new(FrameSchedule { next: Instant::now(), interval: Duration::ZERO, pending: false }),
         proxy: event_loop.create_proxy(),
         sidebar_shown: Cell::new(false),
         player_shown: Cell::new(false),
@@ -232,7 +257,9 @@ impl Compositor {
     /// Vulkan's borrowed Skia images cannot own imported wgpu texture lifetimes.
     #[cfg(target_os = "linux")]
     pub fn picture(&self, pixels: &[u8], width: u32, height: u32) -> slint::Image {
-        slint::Image::from_rgba8(slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(pixels, width, height))
+        let info = skia_safe::ImageInfo::new((width as i32, height as i32), skia_safe::ColorType::RGBA8888, skia_safe::AlphaType::Unpremul, skia_safe::ColorSpace::new_srgb());
+        let image = skia_safe::images::raster_from_data(&info, skia_safe::Data::new_copy(pixels), width as usize * 4).expect("decoded cover pixels");
+        i_slint_renderer_skia::image_from_skia(image)
     }
 
     #[cfg(target_os = "linux")]
@@ -347,6 +374,7 @@ fn redraw(s: &Shared) {
     if s.occluded.get() {
         return;
     }
+    if !s.frames.borrow_mut().request(Instant::now()) { return; }
     if let Some(w) = s.window.borrow().as_ref() {
         w.request_redraw();
     }
@@ -536,6 +564,11 @@ impl ApplicationHandler<Wake> for Runner {
         }
         #[cfg(target_os = "macos")]
         unified_toolbar(&window);
+        #[cfg(target_os = "linux")]
+        if self.draw.as_ref().is_some_and(|d| d.config.present_mode == wgpu::PresentMode::Immediate) {
+            let refresh = window.current_monitor().and_then(|m| m.refresh_rate_millihertz()).unwrap_or(60_000).max(1);
+            self.shared.frames.borrow_mut().interval = Duration::from_secs_f64(1000.0 / refresh as f64);
+        }
         let size = window.inner_size();
         self.shared.size.set(PhysicalSize::new(size.width, size.height));
         *self.shared.window.borrow_mut() = Some(window);
@@ -614,6 +647,7 @@ impl ApplicationHandler<Wake> for Runner {
                 }
             }
             E::RedrawRequested => {
+                if !self.shared.frames.borrow_mut().begin(Instant::now()) { return; }
                 slint::platform::update_timers_and_animations();
                 if self.shared.occluded.get() {
                     return;
@@ -640,8 +674,13 @@ impl ApplicationHandler<Wake> for Runner {
         if self.animating() {
             redraw(&self.shared);
         }
-        el.set_control_flow(match slint::platform::duration_until_next_timer_update() {
-            Some(d) => ControlFlow::WaitUntil(Instant::now() + d.min(Duration::from_secs(60))),
+        let now = Instant::now();
+        let frame = (!self.shared.occluded.get()).then(|| self.shared.frames.borrow().deadline()).flatten();
+        if frame.is_some_and(|at| at <= now) { redraw(&self.shared); }
+        let timer = slint::platform::duration_until_next_timer_update().map(|d| now + d.min(Duration::from_secs(60)));
+        let next = timer.into_iter().chain(frame.filter(|at| *at > now)).min();
+        el.set_control_flow(match next {
+            Some(at) => ControlFlow::WaitUntil(at),
             None => ControlFlow::Wait,
         });
     }
@@ -677,11 +716,28 @@ impl Draw {
     fn new(gpu: &Gpu, window: Arc<WinitWindow>) -> Result<Draw, String> {
         let d = &gpu.device;
         let size = window.inner_size();
+        #[cfg(target_os = "linux")]
+        let composited_x11 = {
+            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            let native = window.window_handle().is_ok_and(|h| matches!(h.as_raw(), RawWindowHandle::Xlib(_) | RawWindowHandle::Xcb(_)));
+            native && (|| {
+                use x11rb::protocol::xproto::ConnectionExt;
+                let (connection, screen) = x11rb::connect(None).ok()?;
+                let selection = connection.intern_atom(true, format!("_NET_WM_CM_S{screen}").as_bytes()).ok()?.reply().ok()?.atom;
+                let owner = connection.get_selection_owner(selection).ok()?.reply().ok()?.owner;
+                Some(owner != 0)
+            })().unwrap_or(false)
+        };
         let surface = gpu.instance.create_surface(window).map_err(|e| e.to_string())?;
         let mut config = surface.get_default_config(&gpu.adapter, size.width.max(1), size.height.max(1)).ok_or("the surface has no configuration")?;
         config.format = FORMAT;
         config.alpha_mode = wgpu::CompositeAlphaMode::Auto;
         config.present_mode = wgpu::PresentMode::AutoVsync;
+        #[cfg(target_os = "linux")]
+        if composited_x11 && surface.get_capabilities(&gpu.adapter).present_modes.contains(&wgpu::PresentMode::Immediate) {
+            // The X11 compositor synchronizes display; pace drawing without blocking input on vblank.
+            config.present_mode = wgpu::PresentMode::Immediate;
+        }
         surface.configure(d, &config);
         let shader = d.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("glass"), source: wgpu::ShaderSource::Wgsl(include_str!("glass.wgsl").into()) });
         let tex = |binding| wgpu::BindGroupLayoutEntry {
@@ -762,7 +818,7 @@ impl Draw {
     }
 
     /// Renders dirty layers, then composites page, glass and the sidebar/player on top.
-    fn frame(&mut self, s: &Shared, win: LogicalSize) {
+    fn frame(&mut self, s: &Shared, mut win: LogicalSize) {
         self.next_group.set(0);
         let gpu = s.gpu.clone();
         let d = &gpu.device;
@@ -771,11 +827,32 @@ impl Draw {
             self.surface.configure(d, &self.config);
         }
         // Acquire before Skia submits this frame so the fence wait only covers earlier work.
-        let frame = match self.surface.get_current_texture() {
+        let mut acquired = self.surface.get_current_texture();
+        if matches!(acquired, wgpu::CurrentSurfaceTexture::Outdated) {
+            // X11 can resize again while configuration waits for outstanding presentation.
+            let size = s.window.borrow().as_ref().unwrap().inner_size();
+            s.size.set(PhysicalSize::new(size.width, size.height));
+            self.resize(size.width, size.height);
+            layout_layers(s);
+            win = LogicalSize::new(size.width as f32 / scale, size.height as f32 / scale);
+            self.surface.configure(d, &self.config);
+            self.stale = false;
+            acquired = self.surface.get_current_texture();
+        }
+        let frame = match acquired {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             // Also when the window was hidden before it was ever shown, so winit sends no Occluded.
             wgpu::CurrentSurfaceTexture::Occluded => {
                 s.occluded.set(true);
+                return;
+            }
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                self.stale = true;
+                redraw(s);
+                return;
+            }
+            wgpu::CurrentSurfaceTexture::Timeout => {
+                redraw(s);
                 return;
             }
             _ => {
@@ -1028,6 +1105,25 @@ fn unified_toolbar(window: &WinitWindow) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redraw_bursts_wait_for_the_next_frame() {
+        let now = Instant::now();
+        let interval = Duration::from_millis(16);
+        let mut frames = FrameSchedule { next: now, interval, pending: false };
+        assert!(frames.begin(now));
+        assert_eq!(frames.deadline(), None);
+        for ms in [1, 4, 8, 15] {
+            assert!(!frames.request(now + Duration::from_millis(ms)));
+            assert!(!frames.begin(now + Duration::from_millis(ms)));
+            assert_eq!(frames.deadline(), Some(now + interval));
+        }
+        assert!(frames.begin(now + interval));
+        assert_eq!(frames.deadline(), None);
+        assert!(frames.request(now + interval * 10));
+        assert!(frames.begin(now + interval * 10));
+        assert_eq!(frames.deadline(), None);
+    }
 
     #[test]
     fn wheel_scroll_moves_over_time() {

@@ -32,6 +32,12 @@ fn data_dir() -> PathBuf {
 }
 
 fn main() -> Result<(), String> {
+    // Return large freed cover/analysis buffers to Linux.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::mallopt(libc::M_MMAP_THRESHOLD, 256 * 1024);
+        libc::mallopt(libc::M_TRIM_THRESHOLD, 128 * 1024);
+    }
     let usage = || {
         let control = if cfg!(all(feature = "test-control", unix)) { " [--control-socket PATH]" } else { "" };
         format!("usage: nori-desktop [--data DIR] [--url URL --user USER --password PASSWORD]{control}")

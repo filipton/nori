@@ -1,8 +1,9 @@
 # Desktop profiling
 
 Measure an optimized binary with symbols. Debug builds and Xvfb presentation timings do not represent
-the owner's desktop. Keep automated clicks on Xvfb with a private audio sink; a physical-display trace
-uses only passive sampling while the owner operates the window.
+the owner's desktop. Keep automated clicks on Xvfb with a private audio sink unless the owner
+authorizes physical-display interaction. Check that DPMS says `Monitor is On` before timing it;
+NVIDIA presentation with the monitors off waited about one second in a later trace.
 
 ```sh
 cargo rustc -j4 --profile android-dev -p nori-desktop -- \
@@ -27,8 +28,8 @@ while it is still running. `jeprof --collapsed --inuse_space BINARY DUMP` produc
 estimates; stack branches overlap and must not be added together.
 
 Use a private SQLite backup and copied cover/music caches when profiling the owner's library. Keep
-the copy private: its database contains credentials. Test processes need their own display and audio
-sink, and must not receive provider songs that the owner did not request.
+the copy private: its database contains credentials. Test processes need their own audio sink and
+normally their own display, and must not receive provider songs that the owner did not request.
 
 For GPU work, RenderDoc's Vulkan capture and `EventGPUDuration` counters measure individual draw/copy
 events. Their sum excludes presentation and some synchronization. Record image acquisition, painting,
@@ -156,3 +157,68 @@ Ten overview/back cycles passed with software Vulkan. One bounded Xvfb check of 
 views on NVIDIA also passed, with no new kernel Xids during that run. Software-Vulkan corner and
 side dragging produced zero mostly black frames out of 661, and the GPU pixel regression passed.
 These are bounded checks, not a guarantee that every NVIDIA rendering path is fault-free.
+
+## Owned raster covers and allocator retention
+
+Linux keeps each decoded cover in an owned Skia raster image shared with Slint. This removes the
+second retained Slint pixel buffer while preserving ownership through GPU uploads. Raster Top Picks
+also share their source images and retain the surface snapshot instead of reading it back into
+another buffer. Each of the three Skia contexts has a 16 MiB resource-cache budget.
+
+glibc's dynamic mmap threshold let large freed cover and analysis buffers accumulate in arenas.
+The Linux GNU desktop sets a 256 KiB mmap threshold and 128 KiB trim threshold at startup, allowing
+freed large buffers to return to the OS. This does not limit allocator arenas or audio threads.
+
+A physical X11 comparison against `098f878f` used optimized binaries, normal glibc allocation,
+the same copied library and queue, the fullscreen player and sixty consecutive skips. Before each
+run, the private database was restored and its queue position reset to zero. Both runs used the
+same already-requested music cache and private audio sink; jemalloc profiling was disabled.
+
+| Measurement | Pushed build | Updated build |
+|---|---:|---:|
+| RSS before skipping | 251.7 MiB | 211.4 MiB |
+| RSS after 60 skips | 388.7 MiB | 308.8 MiB |
+| Anonymous resident memory after 60 skips | 256.0 MiB | 171.1 MiB |
+
+The final two updated measurements, after 50 and 60 skips, were 304.2 and 308.8 MiB RSS.
+A prior pacing trial ended at 289.4 MiB; asynchronous analysis and buffer lifetime affect the
+snapshot. This is a bounded workload result, not a promise that every path is leak-free. Native libraries,
+NVIDIA allocations, retained covers and playback buffers still account for substantial memory.
+
+A longer run played through sixty consecutive skips, then three batches of sixty alternating
+previous/next actions in the same process. RSS after each alternating batch was 268.3 MiB,
+with 143.4 MiB anonymous memory. The released background-analysis buffers explain the drop from
+292.4 MiB at the end of that run's initial sixty skips. This checks retention over already-visited
+tracks; it does not establish a bound for every library or navigation path.
+
+On composited X11, drawing uses supported Immediate presentation and coalesces requests at the
+monitor refresh interval. The window manager handles display synchronization; drawing does not
+wait on vblank for every ordinary frame. Other display paths retain AutoVsync. There is no frame
+timer when no redraw is pending. A clock-based test checks coalescing and immediate idle recovery.
+
+An unrecorded corner/right-border drag on Home and fullscreen averaged 21.3% of one CPU core for
+the pushed build, 17.8% for the pacing trial and 19.9% after correcting resize recovery. These
+single comparisons are not CPU guarantees.
+Observed client-size changes still had a median interval around 33.5 ms in both builds; neither
+one queued frame nor an experimental X11 resize-sync patch improved it. Both experiments were
+discarded. A final physical-display recording had zero mostly black frames out of 331, and the
+GPU pixel regression passed, but this does not establish 60 fps live resizing. Issue #33 remains
+open for the remaining resize and memory work.
+
+A lightweight xterm reference accepted about 60 size updates per second on the physical desktop
+(median observed interval 16.7 ms), so the 30 Hz Nori result is not a universal xfwm4 resize limit.
+The reference used eight-pixel pointer steps to exceed terminal cell-size constraints; Nori's
+drag used four-pixel steps. Both delivered motion at 60 Hz with geometry sampling on a separate
+thread. Vulkan swapchain retirement in wgpu 30 calls `vkDeviceWaitIdle` to wait for outstanding
+presentation before releasing resources. Painting was usually about 2 ms; acquire/reconfiguration
+and presentation each reached roughly 12–16 ms in the physical resize trace.
+
+The trace also found 166 abandoned acquisitions versus 187 completed frames. The window could
+resize during configuration's wait, making the cached dimensions outdated before acquisition.
+The old error path configured the same dimensions again and returned without requesting a draw.
+On Outdated, the backend now re-reads the actual native size after the wait, updates layout and
+acquires once with those dimensions. Another Outdated or Timeout leaves a paced redraw pending;
+Timeout does not rebuild the surface. This reduced abandoned draws to 50 and increased completed
+frames to 277 in the same instrumented drag workload. A second X11 resize-sync trial still had a
+long first-drag pause and was discarded. This improves recovery during movement without claiming
+60 fps resizing.
