@@ -208,7 +208,10 @@ impl Session {
             output,
             volume: level,
             memory_mb: 256,
-            covers: true,
+            covers: Some(nori_covers::Config {
+                memory_bytes: 0,
+                ..nori_covers::Config::new(data.join("covers"))
+            }),
             offline: false,
             mpris,
             device: nori_core::remote::RemoteMe { name: nori_host::device_name(), kind: DeviceKind::Desktop },

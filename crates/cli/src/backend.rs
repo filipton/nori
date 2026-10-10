@@ -243,7 +243,7 @@ impl Session {
             output,
             volume: level,
             memory_mb: 256,
-            covers: o.images,
+            covers: o.images.then(|| nori_covers::Config::new(o.data.join("covers"))),
             offline: o.offline,
             mpris: o.mpris,
             device: nori_core::remote::RemoteMe { name: nori_host::device_name(), kind: nori_core::remote::wire::DeviceKind::Terminal },

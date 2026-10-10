@@ -698,8 +698,7 @@ component CardView inherits Rectangle {
     }
 }
 
-// Cards in rows filling the page's width. Only the ones on screen are drawn, and only those ask for their
-// covers.
+// Cards in rows filling the page width; only nearby rows keep components and images.
 component Grid inherits Flickable {
     in property <[Card]> cards;
     in property <int> rev;
@@ -714,17 +713,22 @@ component Grid inherits Flickable {
     property <int> columns: max(2, floor((self.width - root.pad * 2 + root.gap) / (176px + root.gap)));
     // The cards grow a little so the rows reach both edges.
     property <length> side: (self.width - root.pad * 2 - (root.columns - 1) * root.gap) / root.columns;
-    content-height: ceil(root.cards.length / root.columns) * (root.side + 46px + 24px) + root.bottom;
-    for c[i] in root.cards: CardView {
-        x: root.pad + mod(i, root.columns) * (root.side + root.gap);
-        y: floor(i / root.columns) * (root.side + 46px + 24px);
+    property <length> row-step: root.side + 46px + 24px;
+    property <int> first: max(0, floor(-self.content-y / root.row-step) - 1) * root.columns;
+    property <int> visible-count: max(0, min(root.cards.length - root.first, (ceil(self.height / root.row-step) + 2) * root.columns));
+    content-height: ceil(root.cards.length / root.columns) * root.row-step + root.bottom;
+    for slot in root.visible-count: CardView {
+        property <int> i: root.first + slot;
+        property <Card> c: root.cards[self.i];
+        x: root.pad + mod(self.i, root.columns) * (root.side + root.gap);
+        y: floor(self.i / root.columns) * root.row-step;
         side: root.side;
-        card: c;
+        card: self.c;
         round: root.round;
-        picture: root.art(c.art, 0, root.rev);
-        open => { root.open(c); }
-        play => { root.play(c); }
-        jam => { root.jam(c); }
+        picture: root.art(self.c.art, 0, root.rev);
+        open => { root.open(self.c); }
+        play => { root.play(self.c); }
+        jam => { root.jam(self.c); }
     }
 }
 
@@ -769,6 +773,8 @@ component ShelfView inherits VerticalLayout {
     property <int> columns: max(2, floor((self.width - root.pad * 2 + root.gap) / (root.least + root.gap)));
     out property <length> side: (self.width - root.pad * 2 - (root.columns - 1) * root.gap) / root.columns;
     out property <length> step: root.side + root.gap;
+    out property <int> first: max(0, floor(-flick.content-x / root.step) - 1);
+    out property <int> visible-count: max(0, min(root.count - root.first, ceil(root.seen / root.step) + 2));
     property <int> shown: root.loading ? root.columns : root.count;
     // The row is seen from a gap before the left margin to a gap past the right one, so the cards beside
     // the whole ones are not glimpsed; it scrolls until its last card stands at the right margin.
@@ -871,42 +877,31 @@ component ShelfView inherits VerticalLayout {
 component PickCard inherits Rectangle {
     in property <Pick> pick;
     in property <length> side;
-    in property <int> rev;
-    pure callback art(string, int, int) -> image;
+    in property <image> picture;
     callback open;
-    width: root.side;
-    height: root.side * 1.3;
+    width: floor(root.side / 1phx) * 1phx;
+    height: floor(root.side * 1.3 / 1phx) * 1phx;
     border-radius: 12px;
     clip: true;
     background: root.pick.deep;
     Rectangle {
         y: 0;
-        height: root.side;
+        height: root.width;
         background: root.pick.tint;
-        if root.pick.covers.length >= 4: Rectangle {
-            for k in 4: Image {
-                x: mod(k, 2) * root.side / 2;
-                y: floor(k / 2) * root.side / 2;
-                width: root.side / 2;
-                height: root.side / 2;
-                source: root.art(root.pick.covers[k], 0, root.rev);
-                image-fit: cover;
-            }
-        }
-        if root.pick.covers.length > 0 && root.pick.covers.length < 4: Image {
-            width: root.side;
-            height: root.side;
-            source: root.art(root.pick.covers[0], 0, root.rev);
+        Image {
+            width: root.width;
+            height: root.width;
+            source: root.picture;
             image-fit: cover;
         }
         Rectangle {
-            y: root.side * 0.5;
-            height: root.side * 0.5;
+            y: root.width * 0.5;
+            height: root.width * 0.5;
             background: @linear-gradient(180deg, root.pick.deep.with-alpha(0) 0%, root.pick.deep.with-alpha(0.75) 70%, root.pick.deep 100%);
         }
     }
     VerticalLayout {
-        y: root.side - 6px;
+        y: root.width - 6px;
         height: root.height - self.y;
         padding-left: 14px;
         padding-right: 14px;
@@ -3476,6 +3471,7 @@ export component AppWindow inherits Window {
     // Bumped whenever a cover arrives: every picture asks `art` again and finds the new one.
     in property <int> covers-rev;
     pure callback art(string, int, int) -> image;
+    pure callback pick-art([string], int) -> image;
 
     in property <[Shelf]> shelves;
     in property <[Pick]> picks;
@@ -3825,6 +3821,7 @@ export component AppWindow inherits Window {
         }
 
         if root.view != 7: Rectangle {
+            visible: full-screen.opacity < 1;
             // A page that wears its cover's colour: the colour and the wash behind it.
             if root.view == 6: Rectangle {
                 x: root.native-sidebar ? 0 : Theme.side-w;
@@ -3868,11 +3865,10 @@ export component AppWindow inherits Window {
                                 least: 230px;
                                 below: self.side * 0.3;
                                 for m[i] in root.picks: PickCard {
-                                    x: picks-shelf.gap + i * picks-shelf.step;
+                                    x: floor((picks-shelf.gap + i * picks-shelf.step) / 1phx) * 1phx;
                                     side: picks-shelf.side;
                                     pick: m;
-                                    rev: root.covers-rev;
-                                    art(a, s, r) => { return root.art(a, s, r); }
+                                    picture: root.pick-art(m.covers, root.covers-rev);
                                     open => { root.open-mix(m.id); }
                                 }
                             }
@@ -3881,14 +3877,16 @@ export component AppWindow inherits Window {
                                     title: shelf.title;
                                     count: shelf.cards.length;
                                     loading: !shelf.loaded;
-                                    for c[i] in shelf.cards: CardView {
-                                        x: albums-shelf.gap + i * albums-shelf.step;
+                                    for slot in albums-shelf.visible-count: CardView {
+                                        property <int> i: albums-shelf.first + slot;
+                                        property <Card> c: shelf.cards[self.i];
+                                        x: albums-shelf.gap + self.i * albums-shelf.step;
                                         side: albums-shelf.side;
-                                        card: c;
-                                        picture: root.art(c.art, 0, root.covers-rev);
-                                        open => { root.open-album(c.id); }
-                                        play => { root.play-album(c.id); }
-                                        jam => { root.jam-play(0, c.id); }
+                                        card: self.c;
+                                        picture: root.art(self.c.art, 0, root.covers-rev);
+                                        open => { root.open-album(self.c.id); }
+                                        play => { root.play-album(self.c.id); }
+                                        jam => { root.jam-play(0, self.c.id); }
                                     }
                                 }
                             }
@@ -4784,7 +4782,7 @@ export component AppWindow inherits Window {
         // The song's own colours behind everything; the artwork and the controls on the left; on the right the
         // lyrics (the line sung sharp, the rest soft: the compositor blurs them, glass.wgsl) or what plays next.
 
-        Rectangle {
+        full-screen := Rectangle {
             opacity: root.full-player ? 1 : 0;
             visible: self.opacity > 0.01;
             animate opacity { duration: 300ms; easing: ease-out; }

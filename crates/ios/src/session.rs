@@ -486,7 +486,7 @@ fn start_queue(
         output,
         volume,
         memory_mb: MEMORY_MB,
-        covers: true,
+        covers: Some(nori_covers::Config::new(dir.join("covers"))),
         offline,
         mpris: None,
         device: nori_core::remote::RemoteMe { name: DEVICE_NAME.into(), kind: nori_core::remote::wire::DeviceKind::Phone },

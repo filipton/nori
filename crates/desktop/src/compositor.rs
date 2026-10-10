@@ -126,6 +126,16 @@ pub struct Focus {
     pub pitch: f32,
 }
 
+impl Shared {
+    fn shown(&self, role: Role) -> bool {
+        match role {
+            Role::Page => true,
+            Role::Sidebar => self.sidebar_shown.get(),
+            Role::Player => self.player_shown.get(),
+        }
+    }
+}
+
 /// The app's handle to the compositor, alongside the platform Slint owns.
 #[derive(Clone)]
 pub struct Compositor(Rc<Shared>);
@@ -195,7 +205,8 @@ pub fn install() -> Result<Compositor, String> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::LowPower, ..Default::default() }))
         .map_err(|e| format!("no GPU: {e}"))?;
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| format!("the GPU: {e}"))?;
+    let descriptor = wgpu::DeviceDescriptor { memory_hints: wgpu::MemoryHints::MemoryUsage, ..Default::default() };
+    let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).map_err(|e| format!("the GPU: {e}"))?;
     let shared = Rc::new(Shared {
         gpu: Rc::new(Gpu { instance, adapter, device, queue }),
         layers: RefCell::new(Vec::new()),
@@ -342,11 +353,7 @@ impl Runner {
     fn under(&self, at: LogicalPosition) -> Role {
         let Some(win) = self.logical_window() else { return Role::Page };
         for role in [Role::Player, Role::Sidebar] {
-            let shown = match role {
-                Role::Player => self.shared.player_shown.get(),
-                _ => self.shared.sidebar_shown.get(),
-            };
-            if !shown || self.layer(role).is_none() {
+            if !self.shared.shown(role) || self.layer(role).is_none() {
                 continue;
             }
             let (o, sz) = place(&self.shared, role, win);
@@ -388,7 +395,7 @@ impl Runner {
     }
 
     fn animating(&self) -> bool {
-        self.shared.layers.borrow().iter().any(|(l, r)| r.get().is_some() && (l.window.has_active_animations() || l.dirty.get()))
+        self.shared.layers.borrow().iter().any(|(l, r)| r.get().is_some_and(|r| self.shared.shown(r)) && (l.window.has_active_animations() || l.dirty.get()))
     }
 }
 
@@ -677,33 +684,10 @@ impl Draw {
         let gpu = s.gpu.clone();
         let d = &gpu.device;
         let scale = s.window.borrow().as_ref().map_or(1.0, |w| w.scale_factor() as f32);
-        for (layer, role) in s.layers.borrow().iter() {
-            if role.get().is_none() {
-                continue;
-            }
-            let size = layer.size.get();
-            let fresh = layer.texture.borrow().as_ref().is_none_or(|(t, _)| t.width() != size.width || t.height() != size.height);
-            if fresh {
-                let t = texture(d, size.width, size.height, "layer");
-                let v = t.create_view(&Default::default());
-                *layer.texture.borrow_mut() = Some((t, v));
-            }
-            if fresh || layer.dirty.get() {
-                // A fresh texture is rendered again next frame: the first render at a new size can come out empty.
-                layer.dirty.set(fresh);
-                if role.get() == Some(Role::Page) {
-                    self.page_blurred = false;
-                }
-                if let Some((t, _)) = layer.texture.borrow().as_ref() {
-                    if let Err(e) = layer.renderer.render_to_texture(t) {
-                        eprintln!("nori: a layer was not drawn: {e}");
-                    }
-                }
-            }
-        }
         if std::mem::take(&mut self.stale) {
             self.surface.configure(d, &self.config);
         }
+        // Acquire before Skia submits this frame so the fence wait only covers earlier work.
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             // Also when the window was hidden before it was ever shown, so winit sends no Occluded.
@@ -716,6 +700,28 @@ impl Draw {
                 return;
             }
         };
+        for (layer, role) in s.layers.borrow().iter() {
+            let Some(role) = role.get().filter(|r| s.shown(*r)) else { continue };
+            let size = layer.size.get();
+            let fresh = layer.texture.borrow().as_ref().is_none_or(|(t, _)| t.width() != size.width || t.height() != size.height);
+            if fresh {
+                let t = texture(d, size.width, size.height, "layer");
+                let v = t.create_view(&Default::default());
+                *layer.texture.borrow_mut() = Some((t, v));
+            }
+            if fresh || layer.dirty.get() {
+                // A fresh texture is rendered again next frame: the first render at a new size can come out empty.
+                layer.dirty.set(fresh);
+                if role == Role::Page {
+                    self.page_blurred = false;
+                }
+                if let Some((t, _)) = layer.texture.borrow().as_ref() {
+                    if let Err(e) = layer.renderer.render_to_texture(t) {
+                        eprintln!("nori: a layer was not drawn: {e}");
+                    }
+                }
+            }
+        }
         let target = frame.texture.create_view(&Default::default());
         let layers = s.layers.borrow();
         let find = |r: Role| layers.iter().find(|(_, x)| x.get() == Some(r)).and_then(|(l, _)| l.texture.borrow().as_ref().map(|(_, v)| v.clone()));

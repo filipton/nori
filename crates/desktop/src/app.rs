@@ -33,8 +33,8 @@ const SMALL_PX: u32 = 256;
 const LARGE_PX: u32 = 800;
 const HERO_PX: u32 = 1600;
 /// Bytes of decoded covers kept per class.
-const SMALL_BYTES: usize = 60 * 1024 * 1024;
-const LARGE_BYTES: usize = 30 * 1024 * 1024;
+const SMALL_BYTES: usize = 32 * 1024 * 1024;
+const LARGE_BYTES: usize = 24 * 1024 * 1024;
 /// Pending cover requests kept; the oldest beyond this are cancelled.
 const PENDING_KEPT: usize = 1000;
 /// A pending cover not looked up for this long is off screen, and its request is cancelled.
@@ -92,6 +92,7 @@ struct Lists {
 #[derive(Default)]
 struct Art {
     images: HashMap<CoverKey, (Image, Instant)>,
+    mosaics: HashMap<Vec<String>, Image>,
     /// Page colours of large covers, by cover id.
     colours: HashMap<String, Rc<CoverColours>>,
     asked: HashSet<CoverKey>,
@@ -105,6 +106,9 @@ impl Art {
         let id = key.id.clone();
         let large = key.size != CoverSize::Card;
         self.missing.remove(&key);
+        if !large {
+            self.mosaics.retain(|covers, _| !covers.contains(&id));
+        }
         self.images.insert(key.clone(), (image, now));
         if let Some(c) = colours {
             self.colours.insert(id.clone(), Rc::from(c));
@@ -169,6 +173,41 @@ fn cover_image(art: &RefCell<Art>, app: &AppHandle, id: SharedString, size: i32)
         a.wanted.push(k);
     }
     Image::default()
+}
+
+fn pick_image(art: &RefCell<Art>, app: &AppHandle, covers: ModelRc<SharedString>) -> Image {
+    let ids: Vec<String> = covers.iter().take(4).map(|id| id.to_string()).collect();
+    if ids.len() < 4 {
+        return ids.first().map_or_else(Image::default, |id| cover_image(art, app, id.as_str().into(), 0));
+    }
+    if let Some(image) = art.borrow().mosaics.get(&ids) {
+        return image.clone();
+    }
+    let images: Vec<_> = ids.iter().map(|id| cover_image(art, app, id.as_str().into(), 0)).collect();
+    let Some(image) = mosaic(&images) else { return Image::default() };
+    art.borrow_mut().mosaics.insert(ids, image.clone());
+    image
+}
+
+fn mosaic(images: &[Image]) -> Option<Image> {
+    use skia_safe::{AlphaType, ColorType, Data, FilterMode, ImageInfo, Paint, Rect, SamplingOptions};
+    let side = SMALL_PX;
+    let width = side * 2;
+    let mut surface = skia_safe::surfaces::raster_n32_premul((width as i32, width as i32))?;
+    let paint = Paint::default();
+    for (i, image) in images.iter().enumerate() {
+        let pixels = image.to_rgba8()?;
+        let (w, h) = (pixels.width(), pixels.height());
+        let info = ImageInfo::new((w as i32, h as i32), ColorType::RGBA8888, AlphaType::Unpremul, None);
+        let image = skia_safe::images::raster_from_data(&info, Data::new_copy(pixels.as_bytes()), w as usize * 4)?;
+        let crop = w.min(h) as f32;
+        let source = Rect::from_xywh((w as f32 - crop) / 2.0, (h as f32 - crop) / 2.0, crop, crop);
+        let target = Rect::from_xywh((i % 2) as f32 * side as f32, (i / 2) as f32 * side as f32, side as f32, side as f32);
+        surface.canvas().draw_image_rect_with_sampling_options(&image, Some((&source, skia_safe::canvas::SrcRectConstraint::Strict)), target, SamplingOptions::new(FilterMode::Linear, skia_safe::MipmapMode::None), &paint);
+    }
+    let mut pixels = SharedPixelBuffer::<Rgba8Pixel>::new(width, width);
+    let info = ImageInfo::new((width as i32, width as i32), ColorType::RGBA8888, AlphaType::Unpremul, None);
+    surface.read_pixels(&info, pixels.make_mut_bytes(), width as usize * 4, (0, 0)).then(|| Image::from_rgba8(pixels))
 }
 
 fn picture(p: &Picture) -> Image {
@@ -338,6 +377,8 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
         };
         let main_art = art_cb(&art);
         ui.on_art(move |id, size, _rev| main_art(id, size));
+        let (pick_art, pick_app) = (art.clone(), me.clone());
+        ui.on_pick_art(move |covers, _rev| pick_image(&pick_art, &pick_app, covers));
         RefCell::new(App {
             ui: ui.as_weak(),
             sidebar: sidebar(ui, art_cb(&art)),
@@ -904,6 +945,7 @@ impl App {
         };
         match d {
             Data::Picks(tiles) => {
+                self.art.borrow_mut().mosaics.clear();
                 let picks: Vec<Pick> = tiles
                     .into_iter()
                     .map(|t| {
@@ -2085,16 +2127,157 @@ mod tests {
         art.insert(key("shared", CoverSize::Large), image(CoverSize::Large), Some(Box::new(colours)), now);
         art.insert(key("shared", CoverSize::Hero), image(CoverSize::Hero), None, now + Duration::from_millis(1));
         let large = image(CoverSize::Large);
-        for i in 0..8 {
-            art.insert(key(&i.to_string(), CoverSize::Large), large.clone(), None, now + Duration::from_millis(i + 2));
+        let count = (LARGE_BYTES - (HERO_PX * HERO_PX * 4) as usize) / (LARGE_PX * LARGE_PX * 4) as usize;
+        for i in 0..count {
+            art.insert(key(&i.to_string(), CoverSize::Large), large.clone(), None, now + Duration::from_millis(i as u64 + 2));
         }
         assert!(!art.images.contains_key(&key("shared", CoverSize::Large)));
         assert!(art.images.contains_key(&key("shared", CoverSize::Hero)));
         assert!(art.colours.contains_key("shared"));
-        art.insert(key("last", CoverSize::Large), large, None, now + Duration::from_millis(10));
+        art.insert(key("last", CoverSize::Large), large, None, now + Duration::from_millis(count as u64 + 2));
         assert!(!art.images.contains_key(&key("shared", CoverSize::Hero)));
         assert!(!art.colours.contains_key("shared"));
         assert!(art.images.contains_key(&key("shared", CoverSize::Card)));
+    }
+
+    #[test]
+    fn pick_updates_replace_the_changed_quadrant() {
+        let art = RefCell::new(Art::default());
+        let now = Instant::now();
+        let solid = |r, g, b| {
+            let mut pixels = SharedPixelBuffer::<Rgba8Pixel>::new(16, 16);
+            pixels.make_mut_slice().fill(Rgba8Pixel { r, g, b, a: 255 });
+            Image::from_rgba8(pixels)
+        };
+        for (i, image) in [solid(255, 0, 0), solid(0, 255, 0), solid(0, 0, 255), solid(255, 255, 0)].into_iter().enumerate() {
+            art.borrow_mut().insert(CoverKey { id: i.to_string(), size: CoverSize::Card }, image, None, now);
+        }
+        let covers = ModelRc::new(VecModel::from((0..4).map(|i| SharedString::from(i.to_string())).collect::<Vec<_>>()));
+        let app = AppHandle(Weak::new());
+        let before = pick_image(&art, &app, covers.clone()).to_rgba8().unwrap();
+        art.borrow_mut().insert(CoverKey { id: "0".into(), size: CoverSize::Card }, solid(255, 0, 255), None, now);
+        let after = pick_image(&art, &app, covers).to_rgba8().unwrap();
+        for (i, expected) in [(255, 0, 255), (0, 255, 0), (0, 0, 255), (255, 255, 0)].into_iter().enumerate() {
+            let offset = ((i / 2) * SMALL_PX as usize + 20) * after.width() as usize + (i % 2) * SMALL_PX as usize + 20;
+            let p = after.as_slice()[offset];
+            assert_eq!((p.r, p.g, p.b, p.a), (expected.0, expected.1, expected.2, 255));
+            assert_eq!(before.as_slice()[offset] != p, i == 0);
+        }
+    }
+
+    #[test]
+    fn fullscreen_does_not_draw_the_hidden_page() {
+        slint::platform::set_platform(Box::new(i_slint_backend_testing::TestingBackend::new(
+            i_slint_backend_testing::TestingBackendOptions { mock_time: true, renderer_name: Some("skia-software".into()), ..Default::default() },
+        ))).unwrap();
+        let ui = AppWindow::new().unwrap();
+        ui.window().set_size(slint::PhysicalSize::new(1280, 820));
+        ui.set_view(ALBUMS);
+        ui.set_albums(ModelRc::new(VecModel::from(vec![crate::Card { art: "page".into(), ..Default::default() }; 50])));
+        ui.set_now_art("playing".into());
+        let requests = Rc::new(RefCell::new(Vec::<String>::new()));
+        let called = requests.clone();
+        ui.on_art(move |id, _, _| {
+            called.borrow_mut().push(id.to_string());
+            Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::new(16, 16))
+        });
+        ui.show().unwrap();
+        ui.window().take_snapshot().unwrap();
+        ui.set_full_player(true);
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_secs(1));
+        slint::platform::update_timers_and_animations();
+        ui.window().take_snapshot().unwrap();
+        requests.borrow_mut().clear();
+        ui.set_covers_rev(1);
+        ui.window().take_snapshot().unwrap();
+        assert!(requests.borrow().iter().any(|id| id == "playing"));
+        assert!(!requests.borrow().iter().any(|id| id == "page"), "the opaque player covers the page, so its covers must not be drawn");
+        requests.borrow_mut().clear();
+        ui.set_full_player(false);
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_secs(1));
+        slint::platform::update_timers_and_animations();
+        ui.window().take_snapshot().unwrap();
+        assert!(requests.borrow().iter().any(|id| id == "page"), "the page returns when the player closes");
+    }
+
+    #[test]
+    fn album_views_release_offscreen_covers() {
+        slint::platform::set_platform(Box::new(i_slint_backend_testing::TestingBackend::new(
+            i_slint_backend_testing::TestingBackendOptions { mock_time: true, renderer_name: Some("skia-software".into()), ..Default::default() },
+        ))).unwrap();
+        for view in [ALBUMS, HOME] {
+            let ui = AppWindow::new().unwrap();
+            ui.window().set_size(slint::PhysicalSize::new(1280, 820));
+            ui.set_view(view);
+            ui.set_picks_loaded(true);
+            let cards = ModelRc::new(VecModel::from((0..500).map(|i| crate::Card {
+                id: i.to_string().into(), art: i.to_string().into(), title: format!("Album {i}").into(), ..Default::default()
+            }).collect::<Vec<_>>()));
+            ui.set_albums(cards.clone());
+            ui.set_shelves(ModelRc::new(VecModel::from(vec![crate::Shelf { loaded: true, cards, ..Default::default() }])));
+            let requests = Rc::new(RefCell::new(Vec::<String>::new()));
+            let called = requests.clone();
+            ui.on_art(move |id, _, _| {
+                called.borrow_mut().push(id.to_string());
+                Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::new(16, 16))
+            });
+            ui.show().unwrap();
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_secs(1));
+            slint::platform::update_timers_and_animations();
+            ui.window().take_snapshot().unwrap();
+            assert!(requests.borrow().iter().any(|id| id == "0"));
+            let initial = requests.borrow().iter().filter(|id| id.as_str() == "0").count();
+            let position = slint::LogicalPosition::new(600.0, if view == HOME { 250.0 } else { 400.0 });
+            let (delta_x, delta_y) = if view == HOME { (-6000.0, 0.0) } else { (0.0, -3000.0) };
+            ui.window().dispatch_event(slint::platform::WindowEvent::PointerScrolled { position, delta_x, delta_y });
+            ui.window().take_snapshot().unwrap();
+            assert!(requests.borrow().iter().any(|id| id.parse::<usize>().is_ok_and(|i| i > 20)), "later albums are drawn in view {view}: {:?}", requests.borrow());
+            ui.window().dispatch_event(slint::platform::WindowEvent::PointerScrolled { position, delta_x: -delta_x, delta_y: -delta_y });
+            ui.window().take_snapshot().unwrap();
+            assert!(requests.borrow().iter().filter(|id| id.as_str() == "0").count() > initial, "returning to a row must load it again after its offscreen component was released");
+        }
+    }
+
+    #[test]
+    fn pick_covers_have_no_background_seams() {
+        slint::platform::set_platform(Box::new(i_slint_backend_testing::TestingBackend::new(
+            i_slint_backend_testing::TestingBackendOptions { mock_time: true, renderer_name: Some("skia-software".into()), ..Default::default() },
+        ))).unwrap();
+        let ui = AppWindow::new().unwrap();
+        ui.set_view(HOME);
+        ui.set_inspector(3);
+        ui.set_picks_loaded(true);
+        let mut pixels = SharedPixelBuffer::<Rgba8Pixel>::new(16, 16);
+        pixels.make_mut_slice().fill(Rgba8Pixel { r: 255, g: 255, b: 255, a: 255 });
+        let image = Image::from_rgba8(pixels);
+        let pick = mosaic(&vec![image.clone(); 4]).unwrap();
+        ui.on_pick_art(move |_, _| pick.clone());
+        ui.on_art(move |_, _, _| image.clone());
+        let pick = crate::Pick { tint: Color::from_rgb_u8(255, 0, 0), deep: Color::from_rgb_u8(0, 0, 255), covers: ModelRc::new(VecModel::from(vec!["cover".into(); 4])), ..Default::default() };
+        ui.set_picks(ModelRc::new(VecModel::from(vec![pick; 2])));
+        ui.show().unwrap();
+        for (logical_width, scale) in [(1280, 1.0), (1261, 1.0), (1258, 1.0), (1280, 1.25), (1261, 1.5), (1280, 2.0)] {
+            ui.window().dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: scale });
+            let width = (logical_width as f32 * scale) as u32;
+            ui.window().set_size(slint::PhysicalSize::new(width, (820.0 * scale) as u32));
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_secs(1));
+            slint::platform::update_timers_and_animations();
+            let frame = ui.window().take_snapshot().unwrap();
+            let pixels = frame.as_slice();
+            let white = |p: &Rgba8Pixel| p.r == 255 && p.g == 255 && p.b == 255;
+            let top = (0..frame.height() as usize).find(|&y| white(&pixels[y * width as usize + (270.0 * scale) as usize])).expect("the pick is visible");
+            let line = &pixels[(top + 20) * width as usize..(top + 21) * width as usize];
+            let left = line.iter().position(white).unwrap();
+            let right = line.iter().rposition(white).unwrap();
+            // The rightmost white is in the second card; each card fills half the shelf.
+            let side = (right - left - (22.0 * scale) as usize).div_ceil(2);
+            for y in top + (14.0 * scale) as usize..top + side - (14.0 * scale) as usize {
+                for x in left + 2..left + side - 2 {
+                    let p = pixels[y * width as usize + x];
+                    assert!(p.r.abs_diff(p.g) <= 1, "background shows through at {x},{y}, width {width}: {p:?}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -2111,6 +2294,8 @@ mod tests {
             pixels.make_mut_slice().fill(Rgba8Pixel { r, g, b, a: 255 });
             Image::from_rgba8(pixels)
         }).collect();
+        let pick = mosaic(&images).unwrap();
+        ui.on_pick_art(move |_, _| pick.clone());
         ui.on_art(move |id, _, _| images[id.as_str().parse::<usize>().unwrap_or(0)].clone());
         let pick = crate::Pick { title: "Mix".into(), covers: ModelRc::new(VecModel::from(vec!["0".into(), "1".into(), "2".into(), "3".into()])), ..Default::default() };
         ui.set_picks(ModelRc::new(VecModel::from(vec![pick; 6])));

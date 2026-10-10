@@ -190,7 +190,7 @@ pub struct Open<'a> {
     pub volume: Arc<Level>,
     /// Bytes the engine may hold for songs ahead. 256 on the desktop, less on a phone.
     pub memory_mb: u32,
-    pub covers: bool,
+    pub covers: Option<CoverConfig>,
     pub offline: bool,
     /// The process's media controls, driven by this session while it is open. Always a field, so a
     /// client built without `desktop` (where nothing can fill it) compiles either way.
@@ -267,7 +267,7 @@ impl Session {
         let events = o.out.clone();
         let config = Config { memory_mb: o.memory_mb, settings: settings(&prefs, loudness.db()), ..Config::default() };
         let engine = Arc::new(Engine::start(library, app, CoreQueue(core.session.clone()), output, None, config, move |e| events(Said::Engine(e))));
-        let covers = o.covers.then(|| Arc::new(Loader::new(CoverConfig::new(o.data.join("covers")), cover_net)));
+        let covers = o.covers.map(|config| Arc::new(Loader::new(config, cover_net)));
         let remotes = Arc::new(crate::remote::Remotes::new(level.clone()));
         let keeper = Keeper::start(core.clone(), engine.clone());
         // A jam guest is no device of the account's: the jam lists it as a guest.
@@ -1236,7 +1236,7 @@ mod tests {
             output: Box::new(nori_engine::wav::WavOutput::new(dir.join("out.wav"), 1.0)),
             volume: Level::new(1.0, None),
             memory_mb: 16,
-            covers: false,
+            covers: None,
             offline: true,
             mpris: None,
             device: nori_core::remote::RemoteMe { name: "Mac".into(), kind: nori_remote::wire::DeviceKind::Desktop },
