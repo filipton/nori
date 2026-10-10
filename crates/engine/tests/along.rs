@@ -1091,3 +1091,24 @@ fn a_guest_ends_with_its_hosts_queue() {
     assert_eq!(starts, 1, "started once: {:?}", guest.logs.lock().iter().filter(|l| l.starts_with("following")).collect::<Vec<_>>());
     assert_ne!(guest.engine.status().state, nori_engine::State::Playing, "the music is over");
 }
+
+#[test]
+fn a_pause_cancels_a_guest_starting_a_mix() {
+    let (a, b) = (song(30.0, 1, None), song(40.0, 2, None));
+    for (local, hold_ms) in [(false, 0), (true, 0), (false, 10_000), (true, 10_000)] {
+        let mut jam = Jam::new(&[("a", &a), ("b", &b)], Some(mix(20_000, 4.0, 1.0, 0.0)), Settings::default(), &two_ways()[..1]);
+        jam.guests[0].rig.card.0.lock().holds_ns = hold_ms * 1_000_000;
+        jam.host.engine.play_at(0, 18_000);
+        jam.run(2_500);
+        assert!(jam.host.engine.status().mixing);
+        jam.join(0);
+        jam.run(100);
+        if local { jam.guests[0].rig.engine.pause(); } else { jam.host.engine.pause(); }
+        jam.run(1_000);
+        assert!(jam.guests[0].rig.card.0.lock().heard.is_empty(), "local={local}, hold={hold_ms}: a cancelled start must remain silent: {:?}", jam.guests[0].rig.logs.lock());
+        if local { jam.guests[0].rig.engine.play(); } else { jam.host.engine.play(); }
+        jam.run(800);
+        let samples = jam.guests[0].rig.card.left_before(jam.now_ns(), 441).unwrap_or_else(|| panic!("local={local}, hold={hold_ms}: the resumed guest plays: {:?}", jam.guests[0].rig.logs.lock()));
+        assert!(samples.iter().map(|s| s * s).sum::<f32>() > 0.01, "local={local}, hold={hold_ms}: resuming must be audible");
+    }
+}

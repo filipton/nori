@@ -207,6 +207,9 @@ impl Following {
         if self.held != on {
             self.held = on;
             self.leapt = true;
+            if on {
+                self.starting = None;
+            }
         }
     }
 
@@ -225,6 +228,9 @@ impl Following {
     pub fn lead(&mut self, led: Led, now_us: i64) {
         let old = std::mem::replace(&mut self.led, led);
         let new = &self.led;
+        if !new.playing {
+            self.starting = None;
+        }
         // Just after a start the leader's own words still settle (its output after a seek): the newest
         // is followed by slipping, not by starting again.
         let settled = now_us - self.started_at > LEAP_QUIET_US;
