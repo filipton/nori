@@ -16,6 +16,38 @@ notification, audio focus, routing, JNI, the service and a force stop.
 Never `-j` above 4: the machine runs out of memory. For queued host checks, nextest,
 Bazel player targets and a pool of hardware-rendered emulators, see [development.md](development.md).
 
+## Desktop UI controls
+
+On Linux and macOS, build with `--features test-control` and pass `--control-socket PATH` to opt in.
+Normal builds contain no control server; a test build without the flag starts no listener or thread.
+Each instance needs its own socket and data directory. Existing socket paths are never replaced.
+
+```sh
+cargo build -j4 -p nori-desktop --features test-control
+export NORI_DESKTOP_SOCKET=/path/to/private/test-directory/control.sock
+target/debug/nori-desktop --data /path/to/test-data --control-socket "$NORI_DESKTOP_SOCKET"
+# From another terminal:
+python3 tools/desktop-app.py state
+python3 tools/desktop-app.py open fullscreen
+python3 tools/desktop-app.py panel queue
+python3 tools/desktop-app.py panel none
+python3 tools/desktop-app.py do pause
+python3 tools/desktop-app.py do play
+python3 tools/desktop-app.py do next
+```
+
+`open` takes `home`, `search`, `albums`, `artists`, `playlists`, `songs`, `settings`, `equalizer` or
+`fullscreen`. `panel` takes `none`, `queue`, `lyrics` or `devices`. `do` takes `play`, `pause`, `toggle`,
+`next`, `previous` or `close_fullscreen`. Actions run through existing UI callbacks on Slint's event
+loop. The JSON reply reads actual UI state, including playback position, buffering, active animations and error notes;
+playback requests complete asynchronously, so wait for subsequent state changes before asserting.
+The socket is local and owner-only (0600), and is removed when the app exits normally.
+
+These checks cover desktop presentation and the real audio output. Playback and queue decisions stay
+in the Rust virtual-clock tests. Use Xvfb and a private audio sink for unattended checks. Physical
+display clicks and captures require the owner's authorization. See [desktop profiling](desktop-performance.md)
+for CPU, live heap and GPU measurements.
+
 ## Running the device checks
 
 ```sh

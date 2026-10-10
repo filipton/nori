@@ -3814,6 +3814,8 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "parking_lot",
  "pollster",
+ "serde",
+ "serde_json",
  "skia-safe",
  "slint",
  "slint-build",

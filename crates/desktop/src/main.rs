@@ -3,6 +3,8 @@
 
 mod app;
 mod compositor;
+#[cfg(all(feature = "test-control", unix))]
+mod control;
 mod eq;
 mod jam;
 mod lyrics;
@@ -30,13 +32,20 @@ fn data_dir() -> PathBuf {
 }
 
 fn main() -> Result<(), String> {
-    let usage = || "usage: nori-desktop [--data DIR] [--url URL --user USER --password PASSWORD]".to_string();
+    let usage = || {
+        let control = if cfg!(all(feature = "test-control", unix)) { " [--control-socket PATH]" } else { "" };
+        format!("usage: nori-desktop [--data DIR] [--url URL --user USER --password PASSWORD]{control}")
+    };
     let mut data = data_dir();
+    #[cfg(all(feature = "test-control", unix))]
+    let mut control_socket = None;
     let (mut url, mut user, mut password) = (None, None, String::new());
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut v = || args.next().ok_or_else(usage);
         match a.as_str() {
+            #[cfg(all(feature = "test-control", unix))]
+            "--control-socket" => control_socket = Some(PathBuf::from(v()?)),
             "--data" => data = v()?.into(),
             "--url" => url = Some(v()?),
             "--user" => user = Some(v()?),
@@ -67,6 +76,8 @@ fn main() -> Result<(), String> {
         ui.set_font("System Font".into());
     }
     let app = app::start(&ui, data, compositor);
+    #[cfg(all(feature = "test-control", unix))]
+    let _control = control_socket.map(|path| control::start(path, ui.as_weak())).transpose()?;
     let r = ui.run().map_err(|e| e.to_string());
     app::stop(&app);
     nori_core::background::flush();
