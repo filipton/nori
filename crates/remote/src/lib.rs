@@ -138,11 +138,17 @@ pub fn qr_code(text: String) -> Option<QrCode> {
 /// Where `state`'s position is now, `elapsed_ms` after it was received, within the current song.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn position_now(state: &wire::DeviceState, elapsed_ms: i64) -> i64 {
-    if !state.playing {
+    let pace = pace(state);
+    if pace == 0.0 {
         return state.position_ms;
     }
     let length = state.entries.iter().find(|e| Some(e.index) == state.index).map_or(i64::MAX, |e| e.duration as i64 * 1000);
-    (state.position_ms + (elapsed_ms.max(0) as f64 * rate(state)) as i64).min(length)
+    (state.position_ms + (elapsed_ms.max(0) as f64 * pace) as i64).min(length)
+}
+
+/// How fast the audible playhead moves; held while paused or waiting for audio.
+pub fn pace(state: &wire::DeviceState) -> f64 {
+    if state.playing && !state.buffering { rate(state) } else { 0.0 }
 }
 
 /// How fast `state`'s place moves while it plays, song ms per real ms.
@@ -237,6 +243,7 @@ mod tests {
         assert_eq!(position_now(&st, 1_500), 3_500);
         assert_eq!(position_now(&st, 60_000), 10_000, "not past the song's end");
         assert_eq!(position_now(&DeviceState { rate: Some(1.25), ..st.clone() }, 2_000), 4_500, "at the device's speed");
+        assert_eq!(position_now(&DeviceState { buffering: true, ..st.clone() }, 1_500), 2_000, "waiting for audio");
         assert_eq!(position_now(&DeviceState { playing: false, ..st }, 1_500), 2_000);
     }
 }

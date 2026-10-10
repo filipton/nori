@@ -176,7 +176,7 @@ pub struct Mirror {
     pub buffering: bool,
     /// Where the song was at `at_us`; it runs on at `rate` from there while `playing`.
     pub position_ms: i64,
-    /// Song ms per real ms there: its speed times a mix's tempo.
+    /// Song ms per real ms there; zero while paused or waiting for audio.
     pub rate: f64,
     /// When the device's listener heard `position_ms`, on this device's clock (`nori_remote::clock::now_us`,
     /// Android's `SystemClock.elapsedRealtimeNanos` / 1000).
@@ -678,7 +678,7 @@ impl Mirrored {
             playing: st.playing,
             buffering: st.buffering,
             position_ms: st.position_ms,
-            rate: nori_remote::rate(st),
+            rate: nori_remote::pace(st),
             at_us: self.shown_at(),
             shuffle: st.shuffle,
             repeat: st.repeat,
@@ -1552,7 +1552,7 @@ impl Remote {
             playing: st.playing,
             buffering: st.buffering,
             position_ms: st.position_ms,
-            rate: nori_remote::rate(st),
+            rate: nori_remote::pace(st),
             at_us: i.heard_at(st).or_else(|| i.received.get(&host.id).copied()).unwrap_or_else(clock::now_us),
             shuffle: st.shuffle,
             repeat: st.repeat,
@@ -2669,6 +2669,12 @@ mod tests {
         // Playing at 1.25 times: a second there is a second and a quarter of the song.
         assert!(m.heard(&DeviceState { seq: 5, rate: Some(1.25), ..st.clone() }, 3_500_000, "me"));
         assert_eq!(view(&m).position_at(1_800_000), 11_250);
+        let stalled = DeviceState { seq: 6, buffering: true, ..st.clone() };
+        assert!(m.heard(&stalled, 4_000_000, "me"));
+        assert_eq!(view(&m).position_at(9_000_000), 10_000, "waiting for audio holds the playhead");
+        assert_eq!(view(&m).rate, 0.0, "client clocks hold while buffering");
+        assert!(m.heard(&DeviceState { seq: 7, position_ms: 12_000, at_us: Some(55_000_000), ..st }, 6_000_000, "me"));
+        assert_eq!(view(&m).position_at(6_800_000), 13_000, "the playhead resumes from the next heard position");
         // A command foreseen here runs on from when it was sent.
         m.foresee(1, &Op::Pause);
         assert!(!view(&m).playing && view(&m).position_at(900_000_000) == view(&m).position_ms);
