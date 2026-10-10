@@ -2054,6 +2054,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pick_covers_scroll_together() {
+        slint::platform::set_platform(Box::new(i_slint_backend_testing::TestingBackend::new(
+            i_slint_backend_testing::TestingBackendOptions { mock_time: true, renderer_name: Some("skia-software".into()), ..Default::default() },
+        ))).unwrap();
+        let ui = AppWindow::new().unwrap();
+        ui.window().set_size(slint::PhysicalSize::new(1280, 820));
+        ui.set_view(HOME);
+        ui.set_picks_loaded(true);
+        let images: Vec<Image> = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)].into_iter().map(|(r, g, b)| {
+            let mut pixels = SharedPixelBuffer::<Rgba8Pixel>::new(16, 16);
+            pixels.make_mut_slice().fill(Rgba8Pixel { r, g, b, a: 255 });
+            Image::from_rgba8(pixels)
+        }).collect();
+        ui.on_art(move |id, _, _| images[id.as_str().parse::<usize>().unwrap_or(0)].clone());
+        let pick = crate::Pick { title: "Mix".into(), covers: ModelRc::new(VecModel::from(vec!["0".into(), "1".into(), "2".into(), "3".into()])), ..Default::default() };
+        ui.set_picks(ModelRc::new(VecModel::from(vec![pick; 6])));
+        let card = crate::Card { art: "0".into(), ..Default::default() };
+        ui.set_shelves(ModelRc::new(VecModel::from((0..3).map(|_| crate::Shelf { loaded: true, cards: ModelRc::new(VecModel::from(vec![card.clone()])), ..Default::default() }).collect::<Vec<_>>())));
+        ui.show().unwrap();
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_secs(1));
+        slint::platform::update_timers_and_animations();
+        let profile = |ui: &AppWindow| {
+            let frame = ui.window().take_snapshot().unwrap();
+            let pixels = frame.as_slice();
+            let x = 270;
+            let top = (0..frame.height() as usize).find(|&y| { let p = pixels[y * frame.width() as usize + x]; p.r == 255 && p.g == 0 && p.b == 0 }).expect("the first cover is visible");
+            let left = (0..frame.width() as usize).find(|&x| { let p = pixels[(top + 20) * frame.width() as usize + x]; p.r == 255 && p.g == 0 && p.b == 0 }).expect("the left edge is visible");
+            (0..180).map(|dy| pixels[(top + dy) * frame.width() as usize + x])
+                .chain((0..180).map(|dx| pixels[(top + 20) * frame.width() as usize + left + dx])).collect::<Vec<_>>()
+        };
+        let before = profile(&ui);
+        for (position, delta_x, delta_y) in [(slint::LogicalPosition::new(1258.0, 600.0), 0.0, -0.25), (slint::LogicalPosition::new(800.0, 250.0), -0.25, 0.0)] {
+            for _ in 0..4 {
+                ui.window().dispatch_event(slint::platform::WindowEvent::PointerScrolled { position, delta_x, delta_y });
+                let after = profile(&ui);
+                // Gradient dithering may change a channel by one.
+                assert!(before.iter().zip(after).all(|(a, b)| a.r.abs_diff(b.r) <= 1 && a.g.abs_diff(b.g) <= 1 && a.b.abs_diff(b.b) <= 1), "the mosaic must retain its seams and gradient while scrolling");
+            }
+        }
+    }
+
+    #[test]
     fn device_updates_keep_the_picker_rows() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = AppWindow::new().unwrap();

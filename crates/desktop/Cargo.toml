@@ -40,4 +40,4 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 slint-build = "1.18"
 
 [dev-dependencies]
-i-slint-backend-testing = "=1.18.1"
+i-slint-backend-testing = { version = "=1.18.1", features = ["renderer-skia"] }

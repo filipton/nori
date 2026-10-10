@@ -827,6 +827,7 @@ component ShelfView inherits VerticalLayout {
             }
             Rectangle {
                 visible: !root.loading;
+                x: floor(flick.content-x / 1phx + 0.5) * 1phx - flick.content-x;
                 @children
             }
         }
@@ -3851,9 +3852,10 @@ export component AppWindow inherits Window {
                 clip: !root.native-sidebar;
 
                 if root.view == 0: Fade {
-                    Flickable {
+                    home-scroll := Flickable {
                         content-height: home.preferred-height;
                         home := VerticalLayout {
+                            y: floor(home-scroll.content-y / 1phx + 0.5) * 1phx - home-scroll.content-y;
                             width: parent.width;
                             padding-bottom: 100px;
                             Heading {
