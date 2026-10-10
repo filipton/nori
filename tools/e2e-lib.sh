@@ -219,7 +219,7 @@ watch_from_now() {
 # And one capture for the whole run, for the player's errors: `adb logcat -d` sees only what came since
 # the last app.sh call, which cleared the log.
 runlog=$(mktemp); runwatcher=""
-whole_run_log() { adb logcat -v brief -s nori:* > "$runlog" 2>/dev/null & runwatcher=$!; }
+whole_run_log() { adb logcat -c; adb logcat -v brief -s nori:* > "$runlog" 2>/dev/null & runwatcher=$!; }
 run_errors() { grep -cE "rust player error: " "$runlog"; }
 cleanup_e2e() {
   restore_settings
