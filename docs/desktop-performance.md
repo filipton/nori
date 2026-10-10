@@ -66,3 +66,52 @@ The physical trace also exposed a playback stall: a silent pull after a skip adv
 discarded audio without updating the output's accounting. This created about ten seconds of phantom
 device latency. A failing clock-based output test reproduces it; thirty rapid skips on the private
 copy completed without the watchdog restarting playback after the correction.
+
+## Direct GPU cover uploads
+
+A further comparison against `2b4f8c95` used the same private library on Xvfb, one test process at a
+time, and thirty alternating play/pause actions spaced 650 ms apart. These numbers are from separate
+normal-process and jemalloc-profiled runs; profiling RSS is not used to measure the saving.
+
+| Measurement | Before | After |
+|---|---:|---:|
+| Sampled total live heap | 103.1 MiB | 59.7 MiB |
+| Anonymous resident memory after the loop | 114.3 MiB | 81.5 MiB |
+| Normal-process RSS after the loop | 276.7 MiB | 223.4 MiB |
+| Normal-process PSS after the loop | 218.0 MiB | 164.6 MiB |
+| GPU process memory | 103 MiB | 123 MiB |
+| Animation-loop CPU, percent of one core | 89.6% | 89.1% |
+
+Decoded covers upload directly to Slint's GPU images on the compositor's device. This removes the
+app's retained CPU pixel copies and Skia's raster copies. Top Picks copy the four equal square card
+textures into one texture, without rasterizing or reading pixels back to the CPU. Cover regions in
+the matched Home screenshots were pixel-identical. GPU cache entries keep the existing byte limits;
+the GPU memory increase reflects covers now retained there instead of in the CPU heap.
+
+The compositor also omits wgpu's unused indirect-command validation pipelines: every compositor draw
+uses a fixed vertex range. Ordinary validation stays enabled. The NVIDIA compiler's large allocation
+is still present when Skia builds its rendering pipelines; disabling the unused indirect pipelines
+does not eliminate that driver allocation.
+
+About 28 MiB of the remaining sampled heap belongs to NVIDIA driver allocations, and about 13 MiB
+to the playback engine. RSS additionally includes code, shared libraries, driver mappings and
+allocator slack. Library sharing makes RSS comparisons less stable than the anonymous and live-heap
+measurements. This batch establishes a RAM reduction, not an animation CPU or frame-rate improvement.
+
+## Resize rendering and repeated skips
+
+Fresh Slint layer textures were drawn through Skia without being initialized in wgpu's tracker.
+The first wgpu read therefore cleared the rendered pixels. The compositor forced another draw to
+recover, leaving a black frame on each resize. It now initializes fresh attachments through wgpu
+before Skia draws and transitions existing attachments back from sampling to rendering state.
+The forced second redraw is removed.
+
+A GPU regression failed with transparent black pixels before the change and passes after it.
+In Xvfb recordings of repeated resizing on Home and fullscreen, the unchanged central region
+contained 473 mostly black frames out of 542 before, and zero out of 572 after. Different frame
+counts reflect recording duration; this checks flashing rather than frame pacing.
+
+Six batches of thirty next/previous actions over already-requested tracks completed without
+playback stalls. Anonymous resident memory was 90.1, 90.3, 85.0, 85.0, 85.1 and 85.2 MiB,
+respectively. After warm-up it varied by less than 0.3 MiB across the last four batches.
+This demonstrates a plateau for that workload, not proof that every path is leak-free.

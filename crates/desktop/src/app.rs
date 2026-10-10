@@ -175,7 +175,7 @@ fn cover_image(art: &RefCell<Art>, app: &AppHandle, id: SharedString, size: i32)
     Image::default()
 }
 
-fn pick_image(art: &RefCell<Art>, app: &AppHandle, covers: ModelRc<SharedString>) -> Image {
+fn pick_image(art: &RefCell<Art>, app: &AppHandle, covers: ModelRc<SharedString>, compose: impl FnOnce(&[Image]) -> Option<Image>) -> Image {
     let ids: Vec<String> = covers.iter().take(4).map(|id| id.to_string()).collect();
     if ids.len() < 4 {
         return ids.first().map_or_else(Image::default, |id| cover_image(art, app, id.as_str().into(), 0));
@@ -184,11 +184,12 @@ fn pick_image(art: &RefCell<Art>, app: &AppHandle, covers: ModelRc<SharedString>
         return image.clone();
     }
     let images: Vec<_> = ids.iter().map(|id| cover_image(art, app, id.as_str().into(), 0)).collect();
-    let Some(image) = mosaic(&images) else { return Image::default() };
+    let Some(image) = compose(&images) else { return Image::default() };
     art.borrow_mut().mosaics.insert(ids, image.clone());
     image
 }
 
+#[cfg(test)]
 fn mosaic(images: &[Image]) -> Option<Image> {
     use skia_safe::{AlphaType, ColorType, Data, FilterMode, ImageInfo, Paint, Rect, SamplingOptions};
     let side = SMALL_PX;
@@ -208,10 +209,6 @@ fn mosaic(images: &[Image]) -> Option<Image> {
     let mut pixels = SharedPixelBuffer::<Rgba8Pixel>::new(width, width);
     let info = ImageInfo::new((width as i32, width as i32), ColorType::RGBA8888, AlphaType::Unpremul, None);
     surface.read_pixels(&info, pixels.make_mut_bytes(), width as usize * 4, (0, 0)).then(|| Image::from_rgba8(pixels))
-}
-
-fn picture(p: &Picture) -> Image {
-    Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&p.pixels, p.width, p.height))
 }
 
 /// The cover's blurred wash (square ARGB) as an image.
@@ -378,7 +375,8 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
         let main_art = art_cb(&art);
         ui.on_art(move |id, size, _rev| main_art(id, size));
         let (pick_art, pick_app) = (art.clone(), me.clone());
-        ui.on_pick_art(move |covers, _rev| pick_image(&pick_art, &pick_app, covers));
+        let pick_compositor = compositor.clone();
+        ui.on_pick_art(move |covers, _rev| pick_image(&pick_art, &pick_app, covers, |images| pick_compositor.mosaic(images)));
         RefCell::new(App {
             ui: ui.as_weak(),
             sidebar: sidebar(ui, art_cb(&art)),
@@ -1425,7 +1423,7 @@ impl App {
         let id = key.id.clone();
         let large = key.size != CoverSize::Card;
         self.tickets.retain(|(k, _)| *k != key);
-        self.art.borrow_mut().insert(key, picture(image), colours, Instant::now());
+        self.art.borrow_mut().insert(key, self.compositor.picture(&image.pixels, image.width, image.height), colours, Instant::now());
         let ui = self.ui();
         ui.set_covers_rev(ui.get_covers_rev().wrapping_add(1));
         if let Some(p) = &self.player {
@@ -2154,9 +2152,9 @@ mod tests {
         }
         let covers = ModelRc::new(VecModel::from((0..4).map(|i| SharedString::from(i.to_string())).collect::<Vec<_>>()));
         let app = AppHandle(Weak::new());
-        let before = pick_image(&art, &app, covers.clone()).to_rgba8().unwrap();
+        let before = pick_image(&art, &app, covers.clone(), mosaic).to_rgba8().unwrap();
         art.borrow_mut().insert(CoverKey { id: "0".into(), size: CoverSize::Card }, solid(255, 0, 255), None, now);
-        let after = pick_image(&art, &app, covers).to_rgba8().unwrap();
+        let after = pick_image(&art, &app, covers, mosaic).to_rgba8().unwrap();
         for (i, expected) in [(255, 0, 255), (0, 255, 0), (0, 0, 255), (255, 255, 0)].into_iter().enumerate() {
             let offset = ((i / 2) * SMALL_PX as usize + 20) * after.width() as usize + (i % 2) * SMALL_PX as usize + 20;
             let p = after.as_slice()[offset];

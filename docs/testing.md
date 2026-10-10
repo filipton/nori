@@ -48,6 +48,11 @@ in the Rust virtual-clock tests. Use Xvfb and a private audio sink for unattende
 display clicks and captures require the owner's authorization. See [desktop profiling](desktop-performance.md)
 for CPU, live heap and GPU measurements.
 
+The desktop GPU regression reads rendered pixels before and after a redraw, checking that wgpu
+does not clear Skia's first frame. It needs a real GPU backend, so it runs explicitly rather than
+on headless CI: `cargo test -j4 -p nori-desktop layer_pixels_survive_first_sampling_and_redraw -- --ignored`.
+This checks the renderer handoff and texture layouts, which the playback virtual clock cannot exercise.
+
 ## Running the device checks
 
 ```sh
